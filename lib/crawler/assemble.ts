@@ -1,43 +1,43 @@
 import type { ScoredPage } from "./types"
 
-const SECTION_ORDER = [
-  "Docs", "API", "Examples", "Guides", "Getting Started",
-  "Products", "Pricing", "Support", "About",
-  "Articles", "Writing", "Projects", "Programs",
-  "Policies", "Resources", "Blog", "Changelog",
-  "Contact & Support",
-]
-
 export function assembleFile(
   siteName: string,
   primary: ScoredPage[],
   optional: ScoredPage[],
-  summary?: string
+  summary?: string,
+  preamble?: string,
 ): string {
   const lines: string[] = []
 
-  lines.push(`# ${siteName}`, "")
+  lines.push(`# ${siteName || "Untitled"}`, "")
 
   if (summary) {
-    lines.push(`> ${summary}`, "")
+    const clean = summary.replace(/\r?\n/g, " ").trim()
+    if (clean) lines.push(`> ${clean}`, "")
   }
 
-  const sections = groupBySection(primary)
+  if (preamble) {
+    const clean = preamble.replace(/\r?\n/g, " ").trim()
+    if (clean) lines.push(clean, "")
+  }
+
+  const { sections, overflow } = groupBySection(primary)
+
+  // Pages from single-entry sections spill into Optional
+  const allOptional = [
+    ...overflow,
+    ...optional,
+  ].sort((a, b) => b.score - a.score)
 
   for (const [section, pages] of sections) {
-    if (pages.length === 0) continue
     lines.push(`## ${section}`, "")
-    for (const page of pages) {
-      lines.push(formatEntry(page))
-    }
+    for (const page of pages) lines.push(formatEntry(page))
     lines.push("")
   }
 
-  if (optional.length > 0) {
+  if (allOptional.length > 0) {
     lines.push("## Optional", "")
-    for (const page of optional) {
-      lines.push(formatEntry(page))
-    }
+    for (const page of allOptional) lines.push(formatEntry(page))
     lines.push("")
   }
 
@@ -46,29 +46,39 @@ export function assembleFile(
 
 function formatEntry(page: ScoredPage): string {
   const url = page.mdUrl || page.url
-  const title = page.title || url
+  const title = (page.title || url).replace(/[\[\]]/g, "")
   if (page.description && page.descriptionProvenance !== "none") {
-    return `- [${title}](${url}): ${page.description}`
+    const desc = page.description.replace(/\r?\n/g, " ").trim()
+    return `- [${title}](${url}): ${desc}`
   }
   return `- [${title}](${url})`
 }
 
-function groupBySection(pages: ScoredPage[]): Map<string, ScoredPage[]> {
+function groupBySection(pages: ScoredPage[]): {
+  sections: Map<string, ScoredPage[]>
+  overflow: ScoredPage[]
+} {
   const map = new Map<string, ScoredPage[]>()
-
   for (const page of pages) {
     const section = page.section || "Resources"
     if (!map.has(section)) map.set(section, [])
     map.get(section)!.push(page)
   }
 
-  const sorted = new Map<string, ScoredPage[]>()
-  for (const section of SECTION_ORDER) {
-    if (map.has(section)) sorted.set(section, map.get(section)!)
-  }
+  // Sections with only 1 page get dissolved into Optional
+  const overflow: ScoredPage[] = []
+  const valid = new Map<string, ScoredPage[]>()
   for (const [section, ps] of map) {
-    if (!sorted.has(section)) sorted.set(section, ps)
+    if (ps.length < 2) overflow.push(...ps)
+    else valid.set(section, ps)
   }
 
-  return sorted
+  // Sort sections by average score descending
+  const entries = [...valid.entries()].sort((a, b) => {
+    const avgA = a[1].reduce((s, p) => s + p.score, 0) / a[1].length
+    const avgB = b[1].reduce((s, p) => s + p.score, 0) / b[1].length
+    return avgB - avgA
+  })
+
+  return { sections: new Map(entries), overflow }
 }

@@ -39,6 +39,7 @@ const PAGE_TYPE_CONFIG: Record<PageType, { label: string; className: string }> =
 
 const STEPS: Array<{ id: JobStatus | "done"; label: string }> = [
   { id: "crawling",   label: "Crawling pages" },
+  { id: "enriching",  label: "Enriching with AI" },
   { id: "scoring",    label: "Scoring & classifying" },
   { id: "assembling", label: "Assembling file" },
   { id: "complete",   label: "Complete" },
@@ -63,9 +64,9 @@ function ProgressView({ job }: { job: ApiJob }) {
 
   const getStepStatus = (stepId: string) => {
     if (job.status === "failed") return stepId === "crawling" ? "error" : "waiting"
-    const order = ["pending", "crawling", "scoring", "assembling", "complete", "partial"]
+    const order = ["pending", "crawling", "enriching", "scoring", "assembling", "complete", "partial"]
     const jobIdx = order.indexOf(job.status)
-    const stepIdxMap: Record<string, number> = { crawling: 1, scoring: 2, assembling: 3, complete: 4 }
+    const stepIdxMap: Record<string, number> = { crawling: 1, enriching: 2, scoring: 3, assembling: 4, complete: 5 }
     const stepIdx = stepIdxMap[stepId] ?? 0
     if (jobIdx > stepIdx) return "done"
     if (jobIdx === stepIdx) return "active"
@@ -142,7 +143,6 @@ function ProgressView({ job }: { job: ApiJob }) {
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
             <span className="text-zinc-400 text-xs font-mono">
               {job.progress.discovered} URLs discovered · {job.progress.crawled} crawled
-              {job.progress.failed > 0 && ` · ${job.progress.failed} failed`}
             </span>
           </div>
           <div ref={feedRef} className="h-32 flex items-center justify-center p-4">
@@ -152,6 +152,8 @@ function ProgressView({ job }: { job: ApiJob }) {
               <p className="text-zinc-600 text-xs font-mono">
                 {job.status === "crawling"
                   ? `Crawling ${domain}…`
+                  : job.status === "enriching"
+                  ? "Classifying pages with AI…"
                   : job.status === "scoring"
                   ? "Scoring and classifying pages…"
                   : job.status === "assembling"
@@ -188,7 +190,7 @@ function ResultView({ job }: { job: ApiJob }) {
     return matchSearch && matchType
   })
 
-  const includedCount = pages.filter((p) => p.fetchStatus === "ok" && p.score >= 50).length
+  const crawledCount = pages.filter((p) => p.fetchStatus === "ok").length
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(content)
@@ -220,7 +222,7 @@ function ResultView({ job }: { job: ApiJob }) {
           <span className="text-sm text-zinc-500 hidden sm:block">{domain}</span>
           <span className="text-zinc-300 hidden sm:block">·</span>
           <span className="text-xs text-zinc-400 font-mono hidden sm:block">
-            {includedCount}/{pages.filter(p => p.fetchStatus === "ok").length} pages included
+            {crawledCount} pages crawled
           </span>
           {job.genre && (
             <span className="text-xs text-zinc-400 font-mono hidden md:block">· {job.genre.replace(/_/g, " ")}</span>

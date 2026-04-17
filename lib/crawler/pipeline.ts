@@ -5,6 +5,7 @@ import { extractMetadata, extractSiteName } from "./extract"
 import { probeMarkdown } from "./markdownProbe"
 import { extractLinksFromHtml } from "./discover"
 import { scorePages } from "./score"
+import { llmEnrichPages, generateSitePreamble } from "./llmEnrich"
 import { assignSections, filterAndSelectPages } from "./group"
 import { assembleFile } from "./assemble"
 import { detectGenre } from "./genre"
@@ -151,15 +152,6 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     const genre = detectGenre(homepageHtml, [...discoveredUrls])
     const siteName = extractSiteName(homepageHtml, new URL(baseUrl).hostname)
 
-    updateJob(jobId, { status: "scoring", genre, siteName })
-
-    // Derive blockquote summary from homepage description
-    const summary =
-      homepageMeta.description && homepageMeta.descriptionProvenance !== "none"
-        ? homepageMeta.description
-        : undefined
-
-    // Score, group, filter
     // Strip pages whose description exactly matches the generic homepage tagline
     const homepageDesc = homepageMeta.description?.trim()
     const successful = pages
@@ -171,20 +163,41 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
         return p
       })
 
-    const scored = scorePages(successful, genre)
+    // LLM enrichment: classify pages and generate missing descriptions
+    updateJob(jobId, { status: "enriching", genre, siteName })
+    const enrichment = await llmEnrichPages(successful, siteName, genre)
+
+    updateJob(jobId, { status: "scoring" })
+
+    // Derive blockquote summary from homepage description
+    const summary =
+      homepageMeta.description && homepageMeta.descriptionProvenance !== "none"
+        ? homepageMeta.description
+        : undefined
+
+    const scored = scorePages(successful, genre, enrichment)
     const withSections = assignSections(scored, genre)
-    const { primary, optional } = filterAndSelectPages(withSections)
+    const { primary, optional } = filterAndSelectPages(withSections, baseUrl)
+
+    // Deduplicate for display (same canonical URL can appear via multiple paths)
+    const seenUrls = new Set<string>()
+    const dedupedSections = withSections.filter((p) => {
+      if (seenUrls.has(p.url)) return false
+      seenUrls.add(p.url)
+      return true
+    })
 
     updateJob(jobId, { status: "assembling" })
 
-    const result = assembleFile(siteName, primary, optional, summary)
+    const preamble = await generateSitePreamble(siteName, genre, primary, optional)
+    const result = assembleFile(siteName, primary, optional, summary, preamble)
 
     const status = failed > 0 && failed >= crawled * 0.5 ? "partial" : "complete"
 
     updateJob(jobId, {
       status,
       result,
-      pages: withSections,
+      pages: dedupedSections,
       genre,
       siteName,
     })

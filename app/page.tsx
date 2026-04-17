@@ -45,13 +45,14 @@ export default function LandingPage() {
 
       if (!res.ok) {
         setError(data.error || "Something went wrong")
+        setLoading(false)
         return
       }
 
       router.push(`/jobs/${data.job_id}`)
+      // leave loading=true — component unmounts on redirect
     } catch {
       setError("Network error — please try again")
-    } finally {
       setLoading(false)
     }
   }

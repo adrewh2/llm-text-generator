@@ -1,71 +1,60 @@
-import type { ScoredPage, SiteGenre, PageType } from "./types"
+import type { ScoredPage, SiteGenre } from "./types"
 
-const GENRE_SECTION_MAP: Record<SiteGenre, Partial<Record<PageType, string>>> = {
-  developer_docs: {
-    doc: "Docs", api: "API", example: "Examples", changelog: "Changelog",
-    blog: "Optional", about: "Optional",
-  },
-  ecommerce: {
-    product: "Products", pricing: "Pricing", support: "Support",
-    policy: "Policies", blog: "Optional",
-  },
-  personal_site: {
-    about: "About", project: "Projects", blog: "Writing", other: "Optional",
-  },
-  institutional: {
-    program: "Programs", about: "About", support: "Contact & Support",
-    policy: "Policies", news: "Optional",
-  },
-  blog_publication: {
-    blog: "Articles", about: "About", support: "Resources", policy: "Optional",
-  },
-  generic: {},
+function normalizeForComparison(url: string): string {
+  try {
+    const u = new URL(url)
+    return `${u.hostname}${u.pathname.replace(/\/$/, "")}`
+  } catch {
+    return url
+  }
 }
 
-export function assignSections(pages: ScoredPage[], genre: SiteGenre): ScoredPage[] {
+export function assignSections(pages: ScoredPage[], _genre: SiteGenre): ScoredPage[] {
   return pages.map((page) => {
-    if (page.score < 30) return { ...page, section: undefined }
+    if (page.score < 15) return { ...page, section: undefined }
 
     if (page.isOptional || page.score < 50) {
       return { ...page, section: "Optional" }
     }
 
-    const sectionMap = GENRE_SECTION_MAP[genre]
-    const mapped = sectionMap[page.pageType]
-
-    if (mapped === "Optional") {
-      // Upgrade to primary section based on path
-      return { ...page, section: inferSectionFromPath(page) }
+    // LLM-suggested section is the primary signal
+    if (page.llmSection && page.llmSection !== "Optional") {
+      return { ...page, section: page.llmSection }
     }
 
-    return { ...page, section: mapped || inferSectionFromPath(page) }
+    // Fallback: infer from URL structure
+    return { ...page, section: inferSectionFromPath(page) }
   })
 }
 
 function inferSectionFromPath(page: ScoredPage): string {
-  const path = new URL(page.url).pathname.toLowerCase()
-
-  if (/\/docs?\//.test(path)) return "Docs"
-  if (/\/api\//.test(path)) return "API"
-  if (/\/guide\//.test(path)) return "Guides"
-  if (/\/examples?\//.test(path)) return "Examples"
-  if (/\/blog\/|\/post\/|\/article\//.test(path)) return "Blog"
-  if (/\/about\//.test(path)) return "About"
-  if (/\/support\/|\/help\//.test(path)) return "Support"
-  if (/\/products?\//.test(path)) return "Products"
-
+  try {
+    const path = new URL(page.url).pathname.toLowerCase()
+    if (/\/docs?\//.test(path)) return "Docs"
+    if (/\/api\//.test(path)) return "API"
+    if (/\/guide\//.test(path)) return "Guides"
+    if (/\/examples?\//.test(path)) return "Examples"
+    if (/\/blog\/|\/post\/|\/article\//.test(path)) return "Blog"
+    if (/\/about\//.test(path)) return "About"
+    if (/\/support\/|\/help\//.test(path)) return "Support"
+    if (/\/products?\//.test(path)) return "Products"
+  } catch {}
   return "Resources"
 }
 
 export function filterAndSelectPages(
   pages: ScoredPage[],
+  baseUrl?: string,
   maxOutput = 60
 ): { primary: ScoredPage[]; optional: ScoredPage[] } {
-  // Deduplicate by URL (canonical wins)
+  // Deduplicate by URL, and exclude the root/homepage
   const seen = new Set<string>()
   const deduped = pages.filter((p) => {
     if (seen.has(p.url)) return false
     seen.add(p.url)
+    if (baseUrl && normalizeForComparison(p.url) === normalizeForComparison(baseUrl)) return false
+    const path = (() => { try { return new URL(p.url).pathname } catch { return "" } })()
+    if (path === "/" || path === "") return false
     return true
   })
 
@@ -78,9 +67,8 @@ export function filterAndSelectPages(
 
   const optional = deduped
     .filter((p) => {
-      if (p.score < 30 || p.score >= 50) return false
+      if (p.score < 15 || p.score >= 50) return false
       if (primaryUrls.has(p.url)) return false
-      // Skip bare index pages if a more specific page from same path is primary
       const path = (() => { try { return new URL(p.url).pathname } catch { return "" } })()
       if (path === "/" || path === "") return false
       return true

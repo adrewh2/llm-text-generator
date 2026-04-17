@@ -29,6 +29,7 @@ export interface ScoredPage extends ExtractedPage {
   pageType: PageType
   score: number
   section?: string
+  llmSection?: string
   isOptional: boolean
 }
 
@@ -39,7 +40,7 @@ export interface JobProgress {
 }
 
 export type JobStatus =
-  | "pending" | "crawling" | "scoring" | "assembling"
+  | "pending" | "crawling" | "enriching" | "scoring" | "assembling"
   | "complete" | "failed" | "partial"
 
 export interface CrawlJob {
