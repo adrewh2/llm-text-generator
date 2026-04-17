@@ -1,0 +1,25 @@
+# Next.js
+.next/
+out/
+
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build
+build/
+dist/
+
+# OS
+.DS_Store
+
+# Claude Code
+.claude/
+
+# TypeScript
+tsconfig.tsbuildinfo
+next-env.d.ts
