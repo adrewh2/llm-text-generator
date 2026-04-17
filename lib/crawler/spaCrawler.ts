@@ -50,8 +50,8 @@ export class SpaBrowser {
         }
       })
 
-      await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 })
-      await new Promise((r) => setTimeout(r, 800))
+      await page.goto(url, { waitUntil: "load", timeout: 15000 })
+      await new Promise((r) => setTimeout(r, 1500))
 
       const html = await page.content()
       return { html, ok: true }
@@ -84,8 +84,8 @@ export class SpaBrowser {
         }
       })
 
-      await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 })
-      await new Promise((r) => setTimeout(r, 800))
+      await page.goto(url, { waitUntil: "load", timeout: 15000 })
+      await new Promise((r) => setTimeout(r, 1500))
 
       const html = await page.content()
       const rawLinks: string[] = await page.evaluate(() =>

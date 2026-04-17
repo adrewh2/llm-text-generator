@@ -28,10 +28,18 @@ export default function LandingPage() {
   const [error, setError] = useState("")
   const router = useRouter()
 
+  const normalizeInput = (raw: string): string => {
+    const trimmed = raw.trim()
+    if (!trimmed) return trimmed
+    if (/^https?:\/\//i.test(trimmed)) return trimmed
+    return `https://${trimmed}`
+  }
+
   const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!url.trim() || loading) return
 
+    const normalized = normalizeInput(url)
     setError("")
     setLoading(true)
 
@@ -39,7 +47,7 @@ export default function LandingPage() {
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim() }),
+        body: JSON.stringify({ url: normalized }),
       })
       const data = await res.json()
 
@@ -124,7 +132,7 @@ export default function LandingPage() {
             >
               <Globe size={15} className="ml-2.5 text-zinc-400 shrink-0" />
               <input
-                type="url"
+                type="text"
                 value={url}
                 onChange={(e) => { setUrl(e.target.value); setError("") }}
                 onFocus={() => setFocused(true)}
