@@ -3,7 +3,6 @@
 ## Quick start
 
 ```bash
-cd web
 npm install
 npm run dev
 ```
