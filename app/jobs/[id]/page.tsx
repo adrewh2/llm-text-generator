@@ -4,11 +4,10 @@ import { useState, useEffect, useRef, useCallback } from "react"
 import { useParams } from "next/navigation"
 import {
   CheckCircle2, Circle, Loader2, Copy, Download, Check,
-  Search, ChevronDown, Shield, AlertCircle, ExternalLink,
-  RefreshCw, Filter, ArrowLeft, XCircle,
+  Shield, AlertCircle, ArrowLeft, XCircle,
 } from "lucide-react"
 import Link from "next/link"
-import type { CrawlJob, ScoredPage, JobStatus, PageType } from "@/lib/crawler/types"
+import type { CrawlJob, JobStatus } from "@/lib/crawler/types"
 import { validateLlmsTxt } from "@/lib/crawler/validate"
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -20,23 +19,6 @@ interface ApiJob extends Omit<CrawlJob, "createdAt" | "updatedAt"> {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const PAGE_TYPE_CONFIG: Record<PageType, { label: string; className: string }> = {
-  doc:       { label: "Doc",       className: "bg-blue-50 text-blue-700 ring-blue-100" },
-  example:   { label: "Example",   className: "bg-emerald-50 text-emerald-700 ring-emerald-100" },
-  api:       { label: "API",       className: "bg-amber-50 text-amber-700 ring-amber-100" },
-  blog:      { label: "Blog",      className: "bg-purple-50 text-purple-700 ring-purple-100" },
-  changelog: { label: "Changelog", className: "bg-orange-50 text-orange-700 ring-orange-100" },
-  about:     { label: "About",     className: "bg-slate-50 text-slate-600 ring-slate-100" },
-  product:   { label: "Product",   className: "bg-pink-50 text-pink-700 ring-pink-100" },
-  pricing:   { label: "Pricing",   className: "bg-indigo-50 text-indigo-700 ring-indigo-100" },
-  support:   { label: "Support",   className: "bg-cyan-50 text-cyan-700 ring-cyan-100" },
-  policy:    { label: "Policy",    className: "bg-zinc-50 text-zinc-500 ring-zinc-100" },
-  program:   { label: "Program",   className: "bg-teal-50 text-teal-700 ring-teal-100" },
-  news:      { label: "News",      className: "bg-yellow-50 text-yellow-700 ring-yellow-100" },
-  project:   { label: "Project",   className: "bg-violet-50 text-violet-700 ring-violet-100" },
-  other:     { label: "Other",     className: "bg-zinc-50 text-zinc-500 ring-zinc-100" },
-}
-
 const STEPS: Array<{ id: JobStatus | "done"; label: string }> = [
   { id: "crawling",   label: "Crawling pages" },
   { id: "enriching",  label: "Enriching with AI" },
@@ -44,17 +26,6 @@ const STEPS: Array<{ id: JobStatus | "done"; label: string }> = [
   { id: "assembling", label: "Assembling file" },
   { id: "complete",   label: "Complete" },
 ]
-
-// ─── Sub-components ──────────────────────────────────────────────────────────
-
-function PageTypeBadge({ type }: { type: PageType }) {
-  const cfg = PAGE_TYPE_CONFIG[type]
-  return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ring-1 ${cfg.className}`}>
-      {cfg.label}
-    </span>
-  )
-}
 
 // ─── Progress View ───────────────────────────────────────────────────────────
 
@@ -173,23 +144,10 @@ function ProgressView({ job }: { job: ApiJob }) {
 function ResultView({ job }: { job: ApiJob }) {
   const [content, setContent] = useState(job.result || "")
   const [copied, setCopied] = useState(false)
-  const [searchQuery, setSearchQuery] = useState("")
-  const [typeFilter, setTypeFilter] = useState<PageType | "all">("all")
-  const [showTypeMenu, setShowTypeMenu] = useState(false)
 
   const domain = (() => { try { return new URL(job.url).hostname } catch { return job.url } })()
   const pages = job.pages || []
   const validation = validateLlmsTxt(content)
-
-  const filteredPages = pages.filter((p) => {
-    if (p.fetchStatus !== "ok") return false
-    const matchSearch = !searchQuery ||
-      p.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.url.toLowerCase().includes(searchQuery.toLowerCase())
-    const matchType = typeFilter === "all" || p.pageType === typeFilter
-    return matchSearch && matchType
-  })
-
   const crawledCount = pages.filter((p) => p.fetchStatus === "ok").length
 
   const handleCopy = async () => {
@@ -275,110 +233,19 @@ function ResultView({ job }: { job: ApiJob }) {
         </div>
       )}
 
-      {/* Two-panel layout */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left: editor */}
-        <div className="flex-[3] flex flex-col border-r border-zinc-100 overflow-hidden min-w-0">
-          <div className="flex items-center gap-3 px-4 py-2.5 bg-zinc-50 border-b border-zinc-100 shrink-0">
-            <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest">Editor</span>
-            <span className="text-zinc-200">·</span>
-            <span className="text-[10px] text-zinc-400 font-mono">llms.txt</span>
-          </div>
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            className="flex-1 p-6 font-mono text-sm leading-[1.75] text-zinc-800 bg-white resize-none outline-none"
-            spellCheck={false}
-          />
+      {/* Editor */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex items-center gap-3 px-4 py-2.5 bg-zinc-50 border-b border-zinc-100 shrink-0">
+          <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest">Editor</span>
+          <span className="text-zinc-200">·</span>
+          <span className="text-[10px] text-zinc-400 font-mono">llms.txt</span>
         </div>
-
-        {/* Right: page explorer */}
-        <div className="flex-[2] flex flex-col overflow-hidden min-w-0 max-w-sm">
-          <div className="px-4 py-2.5 bg-zinc-50 border-b border-zinc-100 shrink-0">
-            <div className="flex items-center justify-between mb-2.5">
-              <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest">Pages</span>
-              <div className="relative">
-                <button
-                  onClick={() => setShowTypeMenu(!showTypeMenu)}
-                  className="flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-900 transition-colors font-medium"
-                >
-                  <Filter size={10} />
-                  {typeFilter === "all" ? "All types" : PAGE_TYPE_CONFIG[typeFilter].label}
-                  <ChevronDown size={10} />
-                </button>
-                {showTypeMenu && (
-                  <div className="absolute right-0 top-6 bg-white border border-zinc-200 rounded-lg shadow-lg z-10 p-1 min-w-[120px]">
-                    <button onClick={() => { setTypeFilter("all"); setShowTypeMenu(false) }}
-                      className="w-full text-left text-xs px-2 py-1.5 hover:bg-zinc-50 rounded">All</button>
-                    {(Object.keys(PAGE_TYPE_CONFIG) as PageType[]).map((t) => (
-                      <button key={t} onClick={() => { setTypeFilter(t); setShowTypeMenu(false) }}
-                        className="w-full text-left text-xs px-2 py-1.5 hover:bg-zinc-50 rounded">
-                        {PAGE_TYPE_CONFIG[t].label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="relative">
-              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
-              <input
-                type="text"
-                placeholder="Search pages…"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-7 pr-3 py-1.5 text-xs bg-white border border-zinc-200 rounded-lg outline-none focus:border-zinc-400 transition-colors placeholder-zinc-400"
-              />
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto">
-            {filteredPages.length === 0 ? (
-              <div className="px-4 py-8 text-center text-xs text-zinc-400">No pages match</div>
-            ) : (
-              filteredPages.map((page) => {
-                const isIncluded = page.score >= 50
-                return (
-                  <div
-                    key={page.url}
-                    className={`flex items-start gap-3 px-4 py-3 border-b border-zinc-50 group ${!isIncluded ? "opacity-50" : ""}`}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 mb-0.5">
-                        <span className="text-xs font-medium text-zinc-900 truncate">{page.title}</span>
-                        <PageTypeBadge type={page.pageType} />
-                        {page.mdUrl && (
-                          <span className="text-[9px] font-mono text-emerald-600 bg-emerald-50 px-1 rounded ring-1 ring-emerald-100">.md</span>
-                        )}
-                      </div>
-                      {page.description && (
-                        <p className="text-[10px] text-zinc-500 truncate leading-snug">{page.description}</p>
-                      )}
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <a
-                          href={page.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-[10px] text-zinc-400 hover:text-zinc-600 font-mono truncate flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          {page.url.replace(/^https?:\/\//, "").slice(0, 50)}
-                          <ExternalLink size={9} />
-                        </a>
-                        <span className="text-[10px] text-zinc-300 ml-auto font-mono">score: {page.score}</span>
-                      </div>
-                    </div>
-                  </div>
-                )
-              })
-            )}
-          </div>
-
-          <div className="px-4 py-3 border-t border-zinc-100 shrink-0">
-            <div className="text-[10px] text-zinc-400 text-center">
-              {pages.filter(p => p.score >= 50).length} included · {pages.filter(p => p.score >= 30 && p.score < 50).length} optional · {pages.filter(p => p.score < 30).length} excluded
-            </div>
-          </div>
-        </div>
+        <textarea
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          className="flex-1 p-6 font-mono text-sm leading-[1.75] text-zinc-800 bg-white resize-none outline-none"
+          spellCheck={false}
+        />
       </div>
     </div>
   )
