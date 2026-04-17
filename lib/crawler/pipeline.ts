@@ -1,4 +1,4 @@
-import { fetchRobots, isAllowed } from "./robots"
+import { fetchRobots, isAllowed, hasFullDisallow } from "./robots"
 import { fetchSitemapUrls } from "./sitemap"
 import { fetchPage } from "./fetchPage"
 import { extractMetadata, extractSiteName } from "./extract"
@@ -29,6 +29,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
 
     // Fetch robots.txt
     const robots = await fetchRobots(baseUrl)
+    const robotsFullBlock = hasFullDisallow(robots.disallowed)
 
     // Seed queue with sitemap URLs
     const sitemapSources =
@@ -262,7 +263,10 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     updateJob(jobId, { status: "assembling" })
 
     const preamble = await generateSitePreamble(siteName, genre, primary, optional)
-    const result = assembleFile(siteName, primary, optional, summary, preamble)
+    const robotsNotice = robotsFullBlock
+      ? "Note: This site's robots.txt disallows all crawling (Disallow: /). Only the homepage could be indexed; the full site structure may not be represented here."
+      : undefined
+    const result = assembleFile(siteName, primary, optional, summary, preamble, robotsNotice)
 
     const status = failed > 0 && failed >= crawled * 0.5 ? "partial" : "complete"
 

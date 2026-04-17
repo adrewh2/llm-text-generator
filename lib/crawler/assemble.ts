@@ -6,6 +6,7 @@ export function assembleFile(
   optional: ScoredPage[],
   summary?: string,
   preamble?: string,
+  robotsNotice?: string,
 ): string {
   const lines: string[] = []
 
@@ -19,6 +20,10 @@ export function assembleFile(
   if (preamble) {
     const clean = preamble.replace(/\r?\n/g, " ").trim()
     if (clean) lines.push(clean, "")
+  }
+
+  if (robotsNotice) {
+    lines.push(`> ⚠️ ${robotsNotice}`, "")
   }
 
   const { sections, overflow } = groupBySection(primary)
