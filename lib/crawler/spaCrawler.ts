@@ -34,11 +34,25 @@ export class SpaBrowser {
   private browser: Browser | null = null
 
   async init(): Promise<void> {
-    const puppeteer = await import("puppeteer")
-    this.browser = await puppeteer.default.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-    })
+    try {
+      if (process.env.VERCEL) {
+        const chromium = await import("@sparticuz/chromium")
+        const puppeteer = await import("puppeteer-core")
+        this.browser = await puppeteer.default.launch({
+          args: chromium.default.args,
+          executablePath: await chromium.default.executablePath(),
+          headless: true,
+        })
+      } else {
+        const puppeteer = await import("puppeteer")
+        this.browser = await puppeteer.default.launch({
+          headless: true,
+          args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+        })
+      }
+    } catch {
+      this.browser = null
+    }
   }
 
   async fetchPage(url: string): Promise<{ html: string; ok: boolean }> {

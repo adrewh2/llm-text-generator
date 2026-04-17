@@ -55,14 +55,14 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       }
     }
 
-    updateJob(jobId, {
+    await updateJob(jobId, {
       progress: { discovered: discoveredUrls.size, crawled: 0, failed: 0 },
     })
 
     // Fetch homepage with plain HTTP first to detect SPA
     const homepageFetch = await fetchPage(baseUrl)
     if (!homepageFetch.ok || !homepageFetch.html) {
-      updateJob(jobId, {
+      await updateJob(jobId, {
         status: "failed",
         error: `Failed to fetch homepage: ${homepageFetch.error || "unknown error"}`,
       })
@@ -135,7 +135,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     console.log(`[pipeline] queue after capping+ranking: ${queue.length} urls`)
     queue.slice(0, 5).forEach(q => console.log(`  ${q.url}`))
 
-    updateJob(jobId, {
+    await updateJob(jobId, {
       progress: { discovered: discoveredUrls.size, crawled, failed },
     })
 
@@ -193,7 +193,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
           }
         }
 
-        updateJob(jobId, { progress: { discovered: discoveredUrls.size, crawled, failed } })
+        await updateJob(jobId, { progress: { discovered: discoveredUrls.size, crawled, failed } })
       }
     }
 
@@ -215,10 +215,10 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       })
 
     // LLM enrichment: classify pages and generate missing descriptions
-    updateJob(jobId, { status: "enriching", genre, siteName })
+    await updateJob(jobId, { status: "enriching", genre, siteName })
     const enrichment = await llmEnrichPages(successful, siteName, genre)
 
-    updateJob(jobId, { status: "scoring" })
+    await updateJob(jobId, { status: "scoring" })
 
     // Derive blockquote summary from homepage description
     const summary =
@@ -238,7 +238,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       return true
     })
 
-    updateJob(jobId, { status: "assembling" })
+    await updateJob(jobId, { status: "assembling" })
 
     const preamble = await generateSitePreamble(siteName, genre, primary, optional)
     const robotsNotice = robotsFullBlock
@@ -248,7 +248,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
 
     const status = failed > 0 && failed >= crawled * 0.5 ? "partial" : "complete"
 
-    updateJob(jobId, {
+    await updateJob(jobId, {
       status,
       result,
       pages: dedupedSections,
@@ -257,7 +257,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unexpected error"
-    updateJob(jobId, { status: "failed", error: message })
+    await updateJob(jobId, { status: "failed", error: message })
   } finally {
     await spaBrowser.close()
   }
@@ -277,8 +277,8 @@ function urlPriority(url: string): number {
   }
 }
 
-function setStatus(jobId: string, status: string) {
-  updateJob(jobId, { status: status as never })
+async function setStatus(jobId: string, status: string) {
+  await updateJob(jobId, { status: status as never })
 }
 
 function delay(ms: number): Promise<void> {

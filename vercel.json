@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "app/api/jobs/route.ts": {
+      "maxDuration": 300,
+      "memory": 2048
+    }
+  }
+}
