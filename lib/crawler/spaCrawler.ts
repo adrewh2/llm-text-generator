@@ -6,14 +6,23 @@ import { normalizeUrl, isSameDomain, shouldSkipUrl } from "./url"
  * bot-challenge page — i.e. there's no meaningful server-rendered content.
  */
 export function isSpaHtml(html: string, bodyExcerpt: string): boolean {
+  const textLen = bodyExcerpt.trim().length
+
+  // Large HTML payload but almost no extractable text → SPA shell or bot challenge
+  // This is the most reliable signal — check it first regardless of framework
+  if (html.length > 5000 && textLen < 100) return true
+
+  // Framework signals only matter if there's also minimal server-rendered text.
+  // Sites with substantial text (>300 chars) are SSR even if they use Angular/React.
+  if (textLen > 300) return false
+
   // Angular / Vue mount indicators
   if (/\bng-app\b|\bng-view\b|\bdata-ng-app\b/.test(html)) return true
   // React mount indicators
   if (/\bdata-reactroot\b|\bdata-react-helmet\b/.test(html)) return true
   // Unrendered template syntax (Angular/Vue bindings still in source)
   if (/\{\{[^}]{1,60}\}\}/.test(html)) return true
-  // Large HTML payload but almost no extractable text → SPA shell or bot challenge
-  if (html.length > 5000 && bodyExcerpt.trim().length < 100) return true
+
   return false
 }
 

@@ -10,7 +10,7 @@ export interface FetchResult {
 export async function fetchPage(url: string): Promise<FetchResult> {
   try {
     const res = await fetch(url, {
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(8000),
       headers: {
         "User-Agent": "LlmsTxtGenerator/1.0 (+https://llmstxtgenerator.com/about/crawler)",
         Accept: "text/html,application/xhtml+xml",

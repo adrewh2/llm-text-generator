@@ -142,67 +142,47 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     // Prioritize high-value paths before marketing pages
     queue.sort((a, b) => urlPriority(b.url) - urlPriority(a.url))
 
-    // BFS with concurrency
+    // Worker pool: each worker grabs the next URL as soon as it finishes,
+    // no waiting for batch siblings. Safe in JS because sync code is atomic.
     let queueIdx = 0
-    while (crawled < MAX_PAGES && queueIdx < queue.length) {
-      const batch: Array<{ url: string; depth: number }> = []
-      while (batch.length < CONCURRENCY && queueIdx < queue.length && crawled + batch.length < MAX_PAGES) {
-        const item = queue[queueIdx++]
-        if (!visited.has(item.url)) batch.push(item)
-      }
-      if (batch.length === 0) continue
+    const worker = async (): Promise<void> => {
+      while (crawled < MAX_PAGES) {
+        let item: { url: string; depth: number } | undefined
+        while (queueIdx < queue.length) {
+          const candidate = queue[queueIdx++]
+          if (!visited.has(candidate.url)) { item = candidate; break }
+        }
+        if (!item) break
+        visited.add(item.url)
 
-      // SPA: reduce concurrency to avoid overwhelming the browser
-      const effectiveConcurrency = isSpa ? 1 : batch.length
-      const activeBatch = batch.slice(0, effectiveConcurrency)
+        const { url, depth } = item
+        if (!isSpa) await delay(POLITENESS_DELAY_MS + Math.random() * 100)
 
-      await Promise.all(
-        activeBatch.map(async ({ url, depth }) => {
-          if (visited.has(url)) return
-          visited.add(url)
+        let html: string | null = null
+        let links: string[] = []
+        let mdUrlResolved: string | null = null
 
-          if (!isSpa) await delay(POLITENESS_DELAY_MS + Math.random() * 200)
-
-          let html: string | null = null
-          let links: string[] = []
-          let mdUrlResolved: string | null = null
-
-          if (isSpa) {
-            const result = await spaBrowser.fetchPageWithLinks(url, baseUrl)
-            if (result.ok) {
-              html = result.html
-              links = result.links
-            }
-          } else {
-            const [result, mdUrlResult] = await Promise.all([
-              fetchPage(url),
-              probeMarkdown(url),
-            ])
-            if (result.ok && result.html) {
-              html = result.html
-              links = extractLinksFromHtml(result.html, baseUrl)
-            }
-            mdUrlResolved = mdUrlResult
+        if (isSpa) {
+          const result = await spaBrowser.fetchPageWithLinks(url, baseUrl)
+          if (result.ok) { html = result.html; links = result.links }
+        } else {
+          const [result, mdUrlResult] = await Promise.all([fetchPage(url), probeMarkdown(url)])
+          if (result.ok && result.html) {
+            html = result.html
+            links = extractLinksFromHtml(result.html, baseUrl)
           }
+          mdUrlResolved = mdUrlResult
+        }
 
-          if (!html) {
-            failed++
-            pages.push({
-              url,
-              title: urlToLabel(url),
-              headings: [],
-              fetchStatus: "error",
-              descriptionProvenance: "none",
-            })
-            return
-          }
-
+        if (!html) {
+          failed++
+          pages.push({ url, title: urlToLabel(url), headings: [], fetchStatus: "error", descriptionProvenance: "none" })
+        } else {
           const meta = extractMetadata(url, html)
           const mdUrl = isSpa ? await probeMarkdown(url) : mdUrlResolved
           pages.push({ ...meta, mdUrl: mdUrl || undefined, fetchStatus: "ok" })
           crawled++
 
-          // Discover links at this depth
           if (depth < MAX_DEPTH) {
             for (const link of links) {
               if (!discoveredUrls.has(link) && isAllowed(link, robots.disallowed) && !shouldSkipUrl(link)) {
@@ -211,20 +191,13 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
               }
             }
           }
-        })
-      )
-
-      // Re-queue any batch items not yet processed (SPA serial mode)
-      if (isSpa && batch.length > effectiveConcurrency) {
-        for (const item of batch.slice(effectiveConcurrency)) {
-          if (!visited.has(item.url)) queue.splice(queueIdx, 0, item)
         }
-      }
 
-      updateJob(jobId, {
-        progress: { discovered: discoveredUrls.size, crawled, failed },
-      })
+        updateJob(jobId, { progress: { discovered: discoveredUrls.size, crawled, failed } })
+      }
     }
+
+    await Promise.all(Array.from({ length: isSpa ? 1 : CONCURRENCY }, () => worker()))
 
     // Detect genre + site name
     const genre = detectGenre(homepageHtml, [...discoveredUrls])
