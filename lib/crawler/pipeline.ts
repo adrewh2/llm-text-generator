@@ -1,23 +1,27 @@
-import { fetchRobots, isAllowed } from "./robots"
+import { fetchRobots, isAllowed, hasFullDisallow } from "./robots"
 import { fetchSitemapUrls } from "./sitemap"
 import { fetchPage } from "./fetchPage"
 import { extractMetadata, extractSiteName } from "./extract"
 import { probeMarkdown } from "./markdownProbe"
 import { extractLinksFromHtml } from "./discover"
+import { isSpaHtml, SpaBrowser } from "./spaCrawler"
 import { scorePages } from "./score"
+import { llmEnrichPages, generateSitePreamble, rankCandidateUrls } from "./llmEnrich"
 import { assignSections, filterAndSelectPages } from "./group"
 import { assembleFile } from "./assemble"
 import { detectGenre } from "./genre"
-import { normalizeUrl, isSameDomain, shouldSkipUrl } from "./url"
+import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix } from "./url"
 import { updateJob } from "../store"
 import type { ExtractedPage } from "./types"
 
 const MAX_PAGES = 25
 const MAX_DEPTH = 2
-const CONCURRENCY = 3
-const POLITENESS_DELAY_MS = 600
+const CONCURRENCY = 5
+const POLITENESS_DELAY_MS = 300
 
 export async function runCrawlPipeline(jobId: string, targetUrl: string): Promise<void> {
+  const spaBrowser = new SpaBrowser()
+
   try {
     await setStatus(jobId, "crawling")
 
@@ -25,6 +29,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
 
     // Fetch robots.txt
     const robots = await fetchRobots(baseUrl)
+    const robotsFullBlock = hasFullDisallow(robots.disallowed)
 
     // Seed queue with sitemap URLs
     const sitemapSources =
@@ -54,7 +59,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       progress: { discovered: discoveredUrls.size, crawled: 0, failed: 0 },
     })
 
-    // Crawl homepage first (required for genre detection and site name)
+    // Fetch homepage with plain HTTP first to detect SPA
     const homepageFetch = await fetchPage(baseUrl)
     if (!homepageFetch.ok || !homepageFetch.html) {
       updateJob(jobId, {
@@ -64,10 +69,34 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       return
     }
 
-    const homepageHtml = homepageFetch.html
-    const homepageMeta = extractMetadata(baseUrl, homepageHtml)
-    const homepageMdUrl = await probeMarkdown(baseUrl)
+    const rawHomepageHtml = homepageFetch.html
+    const rawHomepageMeta = extractMetadata(baseUrl, rawHomepageHtml)
 
+    // Detect SPA / bot-challenge page — if so, use Puppeteer for the whole crawl
+    const isSpa = isSpaHtml(rawHomepageHtml, rawHomepageMeta.bodyExcerpt || "")
+    console.log(`[pipeline] isSpa=${isSpa} bodyExcerptLen=${rawHomepageMeta.bodyExcerpt?.length ?? 0} htmlLen=${rawHomepageHtml.length}`)
+    if (isSpa) await spaBrowser.init()
+
+    // Get real homepage content
+    let homepageHtml = rawHomepageHtml
+    let homepageMeta = rawHomepageMeta
+    if (isSpa) {
+      const rendered = await spaBrowser.fetchPageWithLinks(baseUrl, baseUrl)
+      console.log(`[pipeline] SPA rendered ok=${rendered.ok} links=${rendered.links.length}`)
+      if (rendered.ok) {
+        homepageHtml = rendered.html
+        homepageMeta = extractMetadata(baseUrl, homepageHtml)
+        // Seed queue with rendered links
+        for (const link of rendered.links) {
+          if (!discoveredUrls.has(link) && isAllowed(link, robots.disallowed)) {
+            discoveredUrls.add(link)
+            queue.push({ url: link, depth: 1 })
+          }
+        }
+      }
+    }
+
+    const [homepageMdUrl] = await Promise.all([probeMarkdown(baseUrl)])
     const pages: ExtractedPage[] = [
       { ...homepageMeta, mdUrl: homepageMdUrl || undefined, fetchStatus: "ok" },
     ]
@@ -76,8 +105,8 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     let failed = 0
     const visited = new Set<string>([baseUrl])
 
-    // Discover navigation links from homepage if sitemap was sparse
-    if (queue.length < 5) {
+    // Discover navigation links from homepage if sitemap was sparse (non-SPA path)
+    if (!isSpa && queue.length < 5) {
       const navLinks = extractLinksFromHtml(homepageHtml, baseUrl)
       for (const link of navLinks) {
         if (!discoveredUrls.has(link) && isAllowed(link, robots.disallowed)) {
@@ -87,51 +116,74 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       }
     }
 
+    // Cap URLs per path prefix to prevent content-heavy sites from flooding the queue
+    const cappedUrls = capByPathPrefix(queue.map((q) => q.url), 5)
+    const cappedSet = new Set(cappedUrls)
+    queue.splice(0, queue.length, ...queue.filter((q) => cappedSet.has(q.url)))
+
+    // LLM ranking: intelligently select the most valuable URLs to crawl
+    const siteName0 = extractSiteName(homepageHtml, new URL(baseUrl).hostname)
+    const homepageExcerpt = homepageMeta.bodyExcerpt || ""
+    const rankedUrls = await rankCandidateUrls(
+      queue.map((q) => q.url),
+      siteName0,
+      homepageExcerpt,
+    )
+    const rankedSet = new Set(rankedUrls)
+    queue.splice(0, queue.length, ...queue.filter((q) => rankedSet.has(q.url)))
+
+    console.log(`[pipeline] queue after capping+ranking: ${queue.length} urls`)
+    queue.slice(0, 5).forEach(q => console.log(`  ${q.url}`))
+
     updateJob(jobId, {
       progress: { discovered: discoveredUrls.size, crawled, failed },
     })
 
-    // Prioritize high-value paths (docs, api, examples) before marketing pages
+    // Prioritize high-value paths before marketing pages
     queue.sort((a, b) => urlPriority(b.url) - urlPriority(a.url))
 
-    // BFS with concurrency
+    // Worker pool: each worker grabs the next URL as soon as it finishes,
+    // no waiting for batch siblings. Safe in JS because sync code is atomic.
     let queueIdx = 0
-    while (crawled < MAX_PAGES && queueIdx < queue.length) {
-      const batch: Array<{ url: string; depth: number }> = []
-      while (batch.length < CONCURRENCY && queueIdx < queue.length && crawled + batch.length < MAX_PAGES) {
-        const item = queue[queueIdx++]
-        if (!visited.has(item.url)) batch.push(item)
-      }
-      if (batch.length === 0) continue
+    const worker = async (): Promise<void> => {
+      while (crawled < MAX_PAGES) {
+        let item: { url: string; depth: number } | undefined
+        while (queueIdx < queue.length) {
+          const candidate = queue[queueIdx++]
+          if (!visited.has(candidate.url)) { item = candidate; break }
+        }
+        if (!item) break
+        visited.add(item.url)
 
-      await Promise.all(
-        batch.map(async ({ url, depth }) => {
-          if (visited.has(url)) return
-          visited.add(url)
+        const { url, depth } = item
+        if (!isSpa) await delay(POLITENESS_DELAY_MS + Math.random() * 100)
 
-          await delay(POLITENESS_DELAY_MS + Math.random() * 200)
+        let html: string | null = null
+        let links: string[] = []
+        let mdUrlResolved: string | null = null
 
-          const result = await fetchPage(url)
-          if (!result.ok || !result.html) {
-            failed++
-            pages.push({
-              url,
-              title: urlToLabel(url),
-              headings: [],
-              fetchStatus: result.error === "Timeout" ? "timeout" : "error",
-              descriptionProvenance: "none",
-            })
-            return
+        if (isSpa) {
+          const result = await spaBrowser.fetchPageWithLinks(url, baseUrl)
+          if (result.ok) { html = result.html; links = result.links }
+        } else {
+          const [result, mdUrlResult] = await Promise.all([fetchPage(url), probeMarkdown(url)])
+          if (result.ok && result.html) {
+            html = result.html
+            links = extractLinksFromHtml(result.html, baseUrl)
           }
+          mdUrlResolved = mdUrlResult
+        }
 
-          const meta = extractMetadata(url, result.html)
-          const mdUrl = await probeMarkdown(url)
+        if (!html) {
+          failed++
+          pages.push({ url, title: urlToLabel(url), headings: [], fetchStatus: "error", descriptionProvenance: "none" })
+        } else {
+          const meta = extractMetadata(url, html)
+          const mdUrl = isSpa ? await probeMarkdown(url) : mdUrlResolved
           pages.push({ ...meta, mdUrl: mdUrl || undefined, fetchStatus: "ok" })
           crawled++
 
-          // Discover links at this depth
           if (depth < MAX_DEPTH) {
-            const links = extractLinksFromHtml(result.html, baseUrl)
             for (const link of links) {
               if (!discoveredUrls.has(link) && isAllowed(link, robots.disallowed) && !shouldSkipUrl(link)) {
                 discoveredUrls.add(link)
@@ -139,27 +191,18 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
               }
             }
           }
-        })
-      )
+        }
 
-      updateJob(jobId, {
-        progress: { discovered: discoveredUrls.size, crawled, failed },
-      })
+        updateJob(jobId, { progress: { discovered: discoveredUrls.size, crawled, failed } })
+      }
     }
+
+    await Promise.all(Array.from({ length: isSpa ? 1 : CONCURRENCY }, () => worker()))
 
     // Detect genre + site name
     const genre = detectGenre(homepageHtml, [...discoveredUrls])
     const siteName = extractSiteName(homepageHtml, new URL(baseUrl).hostname)
 
-    updateJob(jobId, { status: "scoring", genre, siteName })
-
-    // Derive blockquote summary from homepage description
-    const summary =
-      homepageMeta.description && homepageMeta.descriptionProvenance !== "none"
-        ? homepageMeta.description
-        : undefined
-
-    // Score, group, filter
     // Strip pages whose description exactly matches the generic homepage tagline
     const homepageDesc = homepageMeta.description?.trim()
     const successful = pages
@@ -171,26 +214,52 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
         return p
       })
 
-    const scored = scorePages(successful, genre)
+    // LLM enrichment: classify pages and generate missing descriptions
+    updateJob(jobId, { status: "enriching", genre, siteName })
+    const enrichment = await llmEnrichPages(successful, siteName, genre)
+
+    updateJob(jobId, { status: "scoring" })
+
+    // Derive blockquote summary from homepage description
+    const summary =
+      homepageMeta.description && homepageMeta.descriptionProvenance !== "none"
+        ? homepageMeta.description
+        : undefined
+
+    const scored = scorePages(successful, genre, enrichment)
     const withSections = assignSections(scored, genre)
-    const { primary, optional } = filterAndSelectPages(withSections)
+    const { primary, optional } = filterAndSelectPages(withSections, baseUrl)
+
+    // Deduplicate for display
+    const seenUrls = new Set<string>()
+    const dedupedSections = withSections.filter((p) => {
+      if (seenUrls.has(p.url)) return false
+      seenUrls.add(p.url)
+      return true
+    })
 
     updateJob(jobId, { status: "assembling" })
 
-    const result = assembleFile(siteName, primary, optional, summary)
+    const preamble = await generateSitePreamble(siteName, genre, primary, optional)
+    const robotsNotice = robotsFullBlock
+      ? "Note: This site's robots.txt disallows all crawling (Disallow: /). Only the homepage could be indexed; the full site structure may not be represented here."
+      : undefined
+    const result = assembleFile(siteName, primary, optional, summary, preamble, robotsNotice)
 
     const status = failed > 0 && failed >= crawled * 0.5 ? "partial" : "complete"
 
     updateJob(jobId, {
       status,
       result,
-      pages: withSections,
+      pages: dedupedSections,
       genre,
       siteName,
     })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unexpected error"
     updateJob(jobId, { status: "failed", error: message })
+  } finally {
+    await spaBrowser.close()
   }
 }
 

@@ -92,3 +92,8 @@ export function isAllowed(url: string, disallowed: string[]): boolean {
     return false
   }
 }
+
+/** Returns true if robots.txt contains a blanket Disallow: / rule. */
+export function hasFullDisallow(disallowed: string[]): boolean {
+  return disallowed.includes("/")
+}

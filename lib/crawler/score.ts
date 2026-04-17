@@ -1,36 +1,50 @@
 import type { ExtractedPage, ScoredPage, SiteGenre, PageType } from "./types"
 import { classifyPage } from "./classify"
+import type { EnrichmentMap } from "./llmEnrich"
 
-const GENRE_MODIFIERS: Record<SiteGenre, Partial<Record<PageType, number>>> = {
-  developer_docs: { doc: 20, api: 20, example: 20, blog: -15, about: -25 },
-  ecommerce: { product: 25, pricing: 25, support: 15, policy: 15, changelog: -20 },
-  personal_site: { about: 20, project: 20, blog: 20, other: 10 },
-  institutional: { program: 20, about: 20, support: 15, policy: 15, changelog: -15 },
-  blog_publication: { blog: 20, about: 10, support: 10, policy: -10 },
-  generic: {},
-}
-
-export function scorePages(pages: ExtractedPage[], genre: SiteGenre): ScoredPage[] {
+export function scorePages(
+  pages: ExtractedPage[],
+  genre: SiteGenre,
+  enrichment?: EnrichmentMap
+): ScoredPage[] {
   return pages.map((page) => {
-    const pageType = classifyPage(page.url, page.title)
+    const enriched = enrichment?.get(page.url)
+    const pageType: PageType = enriched?.pageType ?? classifyPage(page.url, page.title)
+
+    // Prefer LLM-generated description over extracted one
+    const description =
+      enriched?.description && enriched.description !== page.description
+        ? enriched.description
+        : page.description
+    const descriptionProvenance =
+      enriched?.description && enriched.description !== page.description
+        ? enriched.descriptionProvenance
+        : page.descriptionProvenance
+
+    const enrichedPage = { ...page, description, descriptionProvenance }
+
     let score = 0
 
-    if (page.description && page.descriptionProvenance !== "none") score += 25
-    if (page.mdUrl) score += 20
-    if (page.descriptionProvenance === "json_ld") score += 15
-    if (page.headings.length > 0) score += 10
-    if (page.bodyExcerpt && page.bodyExcerpt.length > 200) score += 10
+    // Content quality signals
+    if (enrichedPage.description && enrichedPage.descriptionProvenance !== "none") score += 25
+    if (enrichedPage.mdUrl) score += 20
+    if (enrichedPage.descriptionProvenance === "json_ld") score += 10
+    if (enrichedPage.headings.length > 0) score += 10
+    if (enrichedPage.bodyExcerpt && enrichedPage.bodyExcerpt.length > 200) score += 10
 
-    // Penalties
+    // URL quality penalties
     if (/[?&]page=\d+|\/page\/\d+/.test(page.url)) score -= 15
     if (/\/(print|export)\//.test(page.url)) score -= 20
     if (/\/(tag|category|archive|author)\//.test(page.url)) score -= 25
 
-    // Genre modifier
-    score += GENRE_MODIFIERS[genre]?.[pageType] ?? 0
+    // LLM importance is the primary relevance signal
+    if (enriched?.importance !== undefined) {
+      // Map 1–10 to a -25…+25 modifier
+      score += Math.round((enriched.importance - 5.5) * 5)
+    }
 
-    const isOptional = score >= 30 && score < 50
+    const isOptional = score >= 15 && score < 50
 
-    return { ...page, pageType, score, isOptional }
+    return { ...enrichedPage, pageType, score, isOptional, llmSection: enriched?.section }
   })
 }

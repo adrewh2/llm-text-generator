@@ -28,10 +28,18 @@ export default function LandingPage() {
   const [error, setError] = useState("")
   const router = useRouter()
 
+  const normalizeInput = (raw: string): string => {
+    const trimmed = raw.trim()
+    if (!trimmed) return trimmed
+    if (/^https?:\/\//i.test(trimmed)) return trimmed
+    return `https://${trimmed}`
+  }
+
   const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!url.trim() || loading) return
 
+    const normalized = normalizeInput(url)
     setError("")
     setLoading(true)
 
@@ -39,19 +47,20 @@ export default function LandingPage() {
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim() }),
+        body: JSON.stringify({ url: normalized }),
       })
       const data = await res.json()
 
       if (!res.ok) {
         setError(data.error || "Something went wrong")
+        setLoading(false)
         return
       }
 
       router.push(`/jobs/${data.job_id}`)
+      // leave loading=true — component unmounts on redirect
     } catch {
       setError("Network error — please try again")
-    } finally {
       setLoading(false)
     }
   }
@@ -123,7 +132,7 @@ export default function LandingPage() {
             >
               <Globe size={15} className="ml-2.5 text-zinc-400 shrink-0" />
               <input
-                type="url"
+                type="text"
                 value={url}
                 onChange={(e) => { setUrl(e.target.value); setError("") }}
                 onFocus={() => setFocused(true)}
@@ -193,9 +202,9 @@ export default function LandingPage() {
           </p>
           <div className="grid md:grid-cols-3 gap-10">
             {[
-              { icon: Globe, step: "01", title: "Crawl", desc: "We traverse your site via sitemap.xml, robots.txt, and link discovery — extracting titles, descriptions, and page structure." },
-              { icon: Zap, step: "02", title: "Analyze", desc: "Pages are classified, scored by relevance, and grouped into meaningful sections based on your site's genre." },
-              { icon: CheckCircle, step: "03", title: "Generate", desc: "A spec-compliant llms.txt is produced. Edit it inline, validate the output, and download the file." },
+              { icon: Globe, step: "01", title: "Crawl", desc: "We traverse your site via sitemap.xml, robots.txt, and link discovery — respecting robots.txt rules and prioritizing high-value pages like docs and API references." },
+              { icon: Zap, step: "02", title: "Enrich", desc: "An LLM classifies each page, assigns it to a meaningful section, scores its importance, and writes a concise description — all tuned to your site's domain." },
+              { icon: CheckCircle, step: "03", title: "Generate", desc: "A spec-compliant llms.txt is assembled with a generated preamble, importance-ordered sections, and an Optional section for supplementary pages. Edit, validate, and download." },
             ].map(({ icon: Icon, step, title, desc }) => (
               <div key={step} className="group">
                 <div className="text-[10px] font-mono text-zinc-300 mb-4 tracking-widest">{step}</div>
@@ -212,9 +221,9 @@ export default function LandingPage() {
               <RefreshCw size={14} className="text-zinc-600" />
             </div>
             <div>
-              <h4 className="font-semibold text-zinc-900 text-sm mb-1">100% deterministic</h4>
+              <h4 className="font-semibold text-zinc-900 text-sm mb-1">Works for any website</h4>
               <p className="text-sm text-zinc-500 leading-relaxed">
-                No LLM magic for structure — discovery, scoring, section grouping, and file assembly all use deterministic rules. Fast, predictable, and explainable.
+                Not just developer docs — the LLM adapts section names and descriptions to your site's domain, whether it's a recipe blog, a law firm, or a SaaS product.
               </p>
             </div>
           </div>

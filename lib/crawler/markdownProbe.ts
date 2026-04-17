@@ -5,7 +5,7 @@ export async function probeMarkdown(url: string): Promise<string | null> {
     try {
       const res = await fetch(mdUrl, {
         method: "HEAD",
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(2000),
         headers: { "User-Agent": "LlmsTxtGenerator/1.0" },
       })
 
@@ -56,7 +56,7 @@ function getMdCandidates(url: string): string[] {
 async function verifyMarkdownContent(url: string): Promise<boolean> {
   try {
     const res = await fetch(url, {
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(2000),
       headers: {
         "User-Agent": "LlmsTxtGenerator/1.0",
         Range: "bytes=0-4095",
