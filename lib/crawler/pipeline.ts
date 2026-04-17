@@ -16,8 +16,8 @@ import type { ExtractedPage } from "./types"
 
 const MAX_PAGES = 25
 const MAX_DEPTH = 2
-const CONCURRENCY = 3
-const POLITENESS_DELAY_MS = 600
+const CONCURRENCY = 5
+const POLITENESS_DELAY_MS = 300
 
 export async function runCrawlPipeline(jobId: string, targetUrl: string): Promise<void> {
   const spaBrowser = new SpaBrowser()
@@ -96,7 +96,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       }
     }
 
-    const homepageMdUrl = await probeMarkdown(baseUrl)
+    const [homepageMdUrl] = await Promise.all([probeMarkdown(baseUrl)])
     const pages: ExtractedPage[] = [
       { ...homepageMeta, mdUrl: homepageMdUrl || undefined, fetchStatus: "ok" },
     ]
@@ -165,6 +165,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
 
           let html: string | null = null
           let links: string[] = []
+          let mdUrlResolved: string | null = null
 
           if (isSpa) {
             const result = await spaBrowser.fetchPageWithLinks(url, baseUrl)
@@ -173,11 +174,15 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
               links = result.links
             }
           } else {
-            const result = await fetchPage(url)
+            const [result, mdUrlResult] = await Promise.all([
+              fetchPage(url),
+              probeMarkdown(url),
+            ])
             if (result.ok && result.html) {
               html = result.html
               links = extractLinksFromHtml(result.html, baseUrl)
             }
+            mdUrlResolved = mdUrlResult
           }
 
           if (!html) {
@@ -193,7 +198,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
           }
 
           const meta = extractMetadata(url, html)
-          const mdUrl = await probeMarkdown(url)
+          const mdUrl = isSpa ? await probeMarkdown(url) : mdUrlResolved
           pages.push({ ...meta, mdUrl: mdUrl || undefined, fetchStatus: "ok" })
           crawled++
 
