@@ -4,6 +4,7 @@ import { fetchPage } from "./fetchPage"
 import { extractMetadata, extractSiteName } from "./extract"
 import { probeMarkdown } from "./markdownProbe"
 import { extractLinksFromHtml } from "./discover"
+import { isSpaHtml, extractLinksFromRenderedPage } from "./spaCrawler"
 import { scorePages } from "./score"
 import { llmEnrichPages, generateSitePreamble, rankCandidateUrls } from "./llmEnrich"
 import { assignSections, filterAndSelectPages } from "./group"
@@ -77,9 +78,20 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     let failed = 0
     const visited = new Set<string>([baseUrl])
 
-    // Discover navigation links from homepage if sitemap was sparse
-    if (queue.length < 5) {
-      const navLinks = extractLinksFromHtml(homepageHtml, baseUrl)
+    // Detect SPA: if the page has no server-rendered content/links, use Puppeteer
+    let effectiveHomepageHtml = homepageHtml
+    const isSpa = isSpaHtml(homepageHtml, homepageMeta.bodyExcerpt || "")
+
+    if (isSpa || queue.length < 5) {
+      let navLinks: string[]
+      if (isSpa) {
+        // Render the page in a headless browser to get JS-rendered links
+        const rendered = await extractLinksFromRenderedPage(baseUrl, baseUrl)
+        effectiveHomepageHtml = rendered.html
+        navLinks = rendered.links
+      } else {
+        navLinks = extractLinksFromHtml(homepageHtml, baseUrl)
+      }
       for (const link of navLinks) {
         if (!discoveredUrls.has(link) && isAllowed(link, robots.disallowed)) {
           discoveredUrls.add(link)
@@ -95,7 +107,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
 
     // LLM ranking: intelligently select the most valuable URLs to crawl
     // (runs when the candidate list is large enough to warrant filtering)
-    const siteName0 = extractSiteName(homepageHtml, new URL(baseUrl).hostname)
+    const siteName0 = extractSiteName(effectiveHomepageHtml, new URL(baseUrl).hostname)
     const homepageExcerpt = homepageMeta.bodyExcerpt || ""
     const rankedUrls = await rankCandidateUrls(
       queue.map((q) => q.url),
@@ -165,9 +177,9 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       })
     }
 
-    // Detect genre + site name
-    const genre = detectGenre(homepageHtml, [...discoveredUrls])
-    const siteName = extractSiteName(homepageHtml, new URL(baseUrl).hostname)
+    // Detect genre + site name (use rendered HTML if available)
+    const genre = detectGenre(effectiveHomepageHtml, [...discoveredUrls])
+    const siteName = extractSiteName(effectiveHomepageHtml, new URL(baseUrl).hostname)
 
     // Strip pages whose description exactly matches the generic homepage tagline
     const homepageDesc = homepageMeta.description?.trim()

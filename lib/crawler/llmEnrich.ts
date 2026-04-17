@@ -179,6 +179,50 @@ Return only the preamble text, nothing else.`
 }
 
 /**
+ * For sparse/SPA sites: asks the LLM to suggest likely structural URL paths
+ * based on the site name, genre, and homepage metadata.
+ */
+export async function suggestStructuralUrls(
+  siteName: string,
+  genre: SiteGenre,
+  homepageDescription: string,
+  baseUrl: string,
+): Promise<string[]> {
+  const client = getClient()
+  if (!client) return []
+
+  const genreLabel = genre.replace(/_/g, " ")
+
+  const prompt = `You are helping discover pages on "${siteName}" (a ${genreLabel} site).
+
+Homepage description: ${homepageDescription.slice(0, 300)}
+Base URL: ${baseUrl}
+
+We couldn't find links by parsing the homepage HTML (it's likely a JavaScript SPA). Suggest up to 15 URL paths that are likely to exist on this site and would be useful for an LLM to understand it — things like /about, /pricing, /how-it-works, /for-businesses, /help, /blog, /features, /api, /developers, /careers, etc.
+
+Respond ONLY with a JSON array of path strings (starting with /), e.g. ["/about", "/pricing", "/help"]`
+
+  try {
+    const message = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 256,
+      messages: [{ role: "user", content: prompt }],
+    })
+
+    const text = message.content[0].type === "text" ? message.content[0].text : ""
+    const match = text.match(/\[[\s\S]*?\]/)
+    if (!match) return []
+
+    const paths: unknown[] = JSON.parse(match[0])
+    return paths
+      .filter((p): p is string => typeof p === "string" && p.startsWith("/"))
+      .slice(0, 15)
+  } catch {
+    return []
+  }
+}
+
+/**
  * Given a large list of candidate URLs, returns a filtered subset worth crawling.
  * Focuses on structural pages useful for LLM tooling — not individual content items.
  */
