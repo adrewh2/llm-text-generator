@@ -5,11 +5,11 @@ import { extractMetadata, extractSiteName } from "./extract"
 import { probeMarkdown } from "./markdownProbe"
 import { extractLinksFromHtml } from "./discover"
 import { scorePages } from "./score"
-import { llmEnrichPages, generateSitePreamble } from "./llmEnrich"
+import { llmEnrichPages, generateSitePreamble, rankCandidateUrls } from "./llmEnrich"
 import { assignSections, filterAndSelectPages } from "./group"
 import { assembleFile } from "./assemble"
 import { detectGenre } from "./genre"
-import { normalizeUrl, isSameDomain, shouldSkipUrl } from "./url"
+import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix } from "./url"
 import { updateJob } from "../store"
 import type { ExtractedPage } from "./types"
 
@@ -87,6 +87,23 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
         }
       }
     }
+
+    // Cap URLs per path prefix to prevent content-heavy sites from flooding the queue
+    const cappedUrls = capByPathPrefix(queue.map((q) => q.url), 5)
+    const cappedSet = new Set(cappedUrls)
+    queue.splice(0, queue.length, ...queue.filter((q) => cappedSet.has(q.url)))
+
+    // LLM ranking: intelligently select the most valuable URLs to crawl
+    // (runs when the candidate list is large enough to warrant filtering)
+    const siteName0 = extractSiteName(homepageHtml, new URL(baseUrl).hostname)
+    const homepageExcerpt = homepageMeta.bodyExcerpt || ""
+    const rankedUrls = await rankCandidateUrls(
+      queue.map((q) => q.url),
+      siteName0,
+      homepageExcerpt,
+    )
+    const rankedSet = new Set(rankedUrls)
+    queue.splice(0, queue.length, ...queue.filter((q) => rankedSet.has(q.url)))
 
     updateJob(jobId, {
       progress: { discovered: discoveredUrls.size, crawled, failed },

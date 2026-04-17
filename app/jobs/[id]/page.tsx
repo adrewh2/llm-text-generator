@@ -80,7 +80,7 @@ function ProgressView({ job }: { job: ApiJob }) {
                   </p>
                   {status === "active" && step.id === "crawling" && (
                     <p className="text-xs text-zinc-500 mt-0.5">
-                      {job.progress.crawled} / {Math.min(job.progress.discovered, 25)} pages crawled
+                      {job.progress.crawled} / 25 pages crawled
                     </p>
                   )}
                 </div>

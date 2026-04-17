@@ -177,3 +177,60 @@ Return only the preamble text, nothing else.`
     return undefined
   }
 }
+
+/**
+ * Given a large list of candidate URLs, returns a filtered subset worth crawling.
+ * Focuses on structural pages useful for LLM tooling — not individual content items.
+ */
+export async function rankCandidateUrls(
+  candidates: string[],
+  siteName: string,
+  homepageExcerpt: string,
+  maxKeep = 60,
+): Promise<string[]> {
+  const client = getClient()
+  if (!client || candidates.length === 0) return candidates
+
+  // If the list is small enough, no need for LLM ranking
+  if (candidates.length <= maxKeep) return candidates
+
+  const numbered = candidates.map((u, i) => `${i + 1}. ${u}`).join("\n")
+
+  const prompt = `You are selecting URLs to crawl for an llms.txt file for "${siteName}".
+
+The goal of llms.txt is to help LLMs understand what a site offers. We want structural pages that explain the site's purpose, features, capabilities, or content — NOT individual content items.
+
+Good to crawl: documentation, guides, API references, feature pages, about/company pages, pricing, support, examples, tutorials, changelogs.
+Skip: individual videos, articles, products, user profiles, search results, login pages, or anything that's one of millions of similar items.
+
+Homepage context:
+${homepageExcerpt.slice(0, 400)}
+
+From the ${candidates.length} candidate URLs below, return a JSON array of up to ${maxKeep} 1-based indices for the most valuable pages to crawl. Prefer pages that give structural insight into the site.
+
+URLs:
+${numbered}
+
+Respond ONLY with a JSON array of integers, e.g. [1, 3, 7, 12]`
+
+  try {
+    const message = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 512,
+      messages: [{ role: "user", content: prompt }],
+    })
+
+    const text = message.content[0].type === "text" ? message.content[0].text : ""
+    const match = text.match(/\[[\d,\s]+\]/)
+    if (!match) return candidates.slice(0, maxKeep)
+
+    const indices: number[] = JSON.parse(match[0])
+    const kept = indices
+      .filter((i) => typeof i === "number" && i >= 1 && i <= candidates.length)
+      .map((i) => candidates[i - 1])
+
+    return kept.length > 0 ? kept : candidates.slice(0, maxKeep)
+  } catch {
+    return candidates.slice(0, maxKeep)
+  }
+}
