@@ -131,7 +131,8 @@ export function extractSiteName(html: string, hostname: string): string {
   const $ = load(html)
 
   const ogSite = $('meta[property="og:site_name"]').attr("content")?.trim()
-  if (ogSite) return ogSite
+  // Skip og:site_name if it looks like a hostname (e.g. "fastht.ml", "example.com")
+  if (ogSite && !looksLikeHostname(ogSite, hostname)) return ogSite
 
   const appName = $('meta[name="application-name"]').attr("content")?.trim()
   if (appName) return appName
@@ -161,6 +162,18 @@ export function extractSiteName(html: string, hostname: string): string {
     .split(".")[0]
     .replace(/-/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function looksLikeHostname(value: string, hostname: string): boolean {
+  const norm = value.toLowerCase()
+  const host = hostname.toLowerCase().replace(/^www\./, "")
+  // Exact hostname match
+  if (norm === host || norm === `www.${host}`) return true
+  // Matches the base domain (e.g. "fastht.ml" for hostname "www.fastht.ml")
+  if (host.endsWith(norm) || norm.endsWith(host)) return true
+  // Looks like a bare domain: letters/hyphens, dot, 2-6 char TLD
+  if (/^[\w-]+\.[a-z]{2,6}$/.test(norm)) return true
+  return false
 }
 
 function resolveUrl(url: string, base: string): string {

@@ -153,15 +153,31 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
 
     updateJob(jobId, { status: "scoring", genre, siteName })
 
+    // Derive blockquote summary from homepage description
+    const summary =
+      homepageMeta.description && homepageMeta.descriptionProvenance !== "none"
+        ? homepageMeta.description
+        : undefined
+
     // Score, group, filter
-    const successful = pages.filter((p) => p.fetchStatus === "ok")
+    // Strip pages whose description exactly matches the generic homepage tagline
+    const homepageDesc = homepageMeta.description?.trim()
+    const successful = pages
+      .filter((p) => p.fetchStatus === "ok")
+      .map((p) => {
+        if (homepageDesc && p.url !== baseUrl && p.description?.trim() === homepageDesc) {
+          return { ...p, description: undefined, descriptionProvenance: "none" as const }
+        }
+        return p
+      })
+
     const scored = scorePages(successful, genre)
     const withSections = assignSections(scored, genre)
     const { primary, optional } = filterAndSelectPages(withSections)
 
     updateJob(jobId, { status: "assembling" })
 
-    const result = assembleFile(siteName, primary, optional)
+    const result = assembleFile(siteName, primary, optional, summary)
 
     const status = failed > 0 && failed >= crawled * 0.5 ? "partial" : "complete"
 

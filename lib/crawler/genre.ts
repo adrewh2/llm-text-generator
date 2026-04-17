@@ -16,10 +16,13 @@ export function detectGenre(homepageHtml: string, urls: string[]): SiteGenre {
   ].length
   if (ecommerceScore >= 2) return "ecommerce"
 
-  // Developer docs
+  // Developer docs — check URL ratio first (most reliable signal)
+  const docsUrlCount = urls.filter((u) => /\/docs\/|\/api\/|\/reference\/|\/guide\//.test(u)).length
+  if (docsUrlCount > urls.length * 0.2) return "developer_docs"
+
   const docsTextPatterns = [
-    /\bdocumentation\b|\bapi reference\b|\bsdk\b|\bgetting started\b|\bquickstart\b/,
-    /npm install|pip install|brew install|import |require\(/,
+    /\bdocumentation\b|\bapi reference\b|\bsdk\b|\bgetting started\b|\bquickstart\b|\binstallation\b/,
+    /npm install|pip install|brew install|`import |`require\(|yarn add/,
   ]
   const docsUrlPatterns = [/\/docs\/|\/api\/|\/reference\/|\/guide\//]
   const docsScore = [
@@ -34,7 +37,10 @@ export function detectGenre(homepageHtml: string, urls: string[]): SiteGenre {
     /\bpublished\b|\bauthor\b|\bbyline\b|\bsubscribe\b|\bnewsletter\b/,
     /\bread more\b|\bfull article\b|\bmin read\b/,
   ].filter((p) => p.test(text)).length
-  if (blogUrlCount > urls.length * 0.25 || blogScore >= 2) return "blog_publication"
+  // Only classify as blog if there's no significant docs presence
+  if ((blogUrlCount > urls.length * 0.25 || blogScore >= 2) && docsUrlCount < urls.length * 0.1) {
+    return "blog_publication"
+  }
 
   // Institutional
   const institutionalScore = [
