@@ -26,9 +26,10 @@ class PipelineTimeoutError extends Error {
 }
 
 export async function runCrawlPipeline(jobId: string, targetUrl: string): Promise<void> {
-  const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new PipelineTimeoutError()), PIPELINE_BUDGET_MS),
-  )
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new PipelineTimeoutError()), PIPELINE_BUDGET_MS)
+  })
   try {
     await Promise.race([runPipelineInner(jobId, targetUrl), timeout])
   } catch (err: unknown) {
@@ -37,6 +38,13 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     }
     // runPipelineInner already writes its own failure states; nothing
     // else to do here.
+  } finally {
+    // Clear the timer once the race has settled. Without this, the
+    // timer keeps the Fluid Compute instance's event loop alive for
+    // up to 270s past a quick completion — the eventual rejection is
+    // a no-op on an already-settled Promise.race, but the handle
+    // reference pins the closure and delays GC.
+    if (timeoutHandle) clearTimeout(timeoutHandle)
   }
 }
 

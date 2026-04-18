@@ -24,8 +24,15 @@ function getClient(): SupabaseClient {
 
 export async function createJob(id: string, url: string): Promise<void> {
   const supabase = getClient()
-  // Ensure the pages row exists before inserting the job (FK requires it)
-  await supabase.from("pages").upsert({ url }, { onConflict: "url", ignoreDuplicates: true })
+  // Ensure the pages row exists before inserting the job (FK requires
+  // it). Always set monitored=true — a user kicking off a fresh crawl
+  // implies they care about this URL again, and the monitor sweeper
+  // may have turned it off recently. We leave last_requested_at alone
+  // here; the caller bumps it via bumpPageRequest.
+  await supabase.from("pages").upsert(
+    { url, monitored: true },
+    { onConflict: "url" },
+  )
   const { error } = await supabase.from("jobs").insert({
     id,
     page_url: url,
@@ -308,10 +315,10 @@ export async function getUserPages(
     .in("url", pageUrls)
 
   // Fetch the latest job per page_url regardless of status. A row can
-  // land on the dashboard before any of its jobs is terminal (POST
-  // /api/p upserts user_requests on every branch), and a monitor-
+  // land on the dashboard before any of its jobs is terminal — POST
+  // /api/p upserts user_requests on every branch — and a monitor-
   // triggered re-crawl should surface as "Refreshing…" against the
-  // running job — both need the non-terminal status to reach the UI.
+  // running job, so both need the non-terminal status to reach the UI.
   const { data: jobs } = await supabase
     .from("jobs")
     .select("id, page_url, status, created_at")
@@ -319,7 +326,8 @@ export async function getUserPages(
     .order("created_at", { ascending: false })
 
   const pageMap = new Map((pages ?? []).map((p) => [p.url, p]))
-  // Keep only most recent job per page_url
+  // Keep the most recent job per page_url. `jobs` was ordered by
+  // created_at DESC, so the first one seen per url wins the slot.
   const jobMap = new Map<string, { id: string; status: string }>()
   for (const j of (jobs ?? [])) {
     if (!jobMap.has(j.page_url)) jobMap.set(j.page_url, { id: j.id, status: j.status })

@@ -40,7 +40,17 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
       const res = await fetch(`/api/pages?offset=${pages.length}&limit=${pageSize}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data: { pages: WirePage[]; hasMore: boolean } = await res.json()
-      setPages((prev) => [...prev, ...data.pages])
+      // Dedupe by pageUrl on append. The dashboard is ordered by
+      // created_at DESC, and `upsertUserRequest` bumps that timestamp
+      // on re-submission — if the user re-asks about an already-loaded
+      // URL in another tab between paginations, the offset-based fetch
+      // can legitimately return a row we already have. Prefer the
+      // already-displayed copy (older in the list) over a duplicate.
+      setPages((prev) => {
+        const seen = new Set(prev.map((p) => p.pageUrl))
+        const fresh = data.pages.filter((p) => !seen.has(p.pageUrl))
+        return [...prev, ...fresh]
+      })
       setHasMore(data.hasMore)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load more")

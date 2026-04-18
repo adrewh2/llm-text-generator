@@ -192,7 +192,9 @@ export function extractSiteNameCandidates(
     try {
       const data = JSON.parse($(scripts[i]).html() || "{}")
       const name = data.name || data.publisher?.name
-      if (typeof name === "string" && name.trim()) jsonLdName = name.trim()
+      // Cap at 300 chars — a malicious site with a 10 KB name field
+      // would otherwise balloon the llmSiteName prompt.
+      if (typeof name === "string" && name.trim()) jsonLdName = name.trim().slice(0, 300)
     } catch {}
   }
 

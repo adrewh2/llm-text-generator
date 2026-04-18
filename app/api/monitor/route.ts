@@ -17,6 +17,7 @@ import { randomUUID, timingSafeEqual } from "crypto"
 import { waitUntil } from "@vercel/functions"
 import {
   createJob,
+  getActiveJobForUrl,
   getMonitoredPages,
   recordMonitorCheck,
   sweepStaleMonitoredPages,
@@ -87,8 +88,16 @@ export async function GET(req: NextRequest) {
  * Queue-boundary: create a job row and spawn the crawl pipeline.
  * Today this runs in-process via waitUntil. Replacing the body with
  * an enqueue call (Vercel Queues / Inngest) is where scaling goes.
+ *
+ * Attaches to an in-flight job when one already exists for the URL
+ * (prior cron tick still running, or a user submission in the same
+ * window) — otherwise the cron would cheerfully kick off a duplicate
+ * crawl and both workers would fight over `pages.result`.
  */
 async function dispatchRecrawl(pageUrl: string): Promise<string> {
+  const active = await getActiveJobForUrl(pageUrl)
+  if (active) return active.jobId
+
   const jobId = randomUUID()
   await createJob(jobId, pageUrl)
   waitUntil(runCrawlPipeline(jobId, pageUrl))

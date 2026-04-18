@@ -8,7 +8,7 @@ The design is tight on purpose. Every URL produces one shared, globally-visible 
 
 ### Design principles
 
-1. **LLM does the judgment calls; deterministic code does the plumbing.** Every decision that requires taste is the LLM's: which of the discovered URLs are worth spending the 25-page budget on (`rankCandidateUrls`), how important each crawled page is on a 1–10 scale (`enrichBatch`), what section to put it in, what its description should say if the page didn't provide one, and the site's intro paragraph (`generateSitePreamble`). The deterministic layer handles the mechanics around those calls: robots/sitemap discovery, per-URL fetch + metadata extraction, SSRF validation, a base numeric score from structural signals (description present, `.md` sibling, JSON-LD, body length, URL-shape penalties), deduplication, and final markdown assembly.
+1. **LLM does the judgment calls; deterministic code does the plumbing.** Every decision that requires taste is the LLM's: which of the discovered URLs are worth spending the 25-page budget on (`rankCandidateUrls`), how important each crawled page is on a 1–10 scale (`enrichBatch`), what section to put it in, what its description should say if the page didn't provide one, the site's brand name (`llmSiteName`), and the site's intro paragraph (`generateSitePreamble`). The deterministic layer handles the mechanics around those calls: robots/sitemap discovery, per-URL fetch + metadata extraction, SSRF validation, a base numeric score from structural signals (description present, `.md` sibling, JSON-LD, body length, URL-shape penalties), deduplication, and final markdown assembly.
 
    Where the two layers meet — selection and section assignment — the LLM's output is the dominant input. The importance rating folds into the score as `(importance − 5.5) × 5`, contributing roughly ±23 on top of base signals that cap around +75; that's large enough to flip pages across the primary (≥ 50) and optional (15–49) thresholds. Section names come from the LLM's suggestion first, with path-regex inference only as a fallback when the LLM didn't supply one. So calling inclusion or grouping "deterministic" would be wrong — the thresholds and grouping rules are deterministic, but the numbers and hints they operate on are not.
 2. **Globally-shared result per URL.** One `llms.txt` per site, reused across all users. No per-user copies; no per-user mutations. Users get their own *history* (what they've asked for), but the *result* is shared.
@@ -194,7 +194,7 @@ Worker pool (5 non-SPA, 1 SPA): fetch + extract metadata for each URL
    - per-page: HTML fetch + cheerio parse → ExtractedPage
    - probe for a .md sibling (HEAD, then lightweight GET)
    - discover more links if depth < MAX_DEPTH (2)
-   - hard caps: MAX_PAGES = 25, PIPELINE_BUDGET_MS = 270s
+   - hard caps: crawler.MAX_PAGES = 25, crawler.PIPELINE_BUDGET_MS = 270s
   ↓
 genre detection (developer_docs, ecommerce, personal_site, institutional,
                  blog_publication, generic) from homepage + URL patterns
@@ -223,7 +223,7 @@ terminal status:
    otherwise                   → complete
 ```
 
-The pipeline raced against a 270-second timeout by `Promise.race`. If the timeout wins, the job is flipped to `failed` with a clean error; otherwise the inner function has already written its own success/failure state.
+The pipeline runs under a 270-second timeout enforced via `Promise.race`. If the timeout wins, the job is flipped to `failed` with a clean error; otherwise the inner function has already written its own success/failure state.
 
 ### SPA handling
 
@@ -253,21 +253,21 @@ Thresholds: primary ≥ 50, optional 15–49, excluded < 15. These are starting 
 
 ## 7. LLM Usage
 
-Three call sites, all pinned to `claude-haiku-4-5-20251001`:
+Four call sites, all pinned to `claude-haiku-4-5-20251001`:
 
 1. **`rankCandidateUrls`** — given up to `llm.RANK_MAX_KEEP` (120) URLs plus the site name and homepage excerpt, return the list re-ordered by likely value. Skipped entirely for candidate lists below `llm.RANK_SKIP_BELOW` (10).
 2. **`enrichBatch`** (called from `llmEnrichPages`) — batches of `llm.ENRICH_BATCH_SIZE` (20) pages, run in parallel. Per page, returns `pageType`, `importance` (1–10), a `section` label, and a `description` (the LLM rewrites even when the page had one — replacement is kept only if it differs; provenance is then flipped to `llm`). The `section` value is the *primary* signal for primary pages (score ≥ 50); the path-regex inference runs only when the LLM didn't return a usable section. Pages with score < 50 are always placed into `Optional` regardless of what the LLM suggested.
-3. **`generateSitePreamble`** — given site name, genre, and the selected pages, returns a 1–3 sentence intro paragraph for the assembled file. If this call fails, the file is assembled without a preamble rather than faking one.
+3. **`llmSiteName`** — given deterministic candidates (`og:site_name`, `application-name`, JSON-LD `name`, `<title>`, first `<h1>`) plus the hostname, returns a clean 1–4-word brand name. Falls back to the deterministic result when the LLM is unavailable or returns something unusable (see `cleanSiteName` in `siteName.ts`).
+4. **`generateSitePreamble`** — given site name, genre, and the selected pages, returns a 1–3 sentence intro paragraph for the assembled file. If this call fails, the file is assembled without a preamble rather than faking one.
 
 ### What the LLM does *not* decide
 
-- **Site name.** Extracted from `og:site_name`, `<h1>`, or hostname.
 - **Page type enum.** The LLM returns one, but anything outside the allowed set (doc/api/example/blog/changelog/about/product/pricing/support/policy/program/news/project/other) falls back to the deterministic `classifyPage()` regex in `classify.ts`.
 - **Final link ordering inside a section.** Deterministic sort by score descending.
 - **File assembly.** `assembleFile()` is pure text construction given its inputs.
 - **Whether a page ends up in Optional.** Pages with a final score < 50 are always Optional (or excluded if < 15), regardless of what section the LLM suggested.
 
-Everything else — which URLs get crawled under the 25-page cap, how each page's importance shifts its score, the section name for primary pages, descriptions where the extractor found none, the site preamble — is LLM-driven. Two runs on the same site can produce different outputs.
+Everything else — which URLs get crawled under the 25-page cap, how each page's importance shifts its score, the section name for primary pages, descriptions where the extractor found none, the site brand name, the site preamble — is LLM-driven. Two runs on the same site can produce different outputs.
 
 ### Prompt injection defenses
 
@@ -378,7 +378,7 @@ All tunable constants are in `/lib/config.ts`, grouped by domain. This is the si
 - **`monitor`** — `STALE_DAYS: 5`, `BATCH_SIZE: 200`, `SAME_HOST_DELAY_MS: 400`.
 - **`ui`** — `POLL_INTERVAL_MS: 1_500`, `MAX_POLL_FAILURES: 5`, `LIVE_MIN_STEP_DWELL_MS: 1_200`, `SIM_STEP_DURATIONS_MS: [1800, 1600, 1400, 1200]`, `MONITOR_STATUS_TICK_MS: 10_000`, `JOB_CACHE_MAX: 30`.
 
-Secrets (Anthropic API key, Supabase service-role key, CRON_SECRET) come from environment variables via `lib/env.ts`'s `requireEnv()` — absent keys fail fast at first use rather than producing misleading runtime errors.
+Secrets come from environment variables: `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_URL`, and `SUPABASE_ANON_KEY` are loaded via `lib/env.ts`'s `requireEnv()` so a missing value fails fast; `ANTHROPIC_API_KEY` and `CRON_SECRET` are read directly with `process.env` because their call sites already handle absence (LLM features degrade to deterministic fallbacks, and the cron endpoint fails closed).
 
 ---
 
@@ -424,7 +424,7 @@ The following are out of scope for the current implementation. Each is plausible
 
 - **User-editable overrides.** No override versioning, no persistent per-user edits to the generated file, no merge policy on re-crawl. Users who want custom output copy the result and edit it locally.
 - **Update delivery.** No webhook HMAC, no email notifications, no hosted-file endpoint at `/files/:id/llms.txt`. Users are expected to host their own `/llms.txt`.
-- **Locale policy controls.** The crawler treats alternate-locale URLs like any other URL; the LLM tends to filter them naturally via the ranking step. Surface controls (prefer x-default, target one locale) would go in `crawler.ts` config.
+- **Locale policy controls.** The crawler treats alternate-locale URLs like any other URL; the LLM tends to filter them naturally via the ranking step. Surface controls (prefer x-default, target one locale) would go in the `crawler` section of `lib/config.ts`.
 - **Crawl-delay enforcement.** `robots.txt` disallows are honored; `Crawl-delay` values are read but not enforced beyond the global `POLITENESS_DELAY_MS`.
 - **Per-domain global throttle.** No cross-job coordination, so a popular URL burst could send 5 concurrent workers at the same target. Mitigated in practice by the 24-hour cache hit on repeat requests.
 - **Test suite.** No unit, integration, or snapshot tests are wired up. This is the first thing to add if the project moves beyond a take-home demo.
@@ -469,7 +469,7 @@ The following are out of scope for the current implementation. Each is plausible
   store.ts                           Supabase queries (service-role)
   /supabase
     client.ts                        browser client (anon)
-    server.ts                        server client (service-role)
+    server.ts                        server SSR client (anon + cookie handling)
   /crawler
     pipeline.ts                      orchestration
     types.ts                         ExtractedPage, ScoredPage, CrawlJob, JobStatus
@@ -480,7 +480,8 @@ The following are out of scope for the current implementation. Each is plausible
     sitemap.ts                       sitemap fetch + parse
     spaCrawler.ts                    Puppeteer + SPA detection
     discover.ts                      link extraction from HTML
-    extract.ts                       metadata extraction + site name
+    extract.ts                       per-page metadata extraction
+    siteName.ts                      site-name cleaning + hostname fallback
     markdownProbe.ts                 .md variant probing
     url.ts                           normalize, capByPathPrefix, skip heuristics
     urlLabel.ts                      URL → human-ish filename for zip export
