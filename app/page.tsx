@@ -40,6 +40,10 @@ export default function LandingPage() {
     const trimmed = raw.trim()
     if (!trimmed) return trimmed
     if (/^https?:\/\//i.test(trimmed)) return trimmed
+    // If the user typed any other scheme (file:, ftp:, javascript:, …)
+    // leave it alone so the guard below can flag it. Only prepend
+    // https when there's clearly no scheme.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed
     return `https://${trimmed}`
   }
 
@@ -48,6 +52,10 @@ export default function LandingPage() {
     if (!url.trim() || loading) return
 
     const normalized = normalizeInput(url)
+    if (!/^https?:\/\//i.test(normalized)) {
+      setError("Only http:// and https:// URLs are supported.")
+      return
+    }
     setError("")
     setLoading(true)
 

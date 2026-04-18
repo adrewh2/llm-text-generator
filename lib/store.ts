@@ -151,7 +151,9 @@ export async function getActiveJobForUrl(url: string): Promise<{ jobId: string }
 
 // ─── Monitoring ──────────────────────────────────────────────────────────────
 
-export async function getMonitoredPages(): Promise<Array<{
+export async function getMonitoredPages(
+  { offset = 0, limit = 200 }: { offset?: number; limit?: number } = {},
+): Promise<Array<{
   url: string
   contentSignature: string | null
 }>> {
@@ -160,6 +162,8 @@ export async function getMonitoredPages(): Promise<Array<{
     .from("pages")
     .select("url, content_signature")
     .eq("monitored", true)
+    .order("last_checked_at", { ascending: true, nullsFirst: true })
+    .range(offset, offset + limit - 1)
   return (data ?? []).map((p) => ({
     url: p.url,
     contentSignature: p.content_signature ?? null,
@@ -234,11 +238,16 @@ export interface UserPageEntry {
 }
 
 /**
- * Fetch every page in a user's history along with its current llms.txt
- * result. Used by /api/pages/download to build the zip archive. Rows
- * without a result (crawl not yet complete) are skipped.
+ * Fetch pages in a user's history along with their current llms.txt
+ * results. Used by /api/pages/download to build the zip archive. Rows
+ * without a result (crawl not yet complete) are skipped. `limit`
+ * caps the query so a user with thousands of pages can't OOM the
+ * download function.
  */
-export async function getUserPageResults(userId: string): Promise<Array<{
+export async function getUserPageResults(
+  userId: string,
+  { limit = 500 }: { limit?: number } = {},
+): Promise<Array<{
   url: string
   siteName: string | null
   result: string
@@ -249,6 +258,7 @@ export async function getUserPageResults(userId: string): Promise<Array<{
     .select("page_url, created_at")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
+    .limit(limit)
   if (!requests || requests.length === 0) return []
 
   const urls = requests.map((r) => r.page_url)

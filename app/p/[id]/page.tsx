@@ -36,6 +36,22 @@ function cacheSetJob(id: string, job: ApiJob): void {
 }
 let cachedSignedIn: boolean | null = null
 
+// Shared browser client listens for auth state so that when a user
+// signs out, the cached job metadata is cleared. Prevents a past
+// user's history from bleeding into a new session on a shared device.
+if (typeof window !== "undefined") {
+  const supabase = createClient()
+  supabase.auth.onAuthStateChange((event) => {
+    if (event === "SIGNED_OUT") {
+      jobCache.clear()
+      cachedSignedIn = false
+    }
+    if (event === "SIGNED_IN") {
+      cachedSignedIn = true
+    }
+  })
+}
+
 function PageViewInner() {
   const params = useParams<{ id: string }>()
   const searchParams = useSearchParams()

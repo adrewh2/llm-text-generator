@@ -6,12 +6,18 @@ import { urlToFilename } from "@/lib/crawler/urlLabel"
 
 export const runtime = "nodejs"
 
+// Upper bound on how many results we load into memory for a single
+// zip. Each result is small (a few KB) but 10K × 3KB × 2 (zip copy)
+// would blow a serverless function's memory. 500 is generous for a
+// user who's been using the product for months.
+const MAX_DOWNLOAD_ENTRIES = 500
+
 export async function GET() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return new NextResponse(null, { status: 401 })
 
-  const pages = await getUserPageResults(user.id)
+  const pages = await getUserPageResults(user.id, { limit: MAX_DOWNLOAD_ENTRIES })
   if (pages.length === 0) {
     return NextResponse.json({ error: "No completed pages to download" }, { status: 404 })
   }
