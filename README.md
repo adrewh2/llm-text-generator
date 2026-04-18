@@ -29,8 +29,11 @@ Paste a URL, the app discovers pages (sitemap → robots → link-following, wit
 - Row-Level Security on every table; service-role key used only server-side
 
 **Monitoring**
-- Opt-in per-page toggle on the dashboard
-- Hourly Vercel Cron computes a signature over each monitored site's sitemap + homepage; on mismatch, a full re-crawl is dispatched and the `pages.result` is refreshed
+- Every generated page is monitored by default — the dashboard shows a passive "Checked X ago" status
+- Two refresh paths:
+  - **Hourly cron** — Vercel Cron computes a signature over each monitored site's sitemap + homepage; on mismatch, a full re-crawl is dispatched and `pages.result` is refreshed
+  - **Request-driven TTL** — when anyone requests a URL whose cached result is older than 24h (`PAGE_TTL_HOURS` in `lib/crawler/config.ts`), a fresh crawl is triggered on the spot. The old `pages.result` is preserved until the new one completes, so no request is ever served an empty result.
+- Cron also sweeps: pages not requested in the last 5 days are quietly un-monitored
 - Detection (inline) and re-crawl fan-out (`waitUntil` today) are separated so a durable queue (Vercel Queues / Inngest) can drop in at the fan-out boundary later — see `app/api/monitor/route.ts`
 
 ## Running locally
@@ -58,6 +61,18 @@ Open <http://localhost:3000>.
 ### Supabase setup
 
 The full schema (tables, RLS, policies) is in [`supabase/migration.sql`](./supabase/migration.sql). Run it once against a fresh Supabase project.
+
+### Running the monitor cron locally
+
+[Vercel Cron](https://vercel.com/docs/cron-jobs) only fires on production deployments, so on `localhost` the scheduled hourly check never runs — `pages.last_checked_at` only advances when a crawl completes (which stamps it) or when you hit the endpoint manually:
+
+```bash
+source .env
+curl -s -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/monitor | jq
+# { "checked": N, "changed": M, "swept": K, "recrawls": [...], "errors": [] }
+```
+
+Each manual call does the full cron cycle: sweep stale pages → compute signatures → dispatch re-crawls on change. The auth header is the same `CRON_SECRET` Vercel injects in production, so this is an exact equivalent.
 
 ## Architecture
 
