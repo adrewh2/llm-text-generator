@@ -39,17 +39,6 @@ export default function LandingClient({ initialUser }: { initialUser: User | nul
     // Auto-focus the URL input on every load — this page is a
     // single-input tool and typing should start without a click.
     inputRef.current?.focus()
-    // Strip a stray ?focus=1 param from bookmarked / shared URLs — we
-    // auto-focus unconditionally, so the param has no effect anyway.
-    const params = new URLSearchParams(window.location.search)
-    if (params.get("focus") === "1") {
-      params.delete("focus")
-      const qs = params.toString()
-      window.history.replaceState(
-        null, "",
-        `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash}`,
-      )
-    }
   }, [])
 
   const formatRetry = (seconds: number): string => {
