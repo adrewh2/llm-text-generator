@@ -38,7 +38,7 @@ In approximate order of which gives first as usage grows:
 | Component | Current | What breaks at scale | Fix |
 |---|---|---|---|
 | **Rate limiter** (`lib/rateLimit.ts`) | **Shipped.** Upstash Redis when `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` are set; in-memory fallback for local dev otherwise. | Production is covered. Local dev still uses per-instance state — fine, since the fallback is only reached without the env vars. | Open follow-up: enable Upstash `analytics` on the `Ratelimit` instance so denials are observable in a dashboard. |
-| **Crawl dispatch** (`lib/jobQueue.ts`) | **Shipped.** QStash (at-least-once, signed webhooks) when `QSTASH_TOKEN` is set; `waitUntil(runCrawlPipeline(...))` fallback otherwise. Worker lives at `/api/worker/crawl`, verified via `verifySignatureAppRouter`. | Production runs the pipeline synchronously inside the QStash-signed worker so a mid-pipeline failure is a real retry, not a stuck row. Local dev keeps the in-process path so `npm run dev` needs no publicly reachable callback. | Open follow-up: finer-grained step functions (Inngest-style) would let a partial crawl resume after the pipeline aborts, instead of restarting from scratch on retry. Not worth it at current volume. |
+| **Crawl dispatch** (`lib/jobQueue.ts`) | **Shipped + verified in production.** QStash (at-least-once, signed webhooks) when `QSTASH_TOKEN` is set; `waitUntil(runCrawlPipeline(...))` fallback otherwise. Worker lives at `/api/worker/crawl`, verified via `verifySignatureAppRouter`. Callback target is the production alias (`VERCEL_PROJECT_PRODUCTION_URL`), not the Deployment-Protection-gated per-deployment URL. | Production runs the pipeline synchronously inside the QStash-signed worker so a mid-pipeline failure is a real retry, not a stuck row. Local dev keeps the in-process path so `npm run dev` needs no publicly reachable callback. | Open follow-up: finer-grained step functions (Inngest-style) would let a partial crawl resume after the pipeline aborts, instead of restarting from scratch on retry. Not worth it at current volume. |
 | **Anthropic API rate limits** | No retry on 429/5xx from Claude; each crawl fires 3–5 calls (`rankCandidateUrls`, `enrichBatch`, `rankExternalReferences`, `llmSiteName`, `generateSitePreamble`) | At high concurrency we'll trip Haiku's per-account requests-per-minute limit. A failed call silently falls back to deterministic defaults, which is correct behaviour but quietly degrades output quality. | Wrap `client.messages.create` in a retry helper with exponential backoff (the SDK has one opt-in). Add a global LLM semaphore (e.g. max 10 concurrent calls per instance) to smooth bursts into the provider. |
 | **Puppeteer launches** | Fresh Chromium per crawl that needs SPA rendering. 2–5 s cold-start, ~500 MB memory. `SpaBrowser.close()` in `finally`. | Multiple concurrent SPA crawls on one instance OOM before they finish. The ~500 MB per browser is the hard lower bound. | Either (a) share one `SpaBrowser` across concurrent crawls with a per-page pool, or (b) offload rendering to Browserless.io / Playwright Cloud and drop the dependency. Option (b) scales further; (a) is simpler. |
 | **Supabase connection pool** | One service-role client cached per Fluid instance (`lib/store.ts:12`). PgBouncer fronts the DB on port 6543. | At many concurrent cold-start instances, PgBouncer's connection cap (varies by Supabase plan) becomes the bottleneck. Currently not a problem because instance reuse keeps the open-client count low. | Use Supabase's transaction-mode pooler endpoint — short-lived connections per query instead of one per client. Or move hot reads (`getPageByUrl`) to a read-through cache. |
@@ -70,7 +70,48 @@ Each step is independently shippable, none depends on a later one.
 
 ---
 
-## 4. What this costs in complexity
+## 4. Integration gotchas (lessons from shipping phase-2)
+
+Three real issues surfaced while wiring Upstash + QStash into Vercel
+production. Each one was low-value in isolation but the combination
+caused a stuck job that looked completely silent — POST returned 201,
+no errors in logs, no messages in the QStash console. Worth writing
+down so a future integration against the same stack doesn't rediscover
+them.
+
+- **`debugLog` was no-op in production.** The original contract was
+  "quiet in prod to avoid noise". It meant a failed `qstash.publishJSON`
+  threw cleanly into a `catch { debugLog(...) }` that produced nothing
+  visible. Fix: emit `Error` payloads at error level regardless of env;
+  keep string / object payloads dev-only (see `lib/log.ts`). Operational
+  errors should never be gated on `NODE_ENV`.
+
+- **`QSTASH_URL` is region-specific.** The `@upstash/qstash` `Client`
+  defaults its `baseUrl` to `https://qstash.upstash.io` (eu-central-1).
+  Accounts hosted elsewhere (us-east-1, ap-southeast-1, etc.) return 404
+  from that endpoint — but the SDK version we're on doesn't turn that
+  into an exception, so publishes "succeed" and drop on the floor.
+  Fix: always pass `baseUrl: process.env.QSTASH_URL` through the
+  constructor, and log a boot-time warning when `QSTASH_TOKEN` is set
+  without its sibling URL (see `lib/jobQueue.ts`). The Upstash Vercel
+  integration ships both env vars; the trap is only hitting us when
+  one is missing or forgotten.
+
+- **`VERCEL_URL` is gated by Deployment Protection.** Every deployment
+  gets a unique hostname (e.g. `llm-text-generator-giaolx9n2-aesgraph.vercel.app`)
+  and those are behind Vercel Auth out of the box. QStash callbacks
+  landed on the 401 login page. The **production alias**
+  (`llm-text-generator.vercel.app`, exposed as `VERCEL_PROJECT_PRODUCTION_URL`)
+  is publicly routable. Fix: prefer that when resolving the worker URL
+  (see `lib/jobQueue.ts` `resolveWorkerUrl`). Preview deploys still need
+  either Protection disabled or a bypass token to receive callbacks.
+
+Common thread across all three: failures were silent. Each fix includes
+observable logging so the next silent failure isn't silent.
+
+---
+
+## 5. What this costs in complexity
 
 Today's repo is a single Next.js app + one Postgres. Phase 2 adds:
 
