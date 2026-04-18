@@ -11,20 +11,20 @@ runs through before shipping. Takes about 10 minutes end-to-end.
 - `npm run dev` running on port 3000.
 - Signed-in test account available in Supabase Auth (GitHub or Google).
 
-Every section marks whether the check is ⌨️ CLI-only or 🌐 browser.
+Every section marks whether the check is **CLI** or **browser**.
 
 ---
 
 ## 1. Smoke — anon path works
 
-🌐 Open http://localhost:3000 → input autofocuses.
-🌐 Submit a URL you haven't crawled before (e.g. `https://nextjs.org`).
-🌐 Redirects to `/p/<uuid>`, `ProgressPane` renders, steps animate
+**Browser.** Open http://localhost:3000 → input autofocuses.
+**Browser.** Submit a URL you haven't crawled before (e.g. `https://nextjs.org`).
+**Browser.** Redirects to `/p/<uuid>`, `ProgressPane` renders, steps animate
    through `crawling → enriching → scoring → assembling`.
-🌐 Result pane shows a valid `llms.txt` with an "✓ Spec valid" badge
+**Browser.** Result pane shows a valid `llms.txt` with a "Spec valid" badge
    in the header. Copy + Download buttons work.
 
-⌨️ Confirm the crawl landed in the DB:
+**CLI.** Confirm the crawl landed in the DB:
 ```sql
 SELECT url, site_name, genre, jsonb_array_length(crawled_pages) AS pages
 FROM pages WHERE url ILIKE '%nextjs.org%';
@@ -32,7 +32,7 @@ FROM pages WHERE url ILIKE '%nextjs.org%';
 
 ## 2. Site-name extraction — no junk strings
 
-⌨️ Inspect `site_name` for a few well-known brands:
+**CLI.** Inspect `site_name` for a few well-known brands:
 ```sql
 SELECT url, site_name FROM pages
 ORDER BY updated_at DESC LIMIT 5;
@@ -42,17 +42,17 @@ never a concatenation like `Epic | ...With the patient at the heart...`.
 
 ## 3. External references
 
-🌐 Submit a URL whose homepage links out to a well-known spec or
+**Browser.** Submit a URL whose homepage links out to a well-known spec or
    upstream (e.g. `https://llm-text-generator.vercel.app` links to
    llmstxt.org; a React tutorial site usually links to react.dev).
-🌐 Wait for completion, view the result.
+**Browser.** Wait for completion, view the result.
 
-✅ **Pass**: the rendered output contains at least one entry whose
+**Pass**: the rendered output contains at least one entry whose
    URL is on a different hostname than the site you submitted. Links
    to bare origins render without a trailing `/` (e.g. `https://llmstxt.org`,
    not `https://llmstxt.org/`).
 
-⌨️ Sanity check — external refs should appear in `crawled_pages`:
+**CLI.** Sanity check — external refs should appear in `crawled_pages`:
 ```sql
 SELECT
   jsonb_array_elements(crawled_pages)->>'url' AS url,
@@ -66,7 +66,7 @@ site with more outbound links to validate.
 
 ## 4. Rate limiting — anon
 
-⌨️ Burn the anon bucket. Substitute a fresh unique URL each time so
+**CLI.** Burn the anon bucket. Substitute a fresh unique URL each time so
    the cache doesn't short-circuit:
 ```bash
 for i in 1 2 3 4; do
@@ -79,7 +79,7 @@ done
 First 3 should return `201` or `200` (new or cached). 4th should
 return `429` with a `Retry-After` header.
 
-⌨️ Confirm the 429 response includes `signInPrompt: true`:
+**CLI.** Confirm the 429 response includes `signInPrompt: true`:
 ```bash
 curl -s -X POST http://localhost:3000/api/p \
   -H "Content-Type: application/json" \
@@ -88,27 +88,31 @@ curl -s -X POST http://localhost:3000/api/p \
 
 ## 5. Sign-in + dashboard
 
-🌐 Click "Sign in" from the landing page, complete GitHub or Google
+**Browser.** Click "Sign in" from the landing page, complete GitHub or Google
    OAuth. Return to `/`.
-🌐 **Auth-state stability**: the top-right nav shows "Dashboard +
+**Browser.** **Auth-state stability**: the top-right nav shows "Dashboard +
    account menu" on the FIRST paint — no flash of "Sign in". (This
    was the server-side-auth fix.)
-🌐 Click "Dashboard" → see your page history, newest at top.
-🌐 Submit a URL already in your history → it jumps to the top
+**Browser.** Click "Dashboard" → see your page history, newest at top.
+**Browser.** Submit a URL already in your history → it jumps to the top
    (re-submission bumps `created_at`).
-🌐 Click a row mid-crawl → you land on `/p/<uuid>` showing live progress,
+**Browser.** Click a row mid-crawl → you land on `/p/<uuid>` showing live progress,
    NOT bounced back to `/`. The row itself shows a "Refreshing…"
    label until completion.
 
 ## 6. Zip download
 
-🌐 On `/dashboard`, click "Download" → receive a `.zip` containing one
+**Browser.** On `/dashboard`, click "Download" → receive a `.zip` containing one
    `.txt` per completed page in your history. Filenames are derived
    from the hostname (disambiguated with `-2`, `-3` suffixes on conflict).
 
 ## 7. Monitoring cron
 
-⌨️ First check — seeds signatures, no re-crawl fires:
+In production the cron runs daily at 00:00 UTC (`"0 0 * * *"` in
+`vercel.json`). Locally there's no scheduler — trigger it manually
+with the Bearer token.
+
+**CLI.** First check — seeds signatures, no re-crawl fires:
 ```bash
 source .env
 curl -s -H "Authorization: Bearer $CRON_SECRET" \
@@ -116,7 +120,7 @@ curl -s -H "Authorization: Bearer $CRON_SECRET" \
 # expect: {"checked":N,"changed":0,"swept":0,"recrawls":[],"errors":[]}
 ```
 
-⌨️ Force a change → expect re-crawls:
+**CLI.** Force a change → expect re-crawls:
 ```sql
 UPDATE pages SET content_signature = 'stale-sig' WHERE monitored = true;
 ```
@@ -128,7 +132,7 @@ curl -s -H "Authorization: Bearer $CRON_SECRET" \
 Watch the dev-server console for `[pipeline]` logs. Within ~30–60s the
 dashboard row's label flips from "Refreshing…" to "Refreshed just now".
 
-⌨️ Sweep — retire stale pages:
+**CLI.** Sweep — retire stale pages:
 ```sql
 UPDATE pages SET last_requested_at = NOW() - INTERVAL '6 days'
 WHERE url = '<a URL you don't mind retiring>';
@@ -139,7 +143,7 @@ curl -s -H "Authorization: Bearer $CRON_SECRET" \
 # expect: "swept":1 (or more)
 ```
 
-⌨️ Auth negative check:
+**CLI.** Auth negative check:
 ```bash
 curl -i http://localhost:3000/api/monitor
 # expect: HTTP/1.1 401 Unauthorized
@@ -147,7 +151,7 @@ curl -i http://localhost:3000/api/monitor
 
 ## 8. SSRF refusal
 
-⌨️ Submit a private-range URL — expect a clean 4xx/scrubbed error,
+**CLI.** Submit a private-range URL — expect a clean 4xx/scrubbed error,
    not a timeout or crash:
 ```bash
 curl -s -X POST http://localhost:3000/api/p \
@@ -168,14 +172,14 @@ curl -s -X POST http://localhost:3000/api/p \
 
 ## 9. Negative / edge cases
 
-⌨️ Invalid URL → 400:
+**CLI.** Invalid URL → 400:
 ```bash
 curl -s -X POST http://localhost:3000/api/p \
   -H "Content-Type: application/json" \
   -d '{"url":"not-a-url"}' -w "HTTP %{http_code}\n"
 ```
 
-⌨️ Too-long URL → 400:
+**CLI.** Too-long URL → 400:
 ```bash
 curl -s -X POST http://localhost:3000/api/p \
   -H "Content-Type: application/json" \
@@ -183,11 +187,11 @@ curl -s -X POST http://localhost:3000/api/p \
   -w "HTTP %{http_code}\n"
 ```
 
-🌐 Submit a site that 403s all bots (tough to predict; e.g. some
+**Browser.** Submit a site that 403s all bots (tough to predict; e.g. some
    WAF-heavy corporate sites). Expect a "This site blocked our crawler."
    error in the result page, not a hang.
 
-🌐 Submit a site whose homepage is genuinely an SPA. Expect Puppeteer
+**Browser.** Submit a site whose homepage is genuinely an SPA. Expect Puppeteer
    path to fire (dev-server logs should mention `spa` / rendered), and
    a non-trivial result.
 
