@@ -51,13 +51,10 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Resolve canonical URL. The HEAD probe runs through safeFetch so
-  // SSRF is enforced per-hop — otherwise an attacker could submit a
-  // URL that 302-redirects to an internal IP and we'd happily probe
-  // it. The redirect target often carries per-request session/OAuth
-  // tokens (e.g. Google's dsh/ifkv/osid); those expire and must not
-  // be stored as part of the cache key — strip them via our
-  // normalizer so the canonical URL is stable across re-submissions.
+  // Resolve canonical URL. safeFetch enforces SSRF per-hop on the
+  // redirect chain; normalizeUrl strips per-request session/OAuth
+  // tokens (e.g. Google's dsh/ifkv/osid) so the cache key is stable
+  // across resubmissions.
   let canonicalUrl = url.trim()
   try {
     const probe = await safeFetch(canonicalUrl, {

@@ -29,10 +29,8 @@ function cacheSetJob(id: string, job: ApiJob): void {
     jobCache.delete(oldest)
   }
 }
-// Auth listener is attached per-mount inside PageViewInner so it's
-// properly cleaned up on unmount (and on HMR reloads in dev). The
-// cache-clear on SIGNED_OUT fires for any tab currently viewing
-// /p/[id], which is the only route that reads from `jobCache`.
+// Auth listener lives inside PageViewInner so HMR and unmount clean
+// it up. SIGNED_OUT clears jobCache to prevent cross-session bleed.
 
 function PageViewInner() {
   const params = useParams<{ id: string }>()
@@ -43,18 +41,16 @@ function PageViewInner() {
   const [job, setJob] = useState<ApiJob | null>(() => (pageId ? cacheGetJob(pageId) ?? null : null))
   const [notFound, setNotFound] = useState(false)
   const [isSignedIn, setIsSignedIn] = useState(false)
-  // Start simulated progress at step 0 when the URL asks for it — otherwise
-  // a cached job (already status=complete on first fetch) briefly paints
-  // the result pane before the simulation timers get a chance to kick in.
+  // Seed at step 0 so a cached (already-complete) job doesn't flash the
+  // result pane before the simulation timers kick in.
   const [simulatedStep, setSimulatedStep] = useState<number | null>(shouldSimulate ? 0 : null)
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const simTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const simulationStarted = useRef(false)
-  // Track shouldSimulate via a ref so fetchJob's useCallback identity
-  // doesn't change when we strip ?simulate=1 from the URL. If fetchJob
-  // re-created, the parent useEffect would clean up simTimerRef and
-  // the simulation would freeze mid-flight.
+  // Ref, not state — otherwise fetchJob's useCallback identity would
+  // churn when we strip ?simulate=1 from the URL and the parent effect
+  // would clean up simTimerRef mid-simulation.
   const shouldSimulateRef = useRef(shouldSimulate)
   useEffect(() => { shouldSimulateRef.current = shouldSimulate }, [shouldSimulate])
   // Circuit breaker: after MAX_POLL_FAILURES consecutive polling

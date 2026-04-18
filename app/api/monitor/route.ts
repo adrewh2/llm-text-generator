@@ -91,14 +91,9 @@ export async function GET(req: NextRequest) {
 }
 
 /**
- * Queue-boundary: create a job row and hand the crawl off via the
- * shared `enqueueCrawl` helper — QStash in production, in-process
- * `waitUntil` as a local-dev fallback.
- *
- * Attaches to an in-flight job when one already exists for the URL
- * (prior cron tick still running, or a user submission in the same
- * window) — otherwise the cron would cheerfully kick off a duplicate
- * crawl and both workers would fight over `pages.result`.
+ * Attach to an in-flight job if one exists — avoids a duplicate
+ * crawl when a prior cron tick or a user submission is still
+ * running. Otherwise create a new job and enqueue it.
  */
 async function dispatchRecrawl(pageUrl: string): Promise<string> {
   const active = await getActiveJobForUrl(pageUrl)

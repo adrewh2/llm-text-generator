@@ -188,17 +188,12 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
       progress: { discovered: discoveredUrls.size, crawled, failed },
     })
 
-    // Politeness. When robots.txt declares a `Crawl-delay`, honor it
-    // as a shared clock across workers — the directive's stated
-    // semantics are "gap between requests to this host", which a
-    // per-worker sleep can't deliver under CONCURRENCY > 1 (all
-    // workers sleep in parallel, then fire together). Capped at
-    // MAX_CRAWL_DELAY_MS so a hostile `Crawl-delay: 99999` can't burn
-    // the entire pipeline budget on sleep.
-    //
-    // With no directive: a light per-worker sleep on the HTTP path,
-    // nothing on the browser path (browser renders pace themselves
-    // via page-load time).
+    // robots.txt Crawl-delay: gated through a shared `nextSlot`
+    // across workers because per-worker sleeps don't space requests
+    // when CONCURRENCY > 1. Capped at MAX_CRAWL_DELAY_MS so a hostile
+    // `Crawl-delay: 99999` can't eat the pipeline budget. Without a
+    // directive we fall back to per-worker politeness (HTTP only;
+    // browser renders pace themselves).
     const crawlDelayMs = robots.crawlDelay != null
       ? Math.min(Math.max(0, Math.round(robots.crawlDelay * 1000)), MAX_CRAWL_DELAY_MS)
       : null
@@ -299,11 +294,8 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
         return p
       })
 
-    // External references: homepage outbound anchors the LLM judges
-    // worth keeping (spec links, upstream docs, related projects).
-    // These flow through enrichment/scoring alongside internal pages
-    // and are fetched exactly once for metadata — we never follow
-    // links from them.
+    // External references: homepage outbound anchors, LLM-ranked,
+    // each fetched once for metadata only — never followed further.
     const externalRefs = await resolveExternalReferences(
       homepageHtml, baseUrl, siteName, homepageMeta.bodyExcerpt || "",
     )
