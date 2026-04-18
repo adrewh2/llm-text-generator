@@ -1,12 +1,15 @@
+import { safeFetch } from "./safeFetch"
+import { USER_AGENT } from "./fetchPage"
+
 export async function probeMarkdown(url: string): Promise<string | null> {
   const candidates = getMdCandidates(url)
 
   for (const mdUrl of candidates) {
     try {
-      const res = await fetch(mdUrl, {
+      const res = await safeFetch(mdUrl, {
         method: "HEAD",
         signal: AbortSignal.timeout(2000),
-        headers: { "User-Agent": "LlmsTxtGenerator/1.0" },
+        headers: { "User-Agent": USER_AGENT },
       })
 
       if (!res.ok) continue
@@ -55,10 +58,10 @@ function getMdCandidates(url: string): string[] {
 
 async function verifyMarkdownContent(url: string): Promise<boolean> {
   try {
-    const res = await fetch(url, {
+    const res = await safeFetch(url, {
       signal: AbortSignal.timeout(2000),
       headers: {
-        "User-Agent": "LlmsTxtGenerator/1.0",
+        "User-Agent": USER_AGENT,
         Range: "bytes=0-4095",
       },
     })

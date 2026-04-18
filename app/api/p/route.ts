@@ -3,6 +3,7 @@ import { randomUUID } from "crypto"
 import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, upsertUserRequest } from "@/lib/store"
 import { runCrawlPipeline } from "@/lib/crawler/pipeline"
 import { isValidHttpUrl, normalizeUrl } from "@/lib/crawler/url"
+import { safeFetch } from "@/lib/crawler/safeFetch"
 import { waitUntil } from "@vercel/functions"
 import { createClient } from "@/lib/supabase/server"
 
@@ -28,15 +29,26 @@ export async function POST(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  // Resolve canonical URL. The redirect target often carries per-request
-  // session/OAuth tokens (e.g. Google's dsh/ifkv/osid); those expire and
-  // must not be stored as part of the cache key — strip them via our
+  // Resolve canonical URL. The HEAD probe runs through safeFetch so
+  // SSRF is enforced per-hop — otherwise an attacker could submit a
+  // URL that 302-redirects to an internal IP and we'd happily probe
+  // it. The redirect target often carries per-request session/OAuth
+  // tokens (e.g. Google's dsh/ifkv/osid); those expire and must not
+  // be stored as part of the cache key — strip them via our
   // normalizer so the canonical URL is stable across re-submissions.
   let canonicalUrl = url.trim()
   try {
-    const probe = await fetch(canonicalUrl, { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(5000) })
+    const probe = await safeFetch(canonicalUrl, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(5000),
+    })
     canonicalUrl = probe.url || canonicalUrl
-  } catch { /* use original */ }
+  } catch {
+    // Any validation / network failure here is recoverable: fall
+    // through to the original submitted URL. The pipeline's own
+    // assertSafeUrl will reject clearly-malicious URLs before the
+    // first crawl fetch.
+  }
   canonicalUrl = normalizeUrl(canonicalUrl) || canonicalUrl
 
   // Check for an existing result

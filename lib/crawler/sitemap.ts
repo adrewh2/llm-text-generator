@@ -1,5 +1,7 @@
 import { load } from "cheerio"
 import { normalizeUrl } from "./url"
+import { safeFetch } from "./safeFetch"
+import { USER_AGENT } from "./fetchPage"
 
 const MAX_SITEMAP_URLS = 500
 const SITEMAP_TIMEOUT = 10000
@@ -19,9 +21,11 @@ async function processSitemap(
   if (depth > 2 || collected.length >= MAX_SITEMAP_URLS) return
 
   try {
-    const res = await fetch(url, {
+    // safeFetch enforces SSRF per-hop — important because a sitemap
+    // index can declare arbitrary cross-origin Sitemap: URLs.
+    const res = await safeFetch(url, {
       signal: AbortSignal.timeout(SITEMAP_TIMEOUT),
-      headers: { "User-Agent": "LlmsTxtGenerator/1.0" },
+      headers: { "User-Agent": USER_AGENT },
     })
     if (!res.ok) return
 

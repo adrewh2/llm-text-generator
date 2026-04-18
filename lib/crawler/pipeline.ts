@@ -12,8 +12,9 @@ import { assembleFile } from "./assemble"
 import { detectGenre } from "./genre"
 import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix } from "./url"
 import { updateJob } from "../store"
-import type { ExtractedPage } from "./types"
+import type { ExtractedPage, JobStatus } from "./types"
 import { MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS } from "./config"
+import { assertSafeUrl, UnsafeUrlError } from "./ssrf"
 
 export async function runCrawlPipeline(jobId: string, targetUrl: string): Promise<void> {
   const spaBrowser = new SpaBrowser()
@@ -22,6 +23,18 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     await setStatus(jobId, "crawling")
 
     const baseUrl = normalizeUrl(targetUrl) || targetUrl
+
+    // SSRF: block attempts to point the crawler at private/loopback/
+    // metadata IPs before the first network call. Individual fetches
+    // (fetchPage, sitemap, etc.) also pre-flight — this guards the
+    // hot path and fails the job with a clear reason.
+    try {
+      await assertSafeUrl(baseUrl)
+    } catch (err) {
+      const reason = err instanceof UnsafeUrlError ? err.message : "unsafe URL"
+      await updateJob(jobId, { status: "failed", error: reason })
+      return
+    }
 
     // Fetch robots.txt
     const robots = await fetchRobots(baseUrl)
@@ -68,7 +81,6 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     const plainFetchFailed = rawHomepageHtml === null
     const isSpa = !plainFetchFailed && isSpaHtml(rawHomepageHtml!, rawHomepageMeta?.bodyExcerpt || "")
     const needsBrowser = plainFetchFailed || isSpa
-    console.log(`[pipeline] plainFetchFailed=${plainFetchFailed} isSpa=${isSpa} bodyExcerptLen=${rawHomepageMeta?.bodyExcerpt?.length ?? 0} htmlLen=${rawHomepageHtml?.length ?? 0}`)
     if (needsBrowser) await spaBrowser.init()
 
     // Try the browser render as our homepage source when needed.
@@ -76,7 +88,6 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     let homepageMeta = rawHomepageMeta
     if (needsBrowser) {
       const rendered = await spaBrowser.fetchPageWithLinks(baseUrl, baseUrl)
-      console.log(`[pipeline] browser render ok=${rendered.ok} links=${rendered.links.length}`)
       if (rendered.ok && rendered.html) {
         homepageHtml = rendered.html
         homepageMeta = extractMetadata(baseUrl, homepageHtml)
@@ -140,9 +151,6 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       .filter((q): q is { url: string; depth: number } => !!q)
     queue.splice(0, queue.length, ...reordered)
 
-    console.log(`[pipeline] queue after capping+ranking: ${queue.length} urls`)
-    queue.slice(0, 5).forEach(q => console.log(`  ${q.url}`))
-
     await updateJob(jobId, {
       progress: { discovered: discoveredUrls.size, crawled, failed },
     })
@@ -180,8 +188,10 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
         }
 
         if (!html) {
+          // No title needed: failed pages are filtered out before the
+          // enrichment / scoring / output passes.
           failed++
-          pages.push({ url, title: urlToLabel(url), headings: [], fetchStatus: "error", descriptionProvenance: "none" })
+          pages.push({ url, title: "", headings: [], fetchStatus: "error", descriptionProvenance: "none" })
         } else if (crawled < MAX_PAGES) {
           const meta = extractMetadata(url, html)
           const mdUrl = needsBrowser ? await probeMarkdown(url) : mdUrlResolved
@@ -232,7 +242,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
         : undefined
 
     const scored = scorePages(successful, genre, enrichment)
-    const withSections = assignSections(scored, genre)
+    const withSections = assignSections(scored)
     const { primary, optional } = filterAndSelectPages(withSections, baseUrl)
 
     // Deduplicate for display
@@ -278,20 +288,10 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
   }
 }
 
-async function setStatus(jobId: string, status: string) {
-  await updateJob(jobId, { status: status as never })
+async function setStatus(jobId: string, status: JobStatus) {
+  await updateJob(jobId, { status })
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
-}
-
-function urlToLabel(url: string): string {
-  try {
-    const path = new URL(url).pathname
-    const seg = path.split("/").filter(Boolean).pop() || path
-    return seg.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
-  } catch {
-    return url
-  }
 }

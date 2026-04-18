@@ -1,4 +1,5 @@
 import type { ScoredPage } from "./types"
+import { toLabel, urlPathSegments, urlToLabel } from "./urlLabel"
 
 export function assembleFile(
   siteName: string,
@@ -128,30 +129,6 @@ function resolveDisplayLabels(pages: ScoredPage[], siteName: string): Map<string
   }
 
   return labels
-}
-
-function urlPathSegments(url: string): string[] {
-  try {
-    return new URL(url).pathname
-      .split("/")
-      .filter((s) => s && !/^index\.(html?|php|aspx?)$/i.test(s))
-  } catch {
-    return []
-  }
-}
-
-function urlToLabel(url: string): string {
-  const segs = urlPathSegments(url)
-  const last = segs[segs.length - 1]
-  if (!last) return ""
-  return toLabel(last.replace(/\.[^.]+$/, ""))
-}
-
-function toLabel(segment: string): string {
-  return segment
-    .replace(/[-_]+/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-    .trim()
 }
 
 function groupBySection(pages: ScoredPage[]): {

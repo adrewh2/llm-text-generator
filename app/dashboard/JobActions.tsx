@@ -5,7 +5,17 @@ import { useRouter } from "next/navigation"
 import { Trash2 } from "lucide-react"
 import ConfirmDialog from "@/app/components/ConfirmDialog"
 
-export default function JobActions({ pageUrl }: { pageUrl: string }) {
+interface Props {
+  pageUrl: string
+  /**
+   * Optional callback for optimistic UI: when provided, the parent
+   * removes the row from its local state so the trash feels instant.
+   * Falls back to `router.refresh()` (full RSC re-render) when absent.
+   */
+  onRemoved?: (pageUrl: string) => void
+}
+
+export default function JobActions({ pageUrl, onRemoved }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [busy, setBusy] = useState(false)
   const router = useRouter()
@@ -13,9 +23,10 @@ export default function JobActions({ pageUrl }: { pageUrl: string }) {
   const handleRemove = async () => {
     setConfirmDelete(false)
     setBusy(true)
+    if (onRemoved) onRemoved(pageUrl) // remove from list immediately
     try {
       await fetch(`/api/p/request?pageUrl=${encodeURIComponent(pageUrl)}`, { method: "DELETE" })
-      router.refresh()
+      if (!onRemoved) router.refresh()
     } finally {
       setBusy(false)
     }

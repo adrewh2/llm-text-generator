@@ -1,4 +1,9 @@
+import { UnsafeUrlError } from "./ssrf"
+import { safeFetch } from "./safeFetch"
+
 const MAX_SIZE = 5 * 1024 * 1024
+export const USER_AGENT =
+  "LlmsTxtGenerator/1.0 (+https://llm-text-generator.vercel.app)"
 
 export interface FetchResult {
   ok: boolean
@@ -41,14 +46,16 @@ export function isBlockedByChallenge(html: string): boolean {
 
 export async function fetchPage(url: string): Promise<FetchResult> {
   try {
-    const res = await fetch(url, {
+    // safeFetch does SSRF pre-flight on every hop, so an attacker-
+    // controlled public URL that 302-redirects to 169.254.169.254 is
+    // blocked instead of silently followed.
+    const res = await safeFetch(url, {
       signal: AbortSignal.timeout(8000),
       headers: {
-        "User-Agent": "LlmsTxtGenerator/1.0 (+https://llmstxtgenerator.com/about/crawler)",
+        "User-Agent": USER_AGENT,
         Accept: "text/html,application/xhtml+xml",
         "Accept-Language": "en-US,en;q=0.9",
       },
-      redirect: "follow",
     })
 
     // Reject non-2xx responses even when they return HTML — otherwise
@@ -79,6 +86,7 @@ export async function fetchPage(url: string): Promise<FetchResult> {
     }
     return { ok: true, status: res.status, html }
   } catch (e: unknown) {
+    if (e instanceof UnsafeUrlError) return { ok: false, error: e.message }
     const err = e as Error
     if (err?.name === "AbortError" || err?.name === "TimeoutError") {
       return { ok: false, error: "Timeout" }

@@ -49,6 +49,10 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
     }
   }, [loading, hasMore, pages.length, pageSize])
 
+  const removeLocal = useCallback((pageUrl: string) => {
+    setPages((prev) => prev.filter((p) => p.pageUrl !== pageUrl))
+  }, [])
+
   // Trigger fetch when sentinel scrolls into view. rootMargin starts
   // the load ~200px before the sentinel is visible so the next batch
   // is ready by the time the user reaches the bottom.
@@ -104,7 +108,7 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
                   monitored={page.monitored}
                   lastCheckedAt={page.lastCheckedAt ? new Date(page.lastCheckedAt) : null}
                 />
-                <JobActions pageUrl={page.pageUrl} />
+                <JobActions pageUrl={page.pageUrl} onRemoved={removeLocal} />
                 <span className="text-zinc-300 group-hover:text-zinc-500 transition-colors w-4 text-right">→</span>
               </div>
             </Link>

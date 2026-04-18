@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { Github } from "lucide-react"
 import Link from "next/link"
@@ -9,6 +10,16 @@ export default function LoginPage() {
   const [loading, setLoading] = useState<string | null>(null)
   const [error, setError] = useState("")
   const supabase = createClient()
+  const router = useRouter()
+
+  // Already signed in → skip the login screen entirely. Prevents the
+  // awkward "sign in again" flash for users who have a valid session
+  // but accidentally navigate back to /login.
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) router.replace("/dashboard")
+    })
+  }, [supabase, router])
 
   const signIn = async (provider: "github" | "google") => {
     setLoading(provider)

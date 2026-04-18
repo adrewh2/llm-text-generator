@@ -13,7 +13,7 @@
 // concurrent changed pages.
 
 import { NextRequest, NextResponse } from "next/server"
-import { randomUUID } from "crypto"
+import { randomUUID, timingSafeEqual } from "crypto"
 import { waitUntil } from "@vercel/functions"
 import {
   createJob,
@@ -23,11 +23,15 @@ import {
 } from "@/lib/store"
 import { detectChange } from "@/lib/crawler/monitor"
 import { runCrawlPipeline } from "@/lib/crawler/pipeline"
+import { debugLog } from "@/lib/log"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
 
 const STALE_MONITOR_DAYS = 5
+// Politeness: space out repeated hits against the same host so the
+// cron doesn't hammer a single origin with N back-to-back requests.
+const SAME_HOST_DELAY_MS = 400
 
 interface Summary {
   checked: number
@@ -49,7 +53,18 @@ export async function GET(req: NextRequest) {
 
   // Sequential detection keeps memory flat and is polite to target
   // domains. The bottleneck is target-site response time, not CPU.
+  // Track the last check time per host so N monitored pages on the
+  // same origin aren't hit back-to-back.
+  const lastHostHit = new Map<string, number>()
+
   for (const page of pages) {
+    const host = hostOf(page.url)
+    if (host) {
+      const last = lastHostHit.get(host) ?? 0
+      const wait = last + SAME_HOST_DELAY_MS - Date.now()
+      if (wait > 0) await sleep(wait)
+      lastHostHit.set(host, Date.now())
+    }
     try {
       const { changed, newSignature } = await detectChange(page.url, page.contentSignature)
       await recordMonitorCheck(page.url, newSignature)
@@ -61,10 +76,9 @@ export async function GET(req: NextRequest) {
         summary.recrawls.push(jobId)
       }
     } catch (err: unknown) {
-      summary.errors.push({
-        url: page.url,
-        error: err instanceof Error ? err.message : "unknown error",
-      })
+      const message = err instanceof Error ? err.message : "unknown error"
+      summary.errors.push({ url: page.url, error: message })
+      debugLog("monitor", `${page.url}: ${message}`)
     }
   }
 
@@ -87,5 +101,17 @@ function isAuthorized(req: NextRequest): boolean {
   const expected = process.env.CRON_SECRET
   if (!expected) return false // fail closed if the secret isn't configured
   const header = req.headers.get("authorization") || ""
-  return header === `Bearer ${expected}`
+  const expectedHeader = `Bearer ${expected}`
+  // timingSafeEqual requires equal-length buffers — bail first on
+  // mismatched lengths so short attacker inputs don't throw.
+  if (header.length !== expectedHeader.length) return false
+  return timingSafeEqual(Buffer.from(header), Buffer.from(expectedHeader))
+}
+
+function hostOf(url: string): string | null {
+  try { return new URL(url).host } catch { return null }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms))
 }

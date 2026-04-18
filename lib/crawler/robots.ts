@@ -1,4 +1,10 @@
-const USER_AGENT = "LlmsTxtGenerator"
+import { safeFetch } from "./safeFetch"
+import { USER_AGENT as FETCH_USER_AGENT } from "./fetchPage"
+
+// Name used when matching `User-agent:` directives in robots.txt.
+// Keep this as the bare token (no version/URL suffix) — some sites
+// write `User-agent: LlmsTxtGenerator` and expect exact-token match.
+export const ROBOTS_USER_AGENT = "LlmsTxtGenerator"
 
 export interface RobotsData {
   disallowed: string[]
@@ -11,9 +17,9 @@ export async function fetchRobots(baseUrl: string): Promise<RobotsData> {
 
   try {
     const robotsUrl = new URL("/robots.txt", baseUrl).toString()
-    const res = await fetch(robotsUrl, {
+    const res = await safeFetch(robotsUrl, {
       signal: AbortSignal.timeout(10000),
-      headers: { "User-Agent": `${USER_AGENT}/1.0` },
+      headers: { "User-Agent": FETCH_USER_AGENT },
     })
     if (!res.ok) return result
     const text = await res.text()
@@ -51,7 +57,7 @@ function parseRobots(text: string, result: RobotsData): void {
     const value = line.slice(colonIdx + 1).trim()
 
     if (key === "user-agent") {
-      ourAgentActive = value.toLowerCase() === USER_AGENT.toLowerCase()
+      ourAgentActive = value.toLowerCase() === ROBOTS_USER_AGENT.toLowerCase()
       starAgentActive = value === "*"
       if (ourAgentActive) hasOurAgentRules = true
     }

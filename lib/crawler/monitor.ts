@@ -15,6 +15,8 @@
 
 import { createHash } from "crypto"
 import { fetchSitemapUrls } from "./sitemap"
+import { safeFetch } from "./safeFetch"
+import { USER_AGENT } from "./fetchPage"
 
 const HOMEPAGE_FETCH_TIMEOUT_MS = 8000
 
@@ -76,13 +78,12 @@ async function hashSitemap(sitemapUrl: string, base: string): Promise<string | n
 
 async function hashHomepage(url: string): Promise<string | null> {
   try {
-    const res = await fetch(url, {
+    const res = await safeFetch(url, {
       signal: AbortSignal.timeout(HOMEPAGE_FETCH_TIMEOUT_MS),
       headers: {
-        "User-Agent": "LlmsTxtGenerator-Monitor/1.0",
+        "User-Agent": USER_AGENT,
         Accept: "text/html,application/xhtml+xml",
       },
-      redirect: "follow",
     })
     if (!res.ok) return null
     const html = await res.text()

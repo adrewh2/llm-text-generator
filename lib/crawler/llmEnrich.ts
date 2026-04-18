@@ -1,7 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk"
 import type { ExtractedPage, PageType, ScoredPage, SiteGenre, DescriptionProvenance } from "./types"
 import { SECTION_HINTS } from "./config"
+import { debugLog } from "../log"
 
+// Pin one model across every LLM call so upgrades are a one-line swap.
+const MODEL = "claude-haiku-4-5-20251001"
 const BATCH_SIZE = 20
 
 interface EnrichedData {
@@ -83,7 +86,7 @@ ${pageList}`
 
   try {
     const message = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model: MODEL,
       max_tokens: 2048,
       messages: [{ role: "user", content: prompt }],
     })
@@ -124,11 +127,16 @@ ${pageList}`
         section,
         importance,
         description,
-        descriptionProvenance: description ? "og" : "none",
+        // If the LLM wrote this, label its provenance accurately so
+        // scoring weights / UI badges don't misattribute it to og:.
+        descriptionProvenance: description
+          ? (description !== pages[i].description ? "llm" : pages[i].descriptionProvenance)
+          : "none",
       })
     }
-  } catch {
-    // Fall back to regex classification silently
+  } catch (err) {
+    // Fall back to regex classification silently in prod; surface in dev.
+    debugLog("llmEnrich.enrichBatch", err)
   }
 
   return results
@@ -163,59 +171,16 @@ Return only the description text, nothing else.`
 
   try {
     const message = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model: MODEL,
       max_tokens: 256,
       messages: [{ role: "user", content: prompt }],
     })
 
     const text = message.content[0].type === "text" ? message.content[0].text.trim() : ""
     return text.length > 20 ? text : undefined
-  } catch {
+  } catch (err) {
+    debugLog("llmEnrich.generateSitePreamble", err)
     return undefined
-  }
-}
-
-/**
- * For sparse/SPA sites: asks the LLM to suggest likely structural URL paths
- * based on the site name, genre, and homepage metadata.
- */
-export async function suggestStructuralUrls(
-  siteName: string,
-  genre: SiteGenre,
-  homepageDescription: string,
-  baseUrl: string,
-): Promise<string[]> {
-  const client = getClient()
-  if (!client) return []
-
-  const genreLabel = genre.replace(/_/g, " ")
-
-  const prompt = `You are helping discover pages on "${siteName}" (a ${genreLabel} site).
-
-Homepage description: ${homepageDescription.slice(0, 300)}
-Base URL: ${baseUrl}
-
-We couldn't find links by parsing the homepage HTML (it's likely a JavaScript SPA). Suggest up to 15 URL paths that are likely to exist on this site and would be useful for an LLM to understand it — things like /about, /pricing, /how-it-works, /for-businesses, /help, /blog, /features, /api, /developers, /careers, etc.
-
-Respond ONLY with a JSON array of path strings (starting with /), e.g. ["/about", "/pricing", "/help"]`
-
-  try {
-    const message = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 256,
-      messages: [{ role: "user", content: prompt }],
-    })
-
-    const text = message.content[0].type === "text" ? message.content[0].text : ""
-    const match = text.match(/\[[\s\S]*?\]/)
-    if (!match) return []
-
-    const paths: unknown[] = JSON.parse(match[0])
-    return paths
-      .filter((p): p is string => typeof p === "string" && p.startsWith("/"))
-      .slice(0, 15)
-  } catch {
-    return []
   }
 }
 
@@ -268,7 +233,7 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7, 12]`
 
   try {
     const message = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model: MODEL,
       max_tokens: 512,
       messages: [{ role: "user", content: prompt }],
     })
@@ -283,7 +248,8 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7, 12]`
       .map((i) => candidates[i - 1])
 
     return kept.length > 0 ? kept : candidates.slice(0, maxKeep)
-  } catch {
+  } catch (err) {
+    debugLog("llmEnrich.rankCandidateUrls", err)
     return candidates.slice(0, maxKeep)
   }
 }

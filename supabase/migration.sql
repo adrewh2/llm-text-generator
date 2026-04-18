@@ -34,7 +34,13 @@ CREATE TABLE jobs (
   genre TEXT,
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- Guard against typos in client code silently writing an unexpected
+  -- status value and breaking the pipeline's state machine.
+  CONSTRAINT jobs_status_check CHECK (status IN (
+    'pending', 'crawling', 'enriching', 'scoring',
+    'assembling', 'complete', 'partial', 'failed'
+  ))
 );
 
 -- user_requests: tracks which pages each signed-in user has visited
@@ -45,6 +51,17 @@ CREATE TABLE user_requests (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(user_id, page_url)
 );
+
+-- Backs the dashboard's paginated "my pages" query:
+--   WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?
+CREATE INDEX idx_user_requests_user_created
+  ON user_requests(user_id, created_at DESC);
+
+-- Backs the dashboard's "latest terminal job per page" lookup:
+--   WHERE page_url IN (?) AND status IN ('complete','partial')
+--   ORDER BY created_at DESC
+CREATE INDEX idx_jobs_page_status_created
+  ON jobs(page_url, status, created_at DESC);
 
 -- RLS is enabled on every table. All app reads/writes go through server
 -- API routes using the service-role key, which bypasses RLS. The

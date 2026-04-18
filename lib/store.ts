@@ -1,14 +1,21 @@
-import { createClient } from "@supabase/supabase-js"
+import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import type { CrawlJob, ScoredPage } from "./crawler/types"
 import { PAGE_TTL_HOURS } from "./crawler/config"
+import { requireEnv } from "./env"
 
 // Server-only store: uses the service role key so writes bypass RLS.
-// This key must never be exposed to the client.
-function getClient() {
-  const url = process.env.SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!url || !key) throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
+// This key must never be exposed to the client. One client is lazily
+// created and reused for the process lifetime — the previous impl
+// built a fresh Supabase client on every exported function call.
+let cached: SupabaseClient | null = null
+function getClient(): SupabaseClient {
+  if (cached) return cached
+  cached = createClient(
+    requireEnv("SUPABASE_URL"),
+    requireEnv("SUPABASE_SERVICE_ROLE_KEY"),
+    { auth: { persistSession: false, autoRefreshToken: false } },
+  )
+  return cached
 }
 
 // ─── Jobs ────────────────────────────────────────────────────────────────────
@@ -28,8 +35,8 @@ export async function createJob(id: string, url: string): Promise<void> {
 
 export async function getJob(id: string): Promise<CrawlJob | undefined> {
   const supabase = getClient()
-  const { data: job, error } = await supabase.from("jobs").select("*").eq("id", id).single()
-  if (error || !job) return undefined
+  const { data: job } = await supabase.from("jobs").select("*").eq("id", id).maybeSingle()
+  if (!job) return undefined
 
   let pageResult: { result: string; crawled_pages: ScoredPage[] | null } | null = null
   if (job.status === "complete" || job.status === "partial") {
@@ -37,7 +44,7 @@ export async function getJob(id: string): Promise<CrawlJob | undefined> {
       .from("pages")
       .select("result, crawled_pages")
       .eq("url", job.page_url)
-      .single()
+      .maybeSingle()
     pageResult = page ?? null
   }
 
@@ -78,7 +85,7 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
       .from("jobs")
       .select("page_url, site_name, genre")
       .eq("id", id)
-      .single()
+      .maybeSingle()
 
     if (job) {
       await supabase.from("pages").upsert({
@@ -124,7 +131,7 @@ export async function getPageByUrl(url: string): Promise<{ jobId: string; isStal
     .in("status", ["complete", "partial"])
     .order("created_at", { ascending: false })
     .limit(1)
-    .single()
+    .maybeSingle()
 
   return job ? { jobId: job.id, isStale } : undefined
 }
@@ -138,7 +145,7 @@ export async function getActiveJobForUrl(url: string): Promise<{ jobId: string }
     .not("status", "in", '("failed","complete","partial")')
     .order("created_at", { ascending: false })
     .limit(1)
-    .single()
+    .maybeSingle()
   return job ? { jobId: job.id } : undefined
 }
 
