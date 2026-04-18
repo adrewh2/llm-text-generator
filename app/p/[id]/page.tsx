@@ -69,6 +69,12 @@ function PageViewInner() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const simTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const simulationStarted = useRef(false)
+  // Circuit breaker: after this many consecutive polling failures,
+  // stop polling and show an error. Prevents grinding a dead endpoint
+  // forever if the server starts consistently 5xx-ing.
+  const pollFailuresRef = useRef(0)
+  const [pollDead, setPollDead] = useState(false)
+  const MAX_POLL_FAILURES = 5
 
   useEffect(() => {
     if (cachedSignedIn !== null) return
@@ -98,7 +104,15 @@ function PageViewInner() {
     try {
       const res = await fetch(`/api/p/${pageId}`)
       if (res.status === 404) { setNotFound(true); return }
-      if (!res.ok) return
+      if (!res.ok) {
+        pollFailuresRef.current++
+        if (pollFailuresRef.current >= MAX_POLL_FAILURES) {
+          if (intervalRef.current) clearInterval(intervalRef.current)
+          setPollDead(true)
+        }
+        return
+      }
+      pollFailuresRef.current = 0
       const data: ApiJob = await res.json()
       cacheSetJob(pageId, data)
       setJob(data)
@@ -118,6 +132,11 @@ function PageViewInner() {
       }
     } catch (err) {
       debugLog("PageView.fetchJob", err)
+      pollFailuresRef.current++
+      if (pollFailuresRef.current >= MAX_POLL_FAILURES) {
+        if (intervalRef.current) clearInterval(intervalRef.current)
+        setPollDead(true)
+      }
     }
   }, [pageId, shouldSimulate, startSimulation])
 
@@ -159,14 +178,16 @@ function PageViewInner() {
   // half-propagated write (job.status=complete before pages.result lands)
   // would trip "missing H1" on empty text. The store writes pages first,
   // so this is belt-and-suspenders.
-  const validation = showResult && job!.result ? validateLlmsTxt(job!.result) : null
+  const result = showResult ? job?.result : undefined
+  const validation = result ? validateLlmsTxt(result) : null
+  const genre = showResult ? job?.genre : undefined
 
   return (
     <div className="h-screen font-sans bg-white flex flex-col">
       <header className="border-b border-zinc-100 px-6 py-3 flex items-center gap-4 shrink-0">
         <Link href="/" className="flex items-center gap-2 mr-2 shrink-0" aria-label="Home">
           <div className="w-5 h-5 bg-zinc-950 rounded-[4px] flex items-center justify-center">
-            <span className="text-white font-mono text-[8px] font-bold">//</span>
+            <span className="text-white font-mono text-[8px] font-bold">{"//"}</span>
           </div>
         </Link>
         <div className="h-4 w-px bg-zinc-200 shrink-0" />
@@ -180,7 +201,7 @@ function PageViewInner() {
             <>
               <span className="text-zinc-300 hidden sm:block">·</span>
               <span className="text-xs text-zinc-400 font-mono hidden sm:block shrink-0">{crawledCount} pages</span>
-              {job!.genre && <span className="text-xs text-zinc-400 font-mono hidden md:block shrink-0">· {job!.genre.replace(/_/g, " ")}</span>}
+              {genre && <span className="text-xs text-zinc-400 font-mono hidden md:block shrink-0">· {genre.replace(/_/g, " ")}</span>}
               {validation && (
                 <span className={`flex items-center gap-1.5 ml-1 text-xs font-medium px-2.5 py-1 rounded-full ring-1 shrink-0 ${
                   validation.valid
@@ -229,6 +250,14 @@ function PageViewInner() {
         </div>
       )}
 
+      {pollDead && (
+        <div role="alert" className="bg-amber-50 border-b border-amber-100 px-6 py-2 shrink-0">
+          <p className="text-xs text-amber-700">
+            Lost connection to the server. <button type="button" onClick={() => window.location.reload()} className="underline font-medium">Reload</button> to try again.
+          </p>
+        </div>
+      )}
+
       <div className="flex-1 flex overflow-hidden">
         {!job ? (
           <div className="flex-1 flex items-center justify-center">
@@ -236,12 +265,12 @@ function PageViewInner() {
           </div>
         ) : showResult && job.result ? (
           <ResultPane job={job} />
-        ) : (
+        ) : displayJob ? (
           <ProgressPane
-            job={displayJob!}
+            job={displayJob}
             simulatedStep={simulatedStep !== null ? simulatedStep : undefined}
           />
-        )}
+        ) : null}
       </div>
     </div>
   )

@@ -2,6 +2,7 @@
 
 import { AlertCircle, CheckCircle2, Circle, Loader2, XCircle } from "lucide-react"
 import type { JobStatus } from "@/lib/crawler/types"
+import { MAX_PAGES } from "@/lib/crawler/config"
 import type { ApiJob } from "./types"
 
 const STEPS: Array<{ id: JobStatus; label: string }> = [
@@ -74,7 +75,7 @@ export default function ProgressPane({
                     {step.label}
                   </p>
                   {state === "active" && step.id === "crawling" && !isSimulated && (
-                    <p className="text-xs text-zinc-500 mt-0.5">{job.progress.crawled} / 25 pages crawled</p>
+                    <p className="text-xs text-zinc-500 mt-0.5">{job.progress.crawled} / {MAX_PAGES} pages crawled</p>
                   )}
                 </div>
                 {state === "active" && (

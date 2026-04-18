@@ -84,34 +84,46 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
         {pages.map((page) => {
           const href = page.latestJobId ? `/p/${page.latestJobId}` : "/"
           const hostname = (() => { try { return new URL(page.pageUrl).hostname } catch { return page.pageUrl } })()
+          // The row is a positioned container so the Link covers the
+          // entire clickable area (prefetch, right-click-open-new-tab,
+          // middle-click all work) while the trash <button> sits as
+          // an absolutely-positioned sibling. This avoids the invalid-
+          // HTML footgun of nesting <button> inside <a>.
           return (
-            <Link
-              key={page.pageUrl}
-              href={href}
-              className="flex items-center justify-between px-5 py-4 hover:bg-zinc-50 transition-colors group"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2.5 mb-0.5">
-                  <span className="font-medium text-zinc-900 text-sm truncate">
-                    {page.siteName || hostname}
-                  </span>
-                  {page.latestJobStatus === "failed" && (
-                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-red-50 text-red-600">
-                      Failed
+            <div key={page.pageUrl} className="relative group hover:bg-zinc-50 transition-colors">
+              <Link
+                href={href}
+                className="flex items-center justify-between px-5 py-4"
+                aria-label={`Open ${page.siteName || hostname}`}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2.5 mb-0.5">
+                    <span className="font-medium text-zinc-900 text-sm truncate">
+                      {page.siteName || hostname}
                     </span>
-                  )}
+                    {page.latestJobStatus === "failed" && (
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-red-50 text-red-600">
+                        Failed
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-zinc-400 truncate">{page.pageUrl}</p>
                 </div>
-                <p className="text-xs text-zinc-400 truncate">{page.pageUrl}</p>
-              </div>
-              <div className="flex items-center gap-2 ml-4 shrink-0">
-                <MonitorStatus
-                  monitored={page.monitored}
-                  lastCheckedAt={page.lastCheckedAt ? new Date(page.lastCheckedAt) : null}
-                />
+                <div className="flex items-center gap-2 ml-4 shrink-0">
+                  <MonitorStatus
+                    monitored={page.monitored}
+                    lastCheckedAt={page.lastCheckedAt ? new Date(page.lastCheckedAt) : null}
+                  />
+                  {/* Spacer reserves the width the trash button takes
+                      so the chevron doesn't jump when it appears. */}
+                  <span className="w-7" aria-hidden />
+                  <span className="text-zinc-300 group-hover:text-zinc-500 transition-colors w-4 text-right">→</span>
+                </div>
+              </Link>
+              <div className="absolute right-[3rem] top-1/2 -translate-y-1/2">
                 <JobActions pageUrl={page.pageUrl} onRemoved={removeLocal} />
-                <span className="text-zinc-300 group-hover:text-zinc-500 transition-colors w-4 text-right">→</span>
               </div>
-            </Link>
+            </div>
           )
         })}
       </div>

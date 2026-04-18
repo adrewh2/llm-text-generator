@@ -31,10 +31,25 @@ export default function LandingPage() {
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("focus") === "1") {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("focus") === "1") {
       inputRef.current?.focus()
+      // Drop the param so bookmarks / shared links don't ship the
+      // auto-focus behavior to subsequent visitors.
+      params.delete("focus")
+      const qs = params.toString()
+      window.history.replaceState(
+        null, "",
+        `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash}`,
+      )
     }
   }, [])
+
+  const formatRetry = (seconds: number): string => {
+    if (seconds < 60) return `${seconds} second${seconds === 1 ? "" : "s"}`
+    const mins = Math.ceil(seconds / 60)
+    return `${mins} minute${mins === 1 ? "" : "s"}`
+  }
 
   const normalizeInput = (raw: string): string => {
     const trimmed = raw.trim()
@@ -68,7 +83,12 @@ export default function LandingPage() {
       const data = await res.json()
 
       if (!res.ok) {
-        setError(data.error || "Something went wrong")
+        if (res.status === 429) {
+          const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10)
+          setError(`Too many requests — try again in ${formatRetry(retryAfter)}.`)
+        } else {
+          setError(data.error || "Something went wrong")
+        }
         setLoading(false)
         return
       }
@@ -88,7 +108,7 @@ export default function LandingPage() {
         <nav className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-6 h-6 bg-zinc-950 rounded-[5px] flex items-center justify-center shrink-0">
-              <span className="text-white font-mono text-[9px] font-bold leading-none">//</span>
+              <span className="text-white font-mono text-[9px] font-bold leading-none">{"//"}</span>
             </div>
             <span className="font-semibold text-zinc-950 text-sm tracking-tight">llms.txt</span>
           </div>
@@ -159,6 +179,9 @@ export default function LandingPage() {
                 className="flex-1 px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 bg-transparent outline-none font-mono"
                 required
                 disabled={loading}
+                aria-label="Website URL"
+                aria-invalid={!!error}
+                aria-describedby={error ? "url-error" : undefined}
               />
               <button
                 type="submit"
@@ -172,7 +195,11 @@ export default function LandingPage() {
                 )}
               </button>
             </div>
-            {error && <p className="text-xs text-red-500 mt-2 text-left">{error}</p>}
+            {error && (
+              <p id="url-error" role="alert" className="text-xs text-red-500 mt-2 text-left">
+                {error}
+              </p>
+            )}
           </form>
         </div>
       </section>
@@ -241,7 +268,7 @@ export default function LandingPage() {
             <div>
               <h4 className="font-semibold text-zinc-900 text-sm mb-1">Works for any website</h4>
               <p className="text-sm text-zinc-500 leading-relaxed">
-                The LLM adapts section names and descriptions to the site's domain, whether it's a recipe blog, a law firm, or a SaaS product.
+                The LLM adapts section names and descriptions to the site&apos;s domain, whether it&apos;s a recipe blog, a law firm, or a SaaS product.
               </p>
             </div>
           </div>
@@ -294,7 +321,7 @@ export default function LandingPage() {
         <div className="max-w-6xl mx-auto px-6 py-8 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-5 h-5 bg-zinc-950 rounded-[4px] flex items-center justify-center">
-              <span className="text-white font-mono text-[8px] font-bold">//</span>
+              <span className="text-white font-mono text-[8px] font-bold">{"//"}</span>
             </div>
             <span className="text-xs text-zinc-400 font-medium">llms.txt Generator</span>
           </div>

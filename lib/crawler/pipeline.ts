@@ -104,7 +104,7 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
     // Trigger the SPA (Puppeteer) path if either: plain fetch failed, or
     // the returned HTML looks like a JS shell / bot-challenge.
     const plainFetchFailed = rawHomepageHtml === null
-    const isSpa = !plainFetchFailed && isSpaHtml(rawHomepageHtml!, rawHomepageMeta?.bodyExcerpt || "")
+    const isSpa = !!rawHomepageHtml && isSpaHtml(rawHomepageHtml, rawHomepageMeta?.bodyExcerpt || "")
     const needsBrowser = plainFetchFailed || isSpa
     if (needsBrowser) await spaBrowser.init()
 

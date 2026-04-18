@@ -138,8 +138,9 @@ function groupBySection(pages: ScoredPage[]): {
   const map = new Map<string, ScoredPage[]>()
   for (const page of pages) {
     const section = page.section || "Resources"
-    if (!map.has(section)) map.set(section, [])
-    map.get(section)!.push(page)
+    const existing = map.get(section)
+    if (existing) existing.push(page)
+    else map.set(section, [page])
   }
 
   // Sections with only 1 page get dissolved into Optional

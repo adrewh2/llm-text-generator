@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Check, Copy, Download, Link2 } from "lucide-react"
 import type { ApiJob } from "./types"
 
@@ -8,17 +8,33 @@ export default function ResultPane({ job }: { job: ApiJob }) {
   const content = job.result ?? ""
   const [copied, setCopied] = useState(false)
   const [copiedLink, setCopiedLink] = useState(false)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copyLinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Clear pending "Copied!" timers on unmount so they don't fire on
+  // an unmounted component (React 19 no-ops this quietly but we'd
+  // rather not rely on it).
+  useEffect(() => () => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    if (copyLinkTimerRef.current) clearTimeout(copyLinkTimerRef.current)
+  }, [])
 
   const handleCopyLink = async () => {
-    await navigator.clipboard.writeText(window.location.href.split("?")[0])
+    // Build a clean shareable URL — same path, same hash, but drop
+    // any query params (e.g. ?simulate=1 shouldn't travel).
+    const loc = new URL(window.location.href)
+    loc.search = ""
+    await navigator.clipboard.writeText(loc.toString())
     setCopiedLink(true)
-    setTimeout(() => setCopiedLink(false), 2000)
+    if (copyLinkTimerRef.current) clearTimeout(copyLinkTimerRef.current)
+    copyLinkTimerRef.current = setTimeout(() => setCopiedLink(false), 2000)
   }
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(content)
     setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    copyTimerRef.current = setTimeout(() => setCopied(false), 2000)
   }
 
   const handleDownload = () => {
@@ -37,6 +53,7 @@ export default function ResultPane({ job }: { job: ApiJob }) {
         <span className="text-[10px] text-zinc-400 font-mono">llms.txt</span>
         <div className="ml-auto flex items-center gap-2">
           <button
+            type="button"
             onClick={handleCopyLink}
             className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-500 hover:text-zinc-800 px-2.5 py-1 rounded-md border border-zinc-200 hover:border-zinc-300 transition-colors"
           >
@@ -44,6 +61,7 @@ export default function ResultPane({ job }: { job: ApiJob }) {
             {copiedLink ? "Copied!" : "Copy link"}
           </button>
           <button
+            type="button"
             onClick={handleCopy}
             className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-500 hover:text-zinc-800 px-2.5 py-1 rounded-md border border-zinc-200 hover:border-zinc-300 transition-colors"
           >
@@ -51,6 +69,7 @@ export default function ResultPane({ job }: { job: ApiJob }) {
             {copied ? "Copied" : "Copy"}
           </button>
           <button
+            type="button"
             onClick={handleDownload}
             className="flex items-center gap-1.5 text-[11px] font-medium text-white bg-zinc-950 hover:bg-zinc-800 px-2.5 py-1 rounded-md transition-colors"
           >

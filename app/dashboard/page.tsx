@@ -36,7 +36,7 @@ export default async function DashboardPage() {
         <nav className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between border-b border-zinc-100">
           <Link href="/" className="flex items-center gap-2.5">
             <div className="w-6 h-6 bg-zinc-950 rounded-[5px] flex items-center justify-center shrink-0">
-              <span className="text-white font-mono text-[9px] font-bold leading-none">//</span>
+              <span className="text-white font-mono text-[9px] font-bold leading-none">{"//"}</span>
             </div>
             <span className="font-semibold text-zinc-950 text-sm tracking-tight">llms.txt</span>
           </Link>

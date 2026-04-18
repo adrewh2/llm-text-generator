@@ -40,6 +40,12 @@ export function normalizeUrl(url: string, base?: string): string | null {
     u.hash = ""
     u.hostname = u.hostname.toLowerCase()
 
+    // Strip trailing slash on any non-root path so "/docs" and
+    // "/docs/" don't become two cache keys.
+    if (u.pathname !== "/" && u.pathname.endsWith("/")) {
+      u.pathname = u.pathname.replace(/\/+$/, "")
+    }
+
     for (const key of [...u.searchParams.keys()]) {
       if (TRACKING_PARAMS.has(key.toLowerCase())) {
         u.searchParams.delete(key)

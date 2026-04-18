@@ -7,7 +7,9 @@ import { createBrowserClient } from "@supabase/ssr"
 // reject with a clear "Invalid URL" — no cryptic crash to dig through.
 export function createClient() {
   return createBrowserClient(
+    /* eslint-disable @typescript-eslint/no-non-null-assertion */
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    /* eslint-enable @typescript-eslint/no-non-null-assertion */
   )
 }

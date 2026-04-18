@@ -46,13 +46,14 @@ async function processSitemap(
       return
     }
 
-    // URL set
-    $("url > loc").each((_, el) => {
-      if (collected.length >= MAX_SITEMAP_URLS) return false as unknown as void
+    // URL set — explicit loop so we can break cleanly when we hit the cap.
+    const locs = $("url > loc").toArray()
+    for (const el of locs) {
+      if (collected.length >= MAX_SITEMAP_URLS) break
       const loc = $(el).text().trim()
       const normalized = normalizeUrl(loc)
       if (normalized) collected.push(normalized)
-    })
+    }
   } catch {
     // Non-fatal
   }

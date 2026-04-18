@@ -142,7 +142,11 @@ Respond ONLY with a JSON array, one object per page, same order as input. No pro
       description: string
     }>
 
-    for (let i = 0; i < pages.length; i++) {
+    // Tolerate a short LLM response — iterate to whichever bound is
+    // smaller and leave extra pages unenriched (they'll fall through
+    // to the deterministic classifier in score.ts).
+    const n = Math.min(pages.length, parsed.length)
+    for (let i = 0; i < n; i++) {
       const item = parsed[i]
       if (!item) continue
 
