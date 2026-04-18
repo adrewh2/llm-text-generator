@@ -12,9 +12,9 @@ Fluid Compute is Vercel's current serverless runtime. The pieces that
 shape our design:
 
 - **Warm instance reuse.** A single Node process serves many requests
-  back-to-back inside one region. Module-level state (`Map`s, cached
-  Supabase clients, token-bucket records) survives across invocations
-  on the same instance.
+  back-to-back inside one region. Module-level state (in-memory `Map`
+  instances, cached Supabase clients, token-bucket records) survives
+  across invocations on the same instance.
 - **`waitUntil`.** Continues async work after the HTTP response has
   been sent. We use it to dispatch `runCrawlPipeline` in the
   background from `POST /api/p` and `GET /api/monitor`.
