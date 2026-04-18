@@ -34,29 +34,124 @@ export function assembleFile(
     ...optional,
   ].sort((a, b) => b.score - a.score)
 
+  // Resolve display labels across the whole output set. First collapse
+  // titles that just repeat the site name into URL-derived labels, then
+  // disambiguate any remaining title collisions by prefixing the first
+  // distinguishing path segment. Result: no two entries in the output
+  // share the same link text.
+  const allEntries = [
+    ...[...sections.values()].flat(),
+    ...allOptional,
+  ]
+  const labels = resolveDisplayLabels(allEntries, siteName)
+
   for (const [section, pages] of sections) {
     lines.push(`## ${section}`, "")
-    for (const page of pages) lines.push(formatEntry(page))
+    for (const page of pages) lines.push(formatEntry(page, labels.get(page.url)))
     lines.push("")
   }
 
   if (allOptional.length > 0) {
     lines.push("## Optional", "")
-    for (const page of allOptional) lines.push(formatEntry(page))
+    for (const page of allOptional) lines.push(formatEntry(page, labels.get(page.url)))
     lines.push("")
   }
 
   return lines.join("\n").trimEnd() + "\n"
 }
 
-function formatEntry(page: ScoredPage): string {
+function formatEntry(page: ScoredPage, label?: string): string {
   const url = page.mdUrl || page.url
-  const title = (page.title || url).replace(/[\[\]]/g, "")
+  const title = (label ?? page.title ?? url).replace(/[\[\]]/g, "")
   if (page.description && page.descriptionProvenance !== "none") {
     const desc = page.description.replace(/\r?\n/g, " ").trim()
     return `- [${title}](${url}): ${desc}`
   }
   return `- [${title}](${url})`
+}
+
+// ─── Label resolution ────────────────────────────────────────────────────────
+
+/**
+ * Produce a per-URL display label that's distinct from every other
+ * label in the output set. Two passes:
+ *   1. If a page's title equals the site name (case-insensitive), swap
+ *      it for a URL-derived label — otherwise hub pages like
+ *      /military/, /wmd/, /intell/ all show up as "GlobalSecurity.org"
+ *      in the output.
+ *   2. For any titles that still collide across two or more entries,
+ *      prefix the first path segment that differs between them —
+ *      "/military/library/" and "/wmd/library/" both have title
+ *      "Library"; they become "Military Library" and "Wmd Library".
+ */
+function resolveDisplayLabels(pages: ScoredPage[], siteName: string): Map<string, string> {
+  const siteNorm = siteName.trim().toLowerCase()
+  const labels = new Map<string, string>()
+
+  // Pass 1: site-name-as-title → URL label.
+  for (const p of pages) {
+    const t = (p.title || "").trim()
+    if (t && t.toLowerCase() === siteNorm) {
+      const derived = urlToLabel(p.url)
+      if (derived) labels.set(p.url, derived)
+      continue
+    }
+    if (t) labels.set(p.url, t)
+  }
+
+  // Pass 2: disambiguate remaining collisions.
+  const byLabel = new Map<string, ScoredPage[]>()
+  for (const p of pages) {
+    const l = labels.get(p.url)
+    if (!l) continue
+    const arr = byLabel.get(l) ?? []
+    arr.push(p)
+    byLabel.set(l, arr)
+  }
+  for (const [, group] of byLabel) {
+    if (group.length < 2) continue
+    const paths = group.map((p) => urlPathSegments(p.url))
+    const maxLen = Math.max(...paths.map((p) => p.length))
+    let diffIdx = -1
+    for (let i = 0; i < maxLen; i++) {
+      const set = new Set(paths.map((p) => p[i] ?? ""))
+      if (set.size > 1) { diffIdx = i; break }
+    }
+    if (diffIdx === -1) continue
+    group.forEach((p, i) => {
+      const seg = paths[i][diffIdx]
+      if (!seg) return
+      const prefix = toLabel(seg)
+      const original = labels.get(p.url) ?? p.title ?? p.url
+      labels.set(p.url, prefix ? `${prefix} ${original}` : original)
+    })
+  }
+
+  return labels
+}
+
+function urlPathSegments(url: string): string[] {
+  try {
+    return new URL(url).pathname
+      .split("/")
+      .filter((s) => s && !/^index\.(html?|php|aspx?)$/i.test(s))
+  } catch {
+    return []
+  }
+}
+
+function urlToLabel(url: string): string {
+  const segs = urlPathSegments(url)
+  const last = segs[segs.length - 1]
+  if (!last) return ""
+  return toLabel(last.replace(/\.[^.]+$/, ""))
+}
+
+function toLabel(segment: string): string {
+  return segment
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim()
 }
 
 function groupBySection(pages: ScoredPage[]): {

@@ -3,7 +3,14 @@ import type { ScoredPage, SiteGenre } from "./types"
 function normalizeForComparison(url: string): string {
   try {
     const u = new URL(url)
-    return `${u.hostname}${u.pathname.replace(/\/$/, "")}`
+    // Treat "/", "/index.html", "/index.php", "/index.aspx" etc. as the
+    // same canonical path — otherwise a page whose sitemap-declared URL
+    // ends in /index.html escapes the homepage filter and the dedup
+    // pass, ending up as a redundant entry in the output.
+    const path = u.pathname
+      .replace(/\/index\.(html?|php|aspx?)$/i, "/")
+      .replace(/\/$/, "")
+    return `${u.hostname}${path}`
   } catch {
     return url
   }

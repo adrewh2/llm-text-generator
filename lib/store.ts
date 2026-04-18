@@ -226,6 +226,40 @@ export interface UserPageEntry {
   lastCheckedAt: Date | null
 }
 
+/**
+ * Fetch every page in a user's history along with its current llms.txt
+ * result. Used by /api/pages/download to build the zip archive. Rows
+ * without a result (crawl not yet complete) are skipped.
+ */
+export async function getUserPageResults(userId: string): Promise<Array<{
+  url: string
+  siteName: string | null
+  result: string
+}>> {
+  const supabase = getClient()
+  const { data: requests } = await supabase
+    .from("user_requests")
+    .select("page_url, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+  if (!requests || requests.length === 0) return []
+
+  const urls = requests.map((r) => r.page_url)
+  const { data: pages } = await supabase
+    .from("pages")
+    .select("url, site_name, result")
+    .in("url", urls)
+
+  const byUrl = new Map((pages ?? []).map((p) => [p.url, p]))
+  return requests
+    .map((r) => {
+      const p = byUrl.get(r.page_url)
+      if (!p?.result) return null
+      return { url: p.url, siteName: p.site_name ?? null, result: p.result }
+    })
+    .filter((p): p is { url: string; siteName: string | null; result: string } => p !== null)
+}
+
 export async function getUserPages(
   userId: string,
   { offset = 0, limit = 20 }: { offset?: number; limit?: number } = {},

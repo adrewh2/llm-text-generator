@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { Plus } from "lucide-react"
+import { FolderDown, Plus } from "lucide-react"
 import SignOutButton from "./SignOutButton"
 import PageList, { type WirePage } from "./PageList"
 import { getUserPages } from "@/lib/store"
@@ -50,13 +50,26 @@ export default async function DashboardPage() {
             <h1 className="text-2xl font-semibold text-zinc-950 tracking-tight">Dashboard</h1>
             <p className="text-sm text-zinc-500 mt-1">Your requested pages</p>
           </div>
-          <Link
-            href="/?focus=1"
-            className="flex items-center gap-1.5 text-sm font-medium text-zinc-700 hover:text-zinc-900 px-3.5 py-2 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-colors"
-          >
-            <Plus size={14} className="text-zinc-400" />
-            Generate
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/?focus=1"
+              className="flex items-center gap-1.5 text-sm font-medium text-zinc-700 hover:text-zinc-900 px-3.5 py-2 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-colors"
+            >
+              <Plus size={14} className="text-zinc-400" />
+              Generate
+            </Link>
+            {initial.length > 0 && (
+              <a
+                href="/api/pages/download"
+                download
+                title="Download all your llms.txt files as a zip"
+                className="flex items-center gap-1.5 text-sm font-medium text-zinc-700 hover:text-zinc-900 px-3.5 py-2 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-colors"
+              >
+                <FolderDown size={14} className="text-zinc-400" />
+                Download
+              </a>
+            )}
+          </div>
         </div>
       </header>
 
