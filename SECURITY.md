@@ -224,7 +224,7 @@ Listed in case a reviewer wonders:
 
 - **No webhook delivery** (mentioned in `design.md` §13). Outbound webhook signing, HMAC verification, retry/backoff — all out of scope.
 - **No per-domain politeness token bucket** across all users (`design.md` §13). We do have a per-host delay in the monitor cron and a per-job politeness delay, but not a global-across-all-users cap.
-- **No concurrent cache-miss de-duplication** (`design.md` §15). `POST /api/p` attaches to any in-progress job for the same URL, but a TOCTOU race between the check and `createJob` means two truly simultaneous requests can each trigger a full crawl. Benign (second write harmlessly overwrites the first) — deferred.
+- **No concurrent cache-miss de-duplication.** `POST /api/p` attaches to any in-progress job for the same URL, but a TOCTOU race between the active-job check and `createJob` means two simultaneous requests on a novel URL can each trigger a full crawl. Consequence is benign: wasted compute on the duplicate, last-write-wins on `pages.result` (same-shape valid output, identical user-visible outcome). Not fixed deliberately — the proper fix is a partial-unique index on `jobs(page_url) WHERE status NOT IN terminal-set`, which would turn any stuck non-terminal job (Fluid Compute recycled mid-crawl, `updateJob` failing on the terminal flip) into a permanent DoS on that URL until the row is cleared by hand. Shipping it safely requires a stuck-job recovery sweep alongside. The fix is strictly worse than the race at current traffic.
 - **No structured audit log** of auth events or rate-limit denials.
 - **No CAPTCHA** on the landing page.
 - **No IP allowlist / blocklist** on our own API surface.

@@ -7,19 +7,21 @@ import { ChevronDown, LogOut } from "lucide-react"
 import type { User } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/client"
 
-export default function NavAuth() {
-  const [user, setUser] = useState<User | null>(null)
+export default function NavAuth({ initialUser = null }: { initialUser?: User | null }) {
+  // Seeded from the server so hydration matches reality — prevents the
+  // "Sign in" → signed-in flash when navigating from /dashboard back
+  // to /, which is the common case for signed-in users.
+  const [user, setUser] = useState<User | null>(initialUser)
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const supabase = useRef(createClient()).current
   const router = useRouter()
 
-  // Track auth for the lifetime of the page. getUser() settles the
-  // initial state; onAuthStateChange covers subsequent transitions
-  // (including INITIAL_SESSION fired on first subscribe when the user
-  // is already signed in).
+  // Keep the client state in sync with live auth changes. We skip the
+  // one-shot getUser() call here — initialUser from the server is the
+  // authoritative initial value and already matches the session cookie
+  // that the browser client would resolve to anyway.
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => setUser(data.user))
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => setUser(session?.user ?? null),
     )
