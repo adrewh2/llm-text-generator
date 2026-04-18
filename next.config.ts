@@ -1,11 +1,16 @@
 import type { NextConfig } from "next"
 
 // Ship a conservative, modern security-header set on every response.
-// `unsafe-inline` on style-src is the price of Next.js's emitted
-// hashed <style> tags; script-src stays 'self' (no inline JS).
+// `unsafe-inline` / `unsafe-eval` on script-src is the price of
+// Next.js's RSC bootstrap + HMR tooling — without it React never
+// hydrates and the page appears frozen. The principled alternative
+// is per-request nonces via middleware; shipping that is a bigger
+// change for a take-home and we'd still want `'unsafe-eval'` in
+// dev anyway. `style-src 'unsafe-inline'` is likewise for Next's
+// emitted hashed <style> tags.
 const CSP = [
   "default-src 'self'",
-  "script-src 'self'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data: https://fonts.gstatic.com",

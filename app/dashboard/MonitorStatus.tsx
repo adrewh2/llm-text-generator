@@ -23,11 +23,11 @@ export default function MonitorStatus({ monitored, lastCheckedAt }: Props) {
 
   if (!monitored) return null
   const label = lastCheckedAt
-    ? `Checked ${formatDistanceToNowStrict(lastCheckedAt, { addSuffix: true })}`
-    : "Awaiting check"
+    ? `Refreshed ${formatDistanceToNowStrict(lastCheckedAt, { addSuffix: true })}`
+    : "Awaiting refresh"
   return (
     <span
-      title="We re-check this site's sitemap and homepage on a schedule and regenerate llms.txt when it changes"
+      title="We re-check this site's sitemap and homepage on a schedule and refresh the llms.txt when it changes"
       // Fixed narrow width + justify-start so the Eye icon aligns
       // vertically across rows but sits close to the trash/chevron on
       // the right. Truncate so the longest label ("less than a minute

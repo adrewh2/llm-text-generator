@@ -34,21 +34,15 @@ function cacheSetJob(id: string, job: ApiJob): void {
     jobCache.delete(oldest)
   }
 }
-let cachedSignedIn: boolean | null = null
-
-// Shared browser client listens for auth state so that when a user
-// signs out, the cached job metadata is cleared. Prevents a past
-// user's history from bleeding into a new session on a shared device.
+// Shared browser client listens for auth state so the cached job
+// metadata is cleared when a user signs out — prevents a past user's
+// history from bleeding into a new session on a shared device. Auth
+// state for rendering purposes is tracked per-component below; this
+// listener only touches the module-level cache.
 if (typeof window !== "undefined") {
   const supabase = createClient()
   supabase.auth.onAuthStateChange((event) => {
-    if (event === "SIGNED_OUT") {
-      jobCache.clear()
-      cachedSignedIn = false
-    }
-    if (event === "SIGNED_IN") {
-      cachedSignedIn = true
-    }
+    if (event === "SIGNED_OUT") jobCache.clear()
   })
 }
 
@@ -60,7 +54,7 @@ function PageViewInner() {
 
   const [job, setJob] = useState<ApiJob | null>(() => (pageId ? cacheGetJob(pageId) ?? null : null))
   const [notFound, setNotFound] = useState(false)
-  const [isSignedIn, setIsSignedIn] = useState<boolean>(cachedSignedIn ?? false)
+  const [isSignedIn, setIsSignedIn] = useState(false)
   // Start simulated progress at step 0 when the URL asks for it — otherwise
   // a cached job (already status=complete on first fetch) briefly paints
   // the result pane before the simulation timers get a chance to kick in.
@@ -76,12 +70,19 @@ function PageViewInner() {
   const [pollDead, setPollDead] = useState(false)
   const MAX_POLL_FAILURES = 5
 
+  // Track auth state for the lifetime of this page. `getUser` settles
+  // the initial value; `onAuthStateChange` covers subsequent
+  // sign-in / sign-out / token-refresh events (including the
+  // INITIAL_SESSION event Supabase fires on first subscribe when a
+  // user is already authenticated — which the previous module-level
+  // cache was silently dropping).
   useEffect(() => {
-    if (cachedSignedIn !== null) return
-    createClient().auth.getUser().then(({ data }) => {
-      cachedSignedIn = !!data.user
-      setIsSignedIn(cachedSignedIn)
-    })
+    const supabase = createClient()
+    supabase.auth.getUser().then(({ data }) => setIsSignedIn(!!data.user))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, session) => setIsSignedIn(!!session?.user),
+    )
+    return () => subscription.unsubscribe()
   }, [])
 
   const startSimulation = useCallback(() => {
