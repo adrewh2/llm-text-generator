@@ -502,6 +502,7 @@ The following are out of scope for the current implementation. Each is plausible
     ssrf.ts                          assertSafeUrl + forbidden ranges
     safeFetch.ts                     per-hop redirect validation
     fetchPage.ts                     main page fetcher
+    readBounded.ts                   streaming body read with hard byte cap
     robots.ts                        robots.txt parse
     sitemap.ts                       sitemap fetch + parse
     spaCrawler.ts                    Puppeteer + SPA detection

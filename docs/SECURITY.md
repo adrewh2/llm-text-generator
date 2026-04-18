@@ -70,9 +70,10 @@ Upper-bound inputs are also limited independently. All constants live in `lib/co
 
 - `api.MAX_URL_LENGTH = 2048` — rejected at the top of `POST /api/p` before any parsing / probing.
 - `crawler.MAX_PAGES = 25`, `crawler.MAX_DEPTH = 2`, `crawler.CONCURRENCY = 5` — cap the crawler itself.
-- `crawler.MAX_SITEMAP_URLS = 500` (enforced in `lib/crawler/sitemap.ts`) — cap on sitemap parsing.
-- `crawler.RESPONSE_MAX_BYTES = 5 MB` (enforced in `lib/crawler/fetchPage.ts`) — per individual page fetch.
+- `crawler.MAX_SITEMAP_URLS = 500` (enforced in `lib/crawler/sitemap.ts`) — cap on sitemap entries parsed.
+- `crawler.SITEMAP_MAX_BYTES = 10 MB` and `crawler.RESPONSE_MAX_BYTES = 5 MB` — byte-level caps enforced via `lib/crawler/readBounded.ts`, which streams the response and aborts once the cumulative byte count crosses the cap. A server that omits or lies about `Content-Length` can't fill memory past the cap.
 - `crawler.PIPELINE_BUDGET_MS = 270_000` (enforced in `lib/crawler/pipeline.ts`) — `Promise.race` against a 270-second timer, then fail the job cleanly.
+- `monitor.STUCK_JOB_AFTER_MS = 900_000` (15 min) — the monitor cron force-fails any job wedged in a non-terminal status past this window so a Fluid Compute crash past QStash's retry limit doesn't leave a phantom "in-flight" row blocking future submissions.
 - `api.DOWNLOAD_MAX_ENTRIES = 500` on the zip endpoint in `app/api/pages/download/route.ts` — prevents `getUserPageResults` from loading a user's entire history into function memory.
 - `monitor.BATCH_SIZE = 200` in `app/api/monitor/route.ts` — the cron pages through monitored URLs oldest-first instead of loading them all.
 
@@ -214,7 +215,14 @@ The only notable supply-chain surface is `puppeteer` + `@sparticuz/chromium` —
 
 ## 12. Logging
 
-The `debugLog` helper in `lib/log.ts` writes to `console.warn` in development only (`NODE_ENV !== "production"` check inlined at build time on the client). In production all fallback paths are silent — we chose not to ship telemetry. A production app would wire Sentry or a similar observability hook at every `debugLog` call site.
+`lib/log.ts` exposes two helpers with different production behavior:
+
+- **`debugLog(context, data)`** — `Error` payloads always emit (via `console.error`); string / object payloads emit only in non-production. Used for the trace logging scattered through the crawler and LLM-enrichment paths where a non-Error fallback is routine.
+- **`errorLog(context, data)`** — always emits via `console.error`, regardless of environment. Used for operational errors that need to be visible in the Vercel logs feed (e.g. per-URL failures inside the monitor cron, where the error surfaces as a composed string).
+
+One call site bypasses `log.ts` deliberately: `lib/rateLimit.ts` writes a `[rateLimit] Upstash call failed, FAILING OPEN: …` line with `console.warn` directly so a Redis misconfig that *silently disables rate limiting* is visible in logs even without Error-level emission.
+
+Beyond logs, we do not ship structured telemetry. A production app would wire Sentry or a similar observability hook at every error surface.
 
 Prompts + crawled content are sent to Anthropic under their default data retention policy. We do not opt into Zero Data Retention. For a regulated deployment this would be toggled on via Anthropic's account settings.
 
@@ -225,8 +233,8 @@ Prompts + crawled content are sent to Anthropic under their default data retenti
 Listed in case a reviewer wonders:
 
 - **No webhook delivery** (mentioned in `design.md` §13). Outbound webhook signing, HMAC verification, retry/backoff — all out of scope.
-- **No per-domain politeness token bucket** across all users (`design.md` §13). We do have a per-host delay in the monitor cron and a per-job politeness delay, but not a global-across-all-users cap.
-- **No concurrent cache-miss de-duplication.** `POST /api/p` attaches to any in-progress job for the same URL, but a TOCTOU race between the active-job check and `createJob` means two simultaneous requests on a novel URL can each trigger a full crawl. Consequence is benign: wasted compute on the duplicate, last-write-wins on `pages.result` (same-shape valid output, identical user-visible outcome). Not fixed deliberately — the proper fix is a partial-unique index on `jobs(page_url) WHERE status NOT IN terminal-set`, which would turn any stuck non-terminal job (Fluid Compute recycled mid-crawl, `updateJob` failing on the terminal flip) into a permanent DoS on that URL until the row is cleared by hand. Shipping it safely requires a stuck-job recovery sweep alongside. The fix is strictly worse than the race at current traffic.
+- **No per-domain politeness bucket across concurrent jobs.** Within one pipeline the crawler honors `robots.txt` `Crawl-delay` as a shared clock across workers (capped at `MAX_CRAWL_DELAY_MS` = 10 s); when no directive is set, a per-worker `POLITENESS_DELAY_MS` = 300 ms baseline applies. The monitor cron enforces `SAME_HOST_DELAY_MS` = 400 ms between successive checks to the same host. What's missing is cross-job coordination: two concurrent pipelines crawling the same host don't throttle each other. In practice the 24-hour `pages` cache hit on repeat requests makes this rare.
+- **No concurrent cache-miss de-duplication.** `POST /api/p` attaches to any in-progress job for the same URL, but a TOCTOU race between the active-job check and `createJob` means two simultaneous requests on a novel URL can each trigger a full crawl. Consequence is benign: wasted compute on the duplicate, last-write-wins on `pages.result` (same-shape valid output, identical user-visible outcome). Not fixed for this submission — the proper fix is a partial unique index on `jobs(page_url) WHERE status IN (non-terminal-set)`, with `ON CONFLICT DO NOTHING` semantics in `createJob`. The prior concern about such an index being a DoS vector for wedged rows is now addressed: `sweepStuckJobs` in the monitor cron force-fails jobs whose `updated_at` is older than 15 minutes, so any orphaned non-terminal row is cleared automatically.
 - **No structured audit log** of auth events or rate-limit denials.
 - **No CAPTCHA** on the landing page.
 - **No IP allowlist / blocklist** on our own API surface.

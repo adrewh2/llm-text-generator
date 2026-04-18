@@ -135,7 +135,7 @@ sequenceDiagram
 - **`POST /api/p` returns 5xx** — browser shows an error; nothing enqueued, nothing lost.
 - **QStash publish fails** (network / auth / wrong region) — `lib/jobQueue.ts` catches and falls through to `waitUntil(runCrawlPipeline(...))`. Same Fluid Compute instance runs the crawl; no retry safety, but the crawl isn't dropped.
 - **Worker returns non-2xx** — QStash redelivers with exponential backoff, up to `retries: 3`. The pipeline sets `job.status = crawling` at entry, so a retry overwrites rather than duplicates state.
-- **Anthropic 429 / 5xx** — SDK retries transparently (`maxRetries: 5`, exponential backoff, `retry-after` honoured). User sees no difference; latency increases by the backoff window. If all retries exhaust, the specific LLM step falls through to its deterministic fallback and the crawl still completes.
+- **Anthropic 429 / 5xx** — the SDK's built-in retry handles it transparently (default `maxRetries: 2`, exponential backoff, `Retry-After` honoured — we haven't overridden this). User sees no difference; latency increases by the backoff window. If all retries exhaust, the specific LLM step falls through to its deterministic fallback and the crawl still completes. A custom retry wrapper with higher `maxRetries` + a global concurrency semaphore is called out in `SCALING.md` §3 as a follow-up.
 - **Fluid Compute instance recycled mid-crawl** — worker never returns 200 → QStash treats as failure → redelivers. Crawl re-runs from scratch.
 
 ---
@@ -176,8 +176,8 @@ lib/
   crawler/
     pipeline.ts                  orchestration — the one function the worker calls
     {robots,sitemap,fetchPage,
-     safeFetch,ssrf,spaCrawler,
-     discover,extract,
+     safeFetch,readBounded,ssrf,
+     spaCrawler,discover,extract,
      markdownProbe,classify,
      genre,score,group,
      llmEnrich,assemble,
