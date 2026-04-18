@@ -22,10 +22,6 @@ html {
   animation: fade-in 0.25s ease-out;
 }
 
-.font-display {
-  font-family: var(--font-display), Georgia, serif;
-}
-
 /* Scrollbar styling for dark surfaces */
 .bg-zinc-950 ::-webkit-scrollbar {
   width: 4px;

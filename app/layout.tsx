@@ -1,5 +1,5 @@
 import type { Metadata } from "next"
-import { Fraunces, Geist, Geist_Mono } from "next/font/google"
+import { Geist, Geist_Mono, Newsreader } from "next/font/google"
 import "./globals.css"
 
 const geistSans = Geist({
@@ -12,10 +12,12 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 })
 
-const fraunces = Fraunces({
+// Display serif for the landing-page hero. Newsreader has wide
+// apertures and standard terminals — soft without Fraunces's quirky
+// `f` and not compressed like Instrument Serif.
+const displaySerif = Newsreader({
   variable: "--font-display",
   subsets: ["latin"],
-  axes: ["SOFT", "WONK", "opsz"],
   weight: "variable",
 })
 
@@ -28,7 +30,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${displaySerif.variable} antialiased`}
       >
         {children}
       </body>
