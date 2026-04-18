@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { formatDistanceToNow } from "date-fns"
+import { Eye } from "lucide-react"
 import SignOutButton from "./SignOutButton"
 import JobActions from "./JobActions"
 import { getUserPages } from "@/lib/store"
@@ -71,7 +72,8 @@ export default async function DashboardPage() {
                     </div>
                     <p className="text-xs text-zinc-400 truncate">{page.pageUrl}</p>
                   </div>
-                  <div className="flex items-center ml-4 shrink-0">
+                  <div className="flex items-center gap-3 ml-4 shrink-0">
+                    <MonitorStatus monitored={page.monitored} lastCheckedAt={page.lastCheckedAt} />
                     <div className="w-8 flex justify-center">
                       <JobActions pageUrl={page.pageUrl} />
                     </div>
@@ -91,6 +93,22 @@ export default async function DashboardPage() {
         )}
       </main>
     </div>
+  )
+}
+
+function MonitorStatus({ monitored, lastCheckedAt }: { monitored: boolean; lastCheckedAt: Date | null }) {
+  if (!monitored) return null
+  const label = lastCheckedAt
+    ? `Checked ${formatDistanceToNow(lastCheckedAt, { addSuffix: true }).replace("less than a minute ago", "< 1 min ago")}`
+    : "Awaiting check"
+  return (
+    <span
+      title="We re-check this site's sitemap and homepage every hour and regenerate llms.txt when it changes"
+      className="hidden md:inline-flex items-center gap-1.5 text-xs font-medium text-zinc-600"
+    >
+      <Eye size={12} className="text-emerald-500" />
+      {label}
+    </span>
   )
 }
 

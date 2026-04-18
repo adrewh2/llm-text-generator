@@ -8,9 +8,21 @@ CREATE TABLE pages (
   site_name TEXT,
   genre TEXT,
   crawled_pages JSONB,
+  -- Monitoring is a system invariant: every page is monitored by
+  -- default. The cron at /api/monitor re-computes a signature over the
+  -- site's sitemap + homepage and triggers a re-crawl on mismatch.
+  -- `last_requested_at` is bumped on every /api/p hit; the cron
+  -- sweeper disables monitoring on pages not requested in the last
+  -- 5 days.
+  monitored BOOLEAN NOT NULL DEFAULT true,
+  last_checked_at TIMESTAMPTZ,
+  last_requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  content_signature TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX idx_pages_monitored ON pages(monitored) WHERE monitored = true;
+CREATE INDEX idx_pages_last_requested_at ON pages(last_requested_at);
 
 -- jobs: one row per crawl execution, linked to a page
 CREATE TABLE jobs (

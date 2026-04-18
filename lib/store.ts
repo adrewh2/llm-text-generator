@@ -132,6 +132,64 @@ export async function getActiveJobForUrl(url: string): Promise<{ jobId: string }
   return job ? { jobId: job.id } : undefined
 }
 
+// ─── Monitoring ──────────────────────────────────────────────────────────────
+
+export async function getMonitoredPages(): Promise<Array<{
+  url: string
+  contentSignature: string | null
+}>> {
+  const supabase = getClient()
+  const { data } = await supabase
+    .from("pages")
+    .select("url, content_signature")
+    .eq("monitored", true)
+  return (data ?? []).map((p) => ({
+    url: p.url,
+    contentSignature: p.content_signature ?? null,
+  }))
+}
+
+export async function recordMonitorCheck(
+  pageUrl: string,
+  signature: string | null,
+): Promise<void> {
+  const supabase = getClient()
+  const patch: Record<string, unknown> = { last_checked_at: new Date().toISOString() }
+  // Only overwrite the signature when we actually computed one — a null
+  // here means "detection failed this cycle", keep the previous sig so
+  // we can still diff next time.
+  if (signature !== null) patch.content_signature = signature
+  await supabase.from("pages").update(patch).eq("url", pageUrl)
+}
+
+/**
+ * Turn off monitoring on pages not requested in the last N days.
+ * Returns the number of rows affected so the cron can report it.
+ */
+export async function sweepStaleMonitoredPages(staleAfterDays: number): Promise<number> {
+  const supabase = getClient()
+  const cutoff = new Date(Date.now() - staleAfterDays * 86_400_000).toISOString()
+  const { count } = await supabase
+    .from("pages")
+    .update({ monitored: false }, { count: "exact" })
+    .eq("monitored", true)
+    .lt("last_requested_at", cutoff)
+  return count ?? 0
+}
+
+/**
+ * Bump `pages.last_requested_at` — called whenever a user interacts
+ * with a page's URL, so the sweeper can tell dormant URLs from active
+ * ones. No-op if the page doesn't exist yet.
+ */
+export async function bumpPageRequest(pageUrl: string): Promise<void> {
+  const supabase = getClient()
+  await supabase
+    .from("pages")
+    .update({ last_requested_at: new Date().toISOString() })
+    .eq("url", pageUrl)
+}
+
 // ─── User requests ────────────────────────────────────────────────────────────
 
 export async function upsertUserRequest(userId: string, pageUrl: string): Promise<void> {
@@ -154,6 +212,8 @@ export async function getUserPages(userId: string): Promise<Array<{
   requestedAt: Date
   latestJobId: string | null
   latestJobStatus: string | null
+  monitored: boolean
+  lastCheckedAt: Date | null
 }>> {
   const supabase = getClient()
   const { data } = await supabase
@@ -170,7 +230,7 @@ export async function getUserPages(userId: string): Promise<Array<{
   // Fetch page metadata
   const { data: pages } = await supabase
     .from("pages")
-    .select("url, site_name, genre")
+    .select("url, site_name, genre, monitored, last_checked_at")
     .in("url", pageUrls)
 
   // Fetch latest job per page_url
@@ -198,6 +258,8 @@ export async function getUserPages(userId: string): Promise<Array<{
       requestedAt: new Date(r.created_at),
       latestJobId: job?.id ?? null,
       latestJobStatus: job?.status ?? null,
+      monitored: page?.monitored ?? false,
+      lastCheckedAt: page?.last_checked_at ? new Date(page.last_checked_at) : null,
     }
   })
 }

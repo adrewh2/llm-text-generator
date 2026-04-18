@@ -28,6 +28,11 @@ Paste a URL, the app discovers pages (sitemap → robots → link-following, wit
 - Per-user dashboard of every page you've generated; remove-from-history action
 - Row-Level Security on every table; service-role key used only server-side
 
+**Monitoring**
+- Opt-in per-page toggle on the dashboard
+- Hourly Vercel Cron computes a signature over each monitored site's sitemap + homepage; on mismatch, a full re-crawl is dispatched and the `pages.result` is refreshed
+- Detection (inline) and re-crawl fan-out (`waitUntil` today) are separated so a durable queue (Vercel Queues / Inngest) can drop in at the fan-out boundary later — see `app/api/monitor/route.ts`
+
 ## Running locally
 
 ```bash
@@ -48,6 +53,7 @@ Open <http://localhost:3000>.
 | `SUPABASE_SERVICE_ROLE_KEY` | server | Bypasses RLS for store writes — **never expose to the client** |
 | `NEXT_PUBLIC_SUPABASE_URL` | browser | Same URL, exposed for the browser Supabase client |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser | Anon key exposed to the browser |
+| `CRON_SECRET` | server | Secret Vercel injects as `Authorization: Bearer …` on cron-invoked calls to `/api/monitor`. Route fails closed if unset. |
 
 ### Supabase setup
 
@@ -59,13 +65,15 @@ The full schema (tables, RLS, policies) is in [`supabase/migration.sql`](./supab
 app/
   page.tsx               Landing page / URL input
   p/[id]/page.tsx        Result + simulated-progress view
-  dashboard/             Per-user page history
+  dashboard/             Per-user page history + monitor toggle
   login/                 Magic-link auth
-  api/p/                 POST create | GET status | DELETE from history
+  api/p/                 POST create | GET status | DELETE from history | POST monitor toggle
+  api/monitor/           GET cron entrypoint (CRON_SECRET gated)
   auth/callback          Supabase auth callback
 
 lib/crawler/
   pipeline.ts            Orchestrates crawl → enrich → score → assemble
+  monitor.ts             Signature + change detection for cron
   discover.ts            Sitemap + robots + BFS URL discovery
   fetchPage.ts           HTTP fetch with markdown-variant probing
   spaCrawler.ts          Puppeteer fallback for JS-rendered sites
@@ -83,8 +91,8 @@ supabase/migration.sql   Schema + RLS policies
 
 ### Data model
 
-- **`pages`** — one row per URL (globally shared cache). `result` holds the generated `llms.txt`.
-- **`jobs`** — one row per crawl execution, FK → `pages.url`. Multiple jobs can exist per page (e.g. TTL refreshes).
+- **`pages`** — one row per URL (globally shared cache). `result` holds the generated `llms.txt`. Monitoring state (`monitored`, `last_checked_at`, `content_signature`) also lives here.
+- **`jobs`** — one row per crawl execution, FK → `pages.url`. Multiple jobs can exist per page (e.g. TTL refreshes, monitor-triggered re-crawls).
 - **`user_requests`** — tracks which pages a signed-in user has generated; powers the dashboard.
 
 ### Security

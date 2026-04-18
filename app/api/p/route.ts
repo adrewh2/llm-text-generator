@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { randomUUID } from "crypto"
-import { createJob, getPageByUrl, getActiveJobForUrl, upsertUserRequest } from "@/lib/store"
+import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, upsertUserRequest } from "@/lib/store"
 import { runCrawlPipeline } from "@/lib/crawler/pipeline"
 import { isValidHttpUrl } from "@/lib/crawler/url"
 import { waitUntil } from "@vercel/functions"
@@ -40,6 +40,7 @@ export async function POST(req: NextRequest) {
 
   if (existing && !existing.isStale) {
     // Fresh cached result — serve immediately with simulated animation
+    await bumpPageRequest(canonicalUrl)
     if (user) await upsertUserRequest(user.id, canonicalUrl)
     return NextResponse.json({ page_id: existing.jobId, cached: true }, { status: 200 })
   }
@@ -47,6 +48,7 @@ export async function POST(req: NextRequest) {
   // In-progress job already running for this URL — attach to it
   const active = await getActiveJobForUrl(canonicalUrl)
   if (active) {
+    await bumpPageRequest(canonicalUrl)
     return NextResponse.json({ page_id: active.jobId, cached: false }, { status: 200 })
   }
 
@@ -54,6 +56,7 @@ export async function POST(req: NextRequest) {
   // (if stale, the old pages.result is preserved until the new crawl succeeds)
   const id = randomUUID()
   await createJob(id, canonicalUrl)
+  await bumpPageRequest(canonicalUrl)
   waitUntil(runCrawlPipeline(id, canonicalUrl))
 
   return NextResponse.json({ page_id: id, cached: false }, { status: 201 })
