@@ -1,6 +1,7 @@
 import type { Browser, Page } from "puppeteer"
 import { normalizeUrl, isSameDomain, shouldSkipUrl } from "./url"
 import { isBlockedByChallenge } from "./fetchPage"
+import { assertSafeUrl } from "./ssrf"
 
 /**
  * Returns true if the HTML looks like a JS-rendered SPA shell or a
@@ -59,6 +60,14 @@ export class SpaBrowser {
   async fetchPage(url: string): Promise<{ html: string; ok: boolean }> {
     if (!this.browser) return { html: "", ok: false }
 
+    // Puppeteer drives a real browser and will happily connect to
+    // localhost / cloud-metadata endpoints. SSRF-check before goto.
+    try {
+      await assertSafeUrl(url)
+    } catch {
+      return { html: "", ok: false }
+    }
+
     let page: Page | null = null
     try {
       page = await this.browser.newPage()
@@ -97,6 +106,12 @@ export class SpaBrowser {
     links: string[]
   }> {
     if (!this.browser) return { html: "", ok: false, links: [] }
+
+    try {
+      await assertSafeUrl(url)
+    } catch {
+      return { html: "", ok: false, links: [] }
+    }
 
     let page: Page | null = null
     try {

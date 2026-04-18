@@ -3,31 +3,36 @@
 import { useEffect, useState } from "react"
 import { formatDistanceToNowStrict } from "date-fns"
 import { Eye } from "lucide-react"
+import { ui } from "@/lib/config"
 
 interface Props {
   monitored: boolean
   lastCheckedAt: Date | null
+  /** True when a job for this page is currently in a non-terminal state. */
+  running: boolean
 }
 
-export default function MonitorStatus({ monitored, lastCheckedAt }: Props) {
-  // Bump a counter every 30s so formatDistanceToNow re-evaluates
-  // against the fresh clock. The stored timestamp itself doesn't
-  // change — we're just forcing a re-render to re-compute the
-  // relative label.
+export default function MonitorStatus({ monitored, lastCheckedAt, running }: Props) {
+  // Re-render every 10s so formatDistanceToNowStrict re-evaluates
+  // against the fresh clock — short enough that "5 seconds ago"
+  // updates smoothly within the first minute, cheap enough that it's
+  // effectively free at the list size the dashboard shows.
   const [, setTick] = useState(0)
   useEffect(() => {
     if (!lastCheckedAt) return
-    const id = setInterval(() => setTick((n) => n + 1), 30_000)
+    const id = setInterval(() => setTick((n) => n + 1), ui.MONITOR_STATUS_TICK_MS)
     return () => clearInterval(id)
   }, [lastCheckedAt])
 
   if (!monitored) return null
-  const label = lastCheckedAt
-    ? `Checked ${formatDistanceToNowStrict(lastCheckedAt, { addSuffix: true })}`
-    : "Awaiting check"
+  const label = running
+    ? "Refreshing…"
+    : lastCheckedAt
+    ? `Refreshed ${formatDistanceToNowStrict(lastCheckedAt, { addSuffix: true })}`
+    : "Awaiting refresh"
   return (
     <span
-      title="We re-check this site's sitemap and homepage every hour and regenerate llms.txt when it changes"
+      title="We re-check this site's sitemap and homepage on a schedule and refresh the llms.txt when it changes"
       // Fixed narrow width + justify-start so the Eye icon aligns
       // vertically across rows but sits close to the trash/chevron on
       // the right. Truncate so the longest label ("less than a minute

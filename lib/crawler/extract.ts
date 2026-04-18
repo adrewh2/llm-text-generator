@@ -1,5 +1,11 @@
 import { load, type CheerioAPI } from "cheerio"
 import type { DescriptionProvenance, ExtractedPage } from "./types"
+import { crawler } from "../config"
+import { cleanSiteName, siteNameFromHostname } from "./siteName"
+
+// Cap excerpt at roughly 4 KB of UTF-8 so a malicious site serving a
+// wall of 4-byte Unicode can't inflate what we store in pages.crawled_pages.
+const MAX_EXCERPT_BYTES = crawler.EXCERPT_MAX_BYTES
 
 export function extractMetadata(
   url: string,
@@ -42,9 +48,20 @@ function extractTitle($: CheerioAPI): string {
   return ""
 }
 
+// Titles often have a site-name suffix like "Page — Site Name" that we
+// want to strip. Be conservative: only strip if the suffix starts with
+// a word character (a capital letter is a stronger signal but e.g.
+// lowercase site names exist). We never strip em/en dashes that are
+// inside a longer sentence — require at least a leading space+sep.
 function cleanTitle(t: string): string {
   return t
-    .replace(/\s*[|\-–—·•]\s*.{1,80}$/, "")
+    // "Quick start | Next.js Docs" → "Quick start"
+    .replace(/\s+[|·•]\s+[^|·•]{1,60}$/, "")
+    // "Quick start - Next.js" → "Quick start" (only when the suffix
+    // looks like a site / product name: starts with a letter, no
+    // trailing punctuation). Guard against en/em dashes to preserve
+    // titles like "React — A JS Library".
+    .replace(/\s+-\s+\w[^-]{0,40}$/, "")
     .replace(/\s*(Home|Homepage|Welcome|Official Site|Official Website)\s*$/i, "")
     .trim()
     || t.trim()
@@ -116,7 +133,7 @@ function extractExcerpt($: CheerioAPI): string {
   const main = $("main, article, [role='main'], .content, .post-content, #content, .entry-content").first()
   const source = main.length ? main : $("body")
 
-  return source
+  const raw = source
     .clone()
     .find("script, style, nav, footer, header, form, .sidebar, .menu, .nav, .cookie, .banner")
     .remove()
@@ -124,44 +141,90 @@ function extractExcerpt($: CheerioAPI): string {
     .text()
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 2000)
+
+  return truncateBytes(raw, MAX_EXCERPT_BYTES)
 }
 
-export function extractSiteName(html: string, hostname: string): string {
+// Slice a string so its UTF-8 byte length doesn't exceed `maxBytes`,
+// without splitting a multi-byte codepoint.
+function truncateBytes(s: string, maxBytes: number): string {
+  const encoder = new TextEncoder()
+  if (encoder.encode(s).length <= maxBytes) return s
+  // Binary search on character length.
+  let lo = 0, hi = s.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >>> 1
+    if (encoder.encode(s.slice(0, mid)).length <= maxBytes) lo = mid
+    else hi = mid - 1
+  }
+  return s.slice(0, lo)
+}
+
+export interface SiteNameCandidates {
+  ogSiteName?: string
+  applicationName?: string
+  jsonLdName?: string
+  title?: string
+  h1?: string
+}
+
+/**
+ * Pull every candidate source for a site name out of the homepage HTML.
+ * Returned as a structured bag so the LLM refinement pass can see all
+ * of them — a noisy `<title>` with a clean `og:site_name` sibling is
+ * still recoverable when the model has both.
+ */
+export function extractSiteNameCandidates(
+  html: string,
+  hostname: string,
+): SiteNameCandidates {
   const $ = load(html)
 
   const ogSite = $('meta[property="og:site_name"]').attr("content")?.trim()
-  // Skip og:site_name if it looks like a hostname (e.g. "fastht.ml", "example.com")
-  if (ogSite && !looksLikeHostname(ogSite, hostname)) return ogSite
+  // Drop og:site_name that's literally the hostname — it's a common
+  // mis-configuration and worse than falling through to a real tag.
+  const ogSiteName =
+    ogSite && !looksLikeHostname(ogSite, hostname) ? ogSite : undefined
 
-  const appName = $('meta[name="application-name"]').attr("content")?.trim()
-  if (appName) return appName
-
-  // JSON-LD
+  let jsonLdName: string | undefined
   const scripts = $('script[type="application/ld+json"]')
-  for (let i = 0; i < scripts.length; i++) {
+  for (let i = 0; i < scripts.length && !jsonLdName; i++) {
     try {
       const data = JSON.parse($(scripts[i]).html() || "{}")
       const name = data.name || data.publisher?.name
-      if (name && typeof name === "string" && name.length < 80) return name
+      // Cap at 300 chars — a malicious site with a 10 KB name field
+      // would otherwise balloon the llmSiteName prompt.
+      if (typeof name === "string" && name.trim()) jsonLdName = name.trim().slice(0, 300)
     } catch {}
   }
 
-  const title = $("title").text().trim()
-  if (title) {
-    const cleaned = cleanTitle(title)
+  return {
+    ogSiteName,
+    applicationName: $('meta[name="application-name"]').attr("content")?.trim() || undefined,
+    jsonLdName,
+    title: $("title").text().trim() || undefined,
+    h1: $("h1").first().text().trim() || undefined,
+  }
+}
+
+/**
+ * Deterministic site-name extraction. Kept as a cheap first pass and a
+ * fallback for when the LLM is unavailable — the pipeline's final name
+ * is resolved by `llmSiteName(candidates, hostname, deterministic)`.
+ *
+ * Each candidate is run through `cleanSiteName` before being accepted,
+ * so something like
+ * "Uber Eats | Food & Grocery | Order Groceries…" collapses to
+ * "Uber Eats" rather than being written to the DB verbatim.
+ */
+export function extractSiteName(html: string, hostname: string): string {
+  const c = extractSiteNameCandidates(html, hostname)
+  for (const raw of [c.ogSiteName, c.applicationName, c.jsonLdName, c.title, c.h1]) {
+    if (!raw) continue
+    const cleaned = cleanSiteName(raw)
     if (cleaned) return cleaned
   }
-
-  const h1 = $("h1").first().text().trim()
-  if (h1 && h1.length < 80) return h1
-
-  // Fallback: capitalize hostname
-  return hostname
-    .replace(/^www\./, "")
-    .split(".")[0]
-    .replace(/-/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase())
+  return siteNameFromHostname(hostname)
 }
 
 function looksLikeHostname(value: string, hostname: string): boolean {

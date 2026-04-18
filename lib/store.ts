@@ -1,22 +1,38 @@
-import { createClient } from "@supabase/supabase-js"
+import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import type { CrawlJob, ScoredPage } from "./crawler/types"
-import { PAGE_TTL_HOURS } from "./crawler/config"
+import { crawler } from "./config"
+import { requireEnv } from "./env"
+
+const { PAGE_TTL_HOURS } = crawler
 
 // Server-only store: uses the service role key so writes bypass RLS.
-// This key must never be exposed to the client.
-function getClient() {
-  const url = process.env.SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!url || !key) throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
+// This key must never be exposed to the client. One client is lazily
+// created and reused for the process lifetime — the previous impl
+// built a fresh Supabase client on every exported function call.
+let cached: SupabaseClient | null = null
+function getClient(): SupabaseClient {
+  if (cached) return cached
+  cached = createClient(
+    requireEnv("SUPABASE_URL"),
+    requireEnv("SUPABASE_SERVICE_ROLE_KEY"),
+    { auth: { persistSession: false, autoRefreshToken: false } },
+  )
+  return cached
 }
 
 // ─── Jobs ────────────────────────────────────────────────────────────────────
 
 export async function createJob(id: string, url: string): Promise<void> {
   const supabase = getClient()
-  // Ensure the pages row exists before inserting the job (FK requires it)
-  await supabase.from("pages").upsert({ url }, { onConflict: "url", ignoreDuplicates: true })
+  // Ensure the pages row exists before inserting the job (FK requires
+  // it). Always set monitored=true — a user kicking off a fresh crawl
+  // implies they care about this URL again, and the monitor sweeper
+  // may have turned it off recently. We leave last_requested_at alone
+  // here; the caller bumps it via bumpPageRequest.
+  await supabase.from("pages").upsert(
+    { url, monitored: true },
+    { onConflict: "url" },
+  )
   const { error } = await supabase.from("jobs").insert({
     id,
     page_url: url,
@@ -28,8 +44,8 @@ export async function createJob(id: string, url: string): Promise<void> {
 
 export async function getJob(id: string): Promise<CrawlJob | undefined> {
   const supabase = getClient()
-  const { data: job, error } = await supabase.from("jobs").select("*").eq("id", id).single()
-  if (error || !job) return undefined
+  const { data: job } = await supabase.from("jobs").select("*").eq("id", id).maybeSingle()
+  if (!job) return undefined
 
   let pageResult: { result: string; crawled_pages: ScoredPage[] | null } | null = null
   if (job.status === "complete" || job.status === "partial") {
@@ -37,7 +53,7 @@ export async function getJob(id: string): Promise<CrawlJob | undefined> {
       .from("pages")
       .select("result, crawled_pages")
       .eq("url", job.page_url)
-      .single()
+      .maybeSingle()
     pageResult = page ?? null
   }
 
@@ -78,7 +94,7 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
       .from("jobs")
       .select("page_url, site_name, genre")
       .eq("id", id)
-      .single()
+      .maybeSingle()
 
     if (job) {
       await supabase.from("pages").upsert({
@@ -124,7 +140,7 @@ export async function getPageByUrl(url: string): Promise<{ jobId: string; isStal
     .in("status", ["complete", "partial"])
     .order("created_at", { ascending: false })
     .limit(1)
-    .single()
+    .maybeSingle()
 
   return job ? { jobId: job.id, isStale } : undefined
 }
@@ -138,13 +154,15 @@ export async function getActiveJobForUrl(url: string): Promise<{ jobId: string }
     .not("status", "in", '("failed","complete","partial")')
     .order("created_at", { ascending: false })
     .limit(1)
-    .single()
+    .maybeSingle()
   return job ? { jobId: job.id } : undefined
 }
 
 // ─── Monitoring ──────────────────────────────────────────────────────────────
 
-export async function getMonitoredPages(): Promise<Array<{
+export async function getMonitoredPages(
+  { offset = 0, limit = 200 }: { offset?: number; limit?: number } = {},
+): Promise<Array<{
   url: string
   contentSignature: string | null
 }>> {
@@ -153,6 +171,8 @@ export async function getMonitoredPages(): Promise<Array<{
     .from("pages")
     .select("url, content_signature")
     .eq("monitored", true)
+    .order("last_checked_at", { ascending: true, nullsFirst: true })
+    .range(offset, offset + limit - 1)
   return (data ?? []).map((p) => ({
     url: p.url,
     contentSignature: p.content_signature ?? null,
@@ -204,8 +224,14 @@ export async function bumpPageRequest(pageUrl: string): Promise<void> {
 
 export async function upsertUserRequest(userId: string, pageUrl: string): Promise<void> {
   const supabase = getClient()
+  // Explicitly pass created_at so re-requesting a URL refreshes the
+  // timestamp (on conflict the upsert writes whatever we send; the
+  // DEFAULT NOW() only fires on INSERT). This makes the dashboard
+  // order-by created_at DESC surface the most recently-asked-about
+  // page at the top — a user who's made many requests shouldn't have
+  // to page past history to find a URL they just re-submitted.
   await supabase.from("user_requests").upsert(
-    { user_id: userId, page_url: pageUrl },
+    { user_id: userId, page_url: pageUrl, created_at: new Date().toISOString() },
     { onConflict: "user_id,page_url" }
   )
 }
@@ -227,11 +253,16 @@ export interface UserPageEntry {
 }
 
 /**
- * Fetch every page in a user's history along with its current llms.txt
- * result. Used by /api/pages/download to build the zip archive. Rows
- * without a result (crawl not yet complete) are skipped.
+ * Fetch pages in a user's history along with their current llms.txt
+ * results. Used by /api/pages/download to build the zip archive. Rows
+ * without a result (crawl not yet complete) are skipped. `limit`
+ * caps the query so a user with thousands of pages can't OOM the
+ * download function.
  */
-export async function getUserPageResults(userId: string): Promise<Array<{
+export async function getUserPageResults(
+  userId: string,
+  { limit = 500 }: { limit?: number } = {},
+): Promise<Array<{
   url: string
   siteName: string | null
   result: string
@@ -242,6 +273,7 @@ export async function getUserPageResults(userId: string): Promise<Array<{
     .select("page_url, created_at")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
+    .limit(limit)
   if (!requests || requests.length === 0) return []
 
   const urls = requests.map((r) => r.page_url)
@@ -282,19 +314,20 @@ export async function getUserPages(
     .select("url, site_name, genre, monitored, last_checked_at")
     .in("url", pageUrls)
 
-  // Fetch latest job per page_url. Only consider terminal jobs —
-  // user_requests rows are only created on completion, so every URL in
-  // the dashboard has at least one. A re-crawl in progress (monitor
-  // tick) still links to the last completed result.
+  // Fetch the latest job per page_url regardless of status. A row can
+  // land on the dashboard before any of its jobs is terminal — POST
+  // /api/p upserts user_requests on every branch — and a monitor-
+  // triggered re-crawl should surface as "Refreshing…" against the
+  // running job, so both need the non-terminal status to reach the UI.
   const { data: jobs } = await supabase
     .from("jobs")
     .select("id, page_url, status, created_at")
     .in("page_url", pageUrls)
-    .in("status", ["complete", "partial"])
     .order("created_at", { ascending: false })
 
   const pageMap = new Map((pages ?? []).map((p) => [p.url, p]))
-  // Keep only most recent job per page_url
+  // Keep the most recent job per page_url. `jobs` was ordered by
+  // created_at DESC, so the first one seen per url wins the slot.
   const jobMap = new Map<string, { id: string; status: string }>()
   for (const j of (jobs ?? [])) {
     if (!jobMap.has(j.page_url)) jobMap.set(j.page_url, { id: j.id, status: j.status })

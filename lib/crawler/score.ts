@@ -37,9 +37,9 @@ export function scorePages(
     if (/\/(print|export)\//.test(page.url)) score -= 20
     if (/\/(tag|category|archive|author)\//.test(page.url)) score -= 25
 
-    // LLM importance is the primary relevance signal
+    // LLM importance is the primary relevance signal.
+    // Map 1–10 to an integer modifier in [-23, +23] via (x − 5.5) × 5.
     if (enriched?.importance !== undefined) {
-      // Map 1–10 to a -25…+25 modifier
       score += Math.round((enriched.importance - 5.5) * 5)
     }
 

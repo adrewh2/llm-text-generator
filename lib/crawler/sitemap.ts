@@ -1,8 +1,10 @@
 import { load } from "cheerio"
 import { normalizeUrl } from "./url"
+import { safeFetch } from "./safeFetch"
+import { USER_AGENT } from "./fetchPage"
+import { crawler } from "../config"
 
-const MAX_SITEMAP_URLS = 500
-const SITEMAP_TIMEOUT = 10000
+const { MAX_SITEMAP_URLS, SITEMAP_TIMEOUT_MS } = crawler
 
 export async function fetchSitemapUrls(sitemapUrl: string, baseUrl: string): Promise<string[]> {
   const urls: string[] = []
@@ -19,9 +21,11 @@ async function processSitemap(
   if (depth > 2 || collected.length >= MAX_SITEMAP_URLS) return
 
   try {
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(SITEMAP_TIMEOUT),
-      headers: { "User-Agent": "LlmsTxtGenerator/1.0" },
+    // safeFetch enforces SSRF per-hop — important because a sitemap
+    // index can declare arbitrary cross-origin Sitemap: URLs.
+    const res = await safeFetch(url, {
+      signal: AbortSignal.timeout(SITEMAP_TIMEOUT_MS),
+      headers: { "User-Agent": USER_AGENT },
     })
     if (!res.ok) return
 
@@ -42,13 +46,14 @@ async function processSitemap(
       return
     }
 
-    // URL set
-    $("url > loc").each((_, el) => {
-      if (collected.length >= MAX_SITEMAP_URLS) return false as unknown as void
+    // URL set — explicit loop so we can break cleanly when we hit the cap.
+    const locs = $("url > loc").toArray()
+    for (const el of locs) {
+      if (collected.length >= MAX_SITEMAP_URLS) break
       const loc = $(el).text().trim()
       const normalized = normalizeUrl(loc)
       if (normalized) collected.push(normalized)
-    })
+    }
   } catch {
     // Non-fatal
   }

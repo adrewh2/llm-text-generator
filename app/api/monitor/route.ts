@@ -13,21 +13,24 @@
 // concurrent changed pages.
 
 import { NextRequest, NextResponse } from "next/server"
-import { randomUUID } from "crypto"
+import { randomUUID, timingSafeEqual } from "crypto"
 import { waitUntil } from "@vercel/functions"
 import {
   createJob,
+  getActiveJobForUrl,
   getMonitoredPages,
   recordMonitorCheck,
   sweepStaleMonitoredPages,
 } from "@/lib/store"
 import { detectChange } from "@/lib/crawler/monitor"
 import { runCrawlPipeline } from "@/lib/crawler/pipeline"
+import { debugLog } from "@/lib/log"
+import { monitor } from "@/lib/config"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
 
-const STALE_MONITOR_DAYS = 5
+const { STALE_DAYS: STALE_MONITOR_DAYS, BATCH_SIZE: MONITOR_BATCH_SIZE, SAME_HOST_DELAY_MS } = monitor
 
 interface Summary {
   checked: number
@@ -44,12 +47,23 @@ export async function GET(req: NextRequest) {
   // cycles detecting changes on dormant URLs.
   const swept = await sweepStaleMonitoredPages(STALE_MONITOR_DAYS)
 
-  const pages = await getMonitoredPages()
+  const pages = await getMonitoredPages({ limit: MONITOR_BATCH_SIZE })
   const summary: Summary = { checked: 0, changed: 0, swept, recrawls: [], errors: [] }
 
   // Sequential detection keeps memory flat and is polite to target
   // domains. The bottleneck is target-site response time, not CPU.
+  // Track the last check time per host so N monitored pages on the
+  // same origin aren't hit back-to-back.
+  const lastHostHit = new Map<string, number>()
+
   for (const page of pages) {
+    const host = hostOf(page.url)
+    if (host) {
+      const last = lastHostHit.get(host) ?? 0
+      const wait = last + SAME_HOST_DELAY_MS - Date.now()
+      if (wait > 0) await sleep(wait)
+      lastHostHit.set(host, Date.now())
+    }
     try {
       const { changed, newSignature } = await detectChange(page.url, page.contentSignature)
       await recordMonitorCheck(page.url, newSignature)
@@ -61,10 +75,9 @@ export async function GET(req: NextRequest) {
         summary.recrawls.push(jobId)
       }
     } catch (err: unknown) {
-      summary.errors.push({
-        url: page.url,
-        error: err instanceof Error ? err.message : "unknown error",
-      })
+      const message = err instanceof Error ? err.message : "unknown error"
+      summary.errors.push({ url: page.url, error: message })
+      debugLog("monitor", `${page.url}: ${message}`)
     }
   }
 
@@ -75,8 +88,16 @@ export async function GET(req: NextRequest) {
  * Queue-boundary: create a job row and spawn the crawl pipeline.
  * Today this runs in-process via waitUntil. Replacing the body with
  * an enqueue call (Vercel Queues / Inngest) is where scaling goes.
+ *
+ * Attaches to an in-flight job when one already exists for the URL
+ * (prior cron tick still running, or a user submission in the same
+ * window) — otherwise the cron would cheerfully kick off a duplicate
+ * crawl and both workers would fight over `pages.result`.
  */
 async function dispatchRecrawl(pageUrl: string): Promise<string> {
+  const active = await getActiveJobForUrl(pageUrl)
+  if (active) return active.jobId
+
   const jobId = randomUUID()
   await createJob(jobId, pageUrl)
   waitUntil(runCrawlPipeline(jobId, pageUrl))
@@ -87,5 +108,17 @@ function isAuthorized(req: NextRequest): boolean {
   const expected = process.env.CRON_SECRET
   if (!expected) return false // fail closed if the secret isn't configured
   const header = req.headers.get("authorization") || ""
-  return header === `Bearer ${expected}`
+  const expectedHeader = `Bearer ${expected}`
+  // timingSafeEqual requires equal-length buffers — bail first on
+  // mismatched lengths so short attacker inputs don't throw.
+  if (header.length !== expectedHeader.length) return false
+  return timingSafeEqual(Buffer.from(header), Buffer.from(expectedHeader))
+}
+
+function hostOf(url: string): string | null {
+  try { return new URL(url).host } catch { return null }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms))
 }

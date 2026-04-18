@@ -1,247 +1,88 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback, Suspense } from "react"
+import { Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useParams, useSearchParams } from "next/navigation"
-import {
-  CheckCircle2, Circle, Loader2, Copy, Download, Check, Link2,
-  Shield, AlertCircle, XCircle, LayoutDashboard, Plus,
-} from "lucide-react"
+import { LayoutDashboard, Loader2, Plus, Shield } from "lucide-react"
 import Link from "next/link"
-import type { CrawlJob, JobStatus } from "@/lib/crawler/types"
 import { validateLlmsTxt } from "@/lib/crawler/validate"
 import { createClient } from "@/lib/supabase/client"
+import { debugLog } from "@/lib/log"
+import { ui } from "@/lib/config"
+import ProgressPane from "./ProgressPane"
+import ResultPane from "./ResultPane"
+import { useVisibleStatus } from "./useVisibleStatus"
+import type { ApiJob } from "./types"
 
-// ─── Types ──────────────────────────────────────────────────────────────────
-
-interface ApiJob extends Omit<CrawlJob, "createdAt" | "updatedAt"> {
-  createdAt: string
-  updatedAt: string
-}
-
-// ─── Constants ──────────────────────────────────────────────────────────────
-
-const STEPS: Array<{ id: JobStatus; label: string }> = [
-  { id: "crawling",   label: "Crawling pages" },
-  { id: "enriching",  label: "Enriching with AI" },
-  { id: "scoring",    label: "Scoring & classifying" },
-  { id: "assembling", label: "Assembling file" },
-]
-
-// Simulated step durations (ms) for cached results — one per step.
-const SIM_STEP_DURATIONS = [1800, 1600, 1400, 1200]
-
-// Minimum time each step stays visible during a live crawl, so fast
-// backend transitions (scoring → assembling → complete in <100ms) are
-// still readable. Doesn't slow down genuinely slow steps — it only
-// caps how fast visibleStatus can catch up to the real job status.
-const LIVE_MIN_STEP_DWELL_MS = 1200
-
-const STATUS_PROGRESSION = [
-  "pending", "crawling", "enriching", "scoring", "assembling", "complete",
-] as const
-
-// ─── Progress Pane ────────────────────────────────────────────────────────────
-
-function ProgressPane({ job, simulatedStep }: { job: ApiJob; simulatedStep?: number }) {
-  const domain = (() => { try { return new URL(job.url).hostname } catch { return job.url } })()
-  const isSimulated = simulatedStep !== undefined
-
-  const getStepStatus = (stepId: string) => {
-    if (isSimulated) {
-      const idx: Record<string, number> = { crawling: 0, enriching: 1, scoring: 2, assembling: 3 }
-      const si = idx[stepId] ?? 0
-      if (simulatedStep > si) return "done"
-      if (simulatedStep === si) return "active"
-      return "waiting"
-    }
-    if (job.status === "failed") return stepId === "crawling" ? "error" : "waiting"
-    const order = ["pending", "crawling", "enriching", "scoring", "assembling", "complete", "partial"]
-    const ji = order.indexOf(job.status)
-    const si = ({ crawling: 1, enriching: 2, scoring: 3, assembling: 4 } as Record<string, number>)[stepId] ?? 0
-    if (ji > si) return "done"
-    if (ji === si) return "active"
-    return "waiting"
-  }
-
-  return (
-    <div className="flex-1 flex items-center justify-center p-8 overflow-y-auto">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-[0.12em] mb-2">Generating</p>
-          <h2 className="text-xl font-semibold text-zinc-950 tracking-tight">Analyzing {domain}</h2>
-        </div>
-
-        <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm mb-4">
-          {STEPS.map((step, idx) => {
-            const status = getStepStatus(step.id)
-            const isLast = idx === STEPS.length - 1
-            return (
-              <div key={step.id} className={`flex items-center gap-4 px-5 py-4 ${!isLast ? "border-b border-zinc-100" : ""}`}>
-                <div className="shrink-0">
-                  {status === "done"    && <CheckCircle2 size={18} className="text-emerald-500" />}
-                  {status === "active"  && <Loader2 size={18} className="text-zinc-900 animate-spin" />}
-                  {status === "waiting" && <Circle size={18} className="text-zinc-200" />}
-                  {status === "error"   && <XCircle size={18} className="text-red-500" />}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className={`text-sm font-medium ${status === "waiting" ? "text-zinc-400" : "text-zinc-900"}`}>
-                    {step.label}
-                  </p>
-                  {status === "active" && step.id === "crawling" && !isSimulated && (
-                    <p className="text-xs text-zinc-500 mt-0.5">{job.progress.crawled} / 25 pages crawled</p>
-                  )}
-                </div>
-                {status === "active" && (
-                  <div className="flex gap-1 shrink-0">
-                    {[0, 1, 2].map((i) => (
-                      <div key={i} className="w-1 h-1 rounded-full bg-zinc-400 animate-bounce" style={{ animationDelay: `${i * 150}ms` }} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
-
-        {!isSimulated && job.status === "failed" && (
-          <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
-            <div className="flex items-center gap-2 mb-1">
-              <AlertCircle size={14} className="text-red-500" />
-              <p className="text-sm font-medium text-red-700">Crawl failed</p>
-            </div>
-            <p className="text-xs text-red-600">{job.error || "An unexpected error occurred."}</p>
-          </div>
-        )}
-
-        <div className="bg-zinc-50 rounded-xl overflow-hidden border border-zinc-200">
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-zinc-200">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-zinc-500 text-xs font-mono">
-              {isSimulated
-                ? `${domain} · retrieving cached result`
-                : `${job.progress.discovered} URLs discovered · ${job.progress.crawled} crawled`}
-            </span>
-          </div>
-          <div className="h-24 flex items-center justify-center p-4">
-            <p className="text-zinc-400 text-xs font-mono">
-              {isSimulated
-                ? simulatedStep === 0 ? `Crawling ${domain}…`
-                  : simulatedStep === 1 ? "Classifying pages with AI…"
-                  : simulatedStep === 2 ? "Scoring and classifying pages…"
-                  : "Assembling llms.txt…"
-                : job.status === "pending"    ? "Starting crawl…"
-                : job.status === "crawling"   ? `Crawling ${domain}…`
-                : job.status === "enriching"  ? "Classifying pages with AI…"
-                : job.status === "scoring"    ? "Scoring and classifying pages…"
-                : job.status === "assembling" ? "Assembling llms.txt…"
-                : ""}
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Result Pane ─────────────────────────────────────────────────────────────
-
-function ResultPane({ job }: { job: ApiJob }) {
-  const content = job.result ?? ""
-  const [copied, setCopied] = useState(false)
-  const [copiedLink, setCopiedLink] = useState(false)
-
-  const handleCopyLink = async () => {
-    await navigator.clipboard.writeText(window.location.href.split("?")[0])
-    setCopiedLink(true)
-    setTimeout(() => setCopiedLink(false), 2000)
-  }
-
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(content)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
-
-  const handleDownload = () => {
-    const blob = new Blob([content], { type: "text/plain" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url; a.download = "llms.txt"; a.click()
-    URL.revokeObjectURL(url)
-  }
-
-  return (
-    <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center gap-3 px-4 py-2.5 bg-zinc-50 border-b border-zinc-100 shrink-0">
-        <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest">Result</span>
-        <span className="text-zinc-200">·</span>
-        <span className="text-[10px] text-zinc-400 font-mono">llms.txt</span>
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            onClick={handleCopyLink}
-            className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-500 hover:text-zinc-800 px-2.5 py-1 rounded-md border border-zinc-200 hover:border-zinc-300 transition-colors"
-          >
-            {copiedLink ? <Check size={11} /> : <Link2 size={11} />}
-            {copiedLink ? "Copied!" : "Copy link"}
-          </button>
-          <button
-            onClick={handleCopy}
-            className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-500 hover:text-zinc-800 px-2.5 py-1 rounded-md border border-zinc-200 hover:border-zinc-300 transition-colors"
-          >
-            {copied ? <Check size={11} /> : <Copy size={11} />}
-            {copied ? "Copied" : "Copy"}
-          </button>
-          <button
-            onClick={handleDownload}
-            className="flex items-center gap-1.5 text-[11px] font-medium text-white bg-zinc-950 hover:bg-zinc-800 px-2.5 py-1 rounded-md transition-colors"
-          >
-            <Download size={11} /> Download
-          </button>
-        </div>
-      </div>
-      <textarea
-        value={content}
-        readOnly
-        className="flex-1 p-6 font-mono text-sm leading-[1.75] text-zinc-800 bg-white resize-none outline-none"
-        spellCheck={false}
-      />
-    </div>
-  )
-}
-
-// Module-level cache — persists across remounts so navigation is flicker-free
+const { SIM_STEP_DURATIONS_MS: SIM_STEP_DURATIONS, JOB_CACHE_MAX, POLL_INTERVAL_MS, MAX_POLL_FAILURES } = ui
 const jobCache = new Map<string, ApiJob>()
-let cachedSignedIn: boolean | null = null
-
-// ─── Page ────────────────────────────────────────────────────────────────────
+function cacheGetJob(id: string): ApiJob | undefined {
+  const job = jobCache.get(id)
+  if (job) { jobCache.delete(id); jobCache.set(id, job) } // touch
+  return job
+}
+function cacheSetJob(id: string, job: ApiJob): void {
+  if (jobCache.has(id)) jobCache.delete(id)
+  jobCache.set(id, job)
+  while (jobCache.size > JOB_CACHE_MAX) {
+    const oldest = jobCache.keys().next().value
+    if (oldest === undefined) break
+    jobCache.delete(oldest)
+  }
+}
+// Shared browser client listens for auth state so the cached job
+// metadata is cleared when a user signs out — prevents a past user's
+// history from bleeding into a new session on a shared device. Auth
+// state for rendering purposes is tracked per-component below; this
+// listener only touches the module-level cache.
+if (typeof window !== "undefined") {
+  const supabase = createClient()
+  supabase.auth.onAuthStateChange((event) => {
+    if (event === "SIGNED_OUT") jobCache.clear()
+  })
+}
 
 function PageViewInner() {
   const params = useParams<{ id: string }>()
   const searchParams = useSearchParams()
   const shouldSimulate = searchParams?.get("simulate") === "1"
   const pageId = params?.id
-  const [job, setJob] = useState<ApiJob | null>(() => (pageId ? jobCache.get(pageId) ?? null : null))
+
+  const [job, setJob] = useState<ApiJob | null>(() => (pageId ? cacheGetJob(pageId) ?? null : null))
   const [notFound, setNotFound] = useState(false)
-  const [isSignedIn, setIsSignedIn] = useState<boolean>(cachedSignedIn ?? false)
+  const [isSignedIn, setIsSignedIn] = useState(false)
   // Start simulated progress at step 0 when the URL asks for it — otherwise
-  // a cached job (already status=complete on first fetch) briefly paints the
-  // result pane before the simulation timers get a chance to kick in.
+  // a cached job (already status=complete on first fetch) briefly paints
+  // the result pane before the simulation timers get a chance to kick in.
   const [simulatedStep, setSimulatedStep] = useState<number | null>(shouldSimulate ? 0 : null)
-  // Client-side display status for live crawls — advances at most one
-  // step per LIVE_MIN_STEP_DWELL_MS so the later (usually fast) steps
-  // are legible instead of flashing by.
-  const [visibleStatus, setVisibleStatus] = useState<string>(() => job?.status ?? "pending")
+
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const simTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const dwellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const simulationStarted = useRef(false)
+  // Track shouldSimulate via a ref so fetchJob's useCallback identity
+  // doesn't change when we strip ?simulate=1 from the URL. If fetchJob
+  // re-created, the parent useEffect would clean up simTimerRef and
+  // the simulation would freeze mid-flight.
+  const shouldSimulateRef = useRef(shouldSimulate)
+  useEffect(() => { shouldSimulateRef.current = shouldSimulate }, [shouldSimulate])
+  // Circuit breaker: after MAX_POLL_FAILURES consecutive polling
+  // failures, stop polling and show an error. Prevents grinding a
+  // dead endpoint forever if the server starts consistently 5xx-ing.
+  const pollFailuresRef = useRef(0)
+  const [pollDead, setPollDead] = useState(false)
 
+  // Track auth state for the lifetime of this page. `getUser` settles
+  // the initial value; `onAuthStateChange` covers subsequent
+  // sign-in / sign-out / token-refresh events (including the
+  // INITIAL_SESSION event Supabase fires on first subscribe when a
+  // user is already authenticated — which the previous module-level
+  // cache was silently dropping).
   useEffect(() => {
-    if (cachedSignedIn !== null) return
-    createClient().auth.getUser().then(({ data }) => {
-      cachedSignedIn = !!data.user
-      setIsSignedIn(cachedSignedIn)
-    })
+    const supabase = createClient()
+    supabase.auth.getUser().then(({ data }) => setIsSignedIn(!!data.user))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, session) => setIsSignedIn(!!session?.user),
+    )
+    return () => subscription.unsubscribe()
   }, [])
 
   const startSimulation = useCallback(() => {
@@ -264,9 +105,17 @@ function PageViewInner() {
     try {
       const res = await fetch(`/api/p/${pageId}`)
       if (res.status === 404) { setNotFound(true); return }
-      if (!res.ok) return
+      if (!res.ok) {
+        pollFailuresRef.current++
+        if (pollFailuresRef.current >= MAX_POLL_FAILURES) {
+          if (intervalRef.current) clearInterval(intervalRef.current)
+          setPollDead(true)
+        }
+        return
+      }
+      pollFailuresRef.current = 0
       const data: ApiJob = await res.json()
-      jobCache.set(pageId, data)
+      cacheSetJob(pageId, data)
       setJob(data)
 
       const isDone = data.status === "complete" || data.status === "partial"
@@ -274,68 +123,40 @@ function PageViewInner() {
 
       if (isDone || isFailed) {
         if (intervalRef.current) clearInterval(intervalRef.current)
-        // Show simulation if explicitly requested (cached result) or on first live completion
-        if (isDone && shouldSimulate && !simulationStarted.current) {
+        if (isDone && shouldSimulateRef.current && !simulationStarted.current) {
           simulationStarted.current = true
           startSimulation()
+          // Clean the URL so the stepper-simulation isn't replayed for
+          // anyone who bookmarks, refreshes, or shares this page.
+          // `simulationStarted.current` guards re-entry — even if
+          // useSearchParams somehow re-fires with simulate gone, we
+          // won't double-start.
+          stripQueryParam("simulate")
         }
-      } else if (shouldSimulate && !simulationStarted.current) {
-        // Job still running but the URL asked us to simulate — fall back to
-        // real progress instead of freezing on step 0.
+      } else if (shouldSimulateRef.current && !simulationStarted.current) {
+        // Job still running but URL asked to simulate — show real progress.
         setSimulatedStep(null)
       }
-    } catch {}
+    } catch (err) {
+      debugLog("PageView.fetchJob", err)
+      pollFailuresRef.current++
+      if (pollFailuresRef.current >= MAX_POLL_FAILURES) {
+        if (intervalRef.current) clearInterval(intervalRef.current)
+        setPollDead(true)
+      }
+    }
   }, [pageId, startSimulation])
 
   useEffect(() => {
     fetchJob()
-    intervalRef.current = setInterval(fetchJob, 1500)
+    intervalRef.current = setInterval(fetchJob, POLL_INTERVAL_MS)
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
       if (simTimerRef.current) clearTimeout(simTimerRef.current)
-      if (dwellTimerRef.current) clearTimeout(dwellTimerRef.current)
     }
   }, [fetchJob])
 
-  // Pace visibleStatus so the stepper can't advance faster than
-  // LIVE_MIN_STEP_DWELL_MS per step. Simulation mode manages its own
-  // timing via simulatedStep and bypasses this effect.
-  useEffect(() => {
-    if (!job || simulatedStep !== null) return
-
-    // Fast-path failures — show the error state immediately.
-    if (job.status === "failed") {
-      setVisibleStatus("failed")
-      return
-    }
-
-    // On first entry (fresh mount or after navigating back to this
-    // page), don't replay the stepper from "pending" through whatever
-    // state the backend is already in — just jump to the current real
-    // status. Pacing is for watching *new* transitions, not re-animating
-    // progress that has already happened.
-    if (visibleStatus === "pending" && job.status !== "pending") {
-      setVisibleStatus(job.status)
-      return
-    }
-
-    // "partial" completes the pipeline just like "complete" — collapse it
-    // into the "complete" step for progression purposes.
-    const effectiveTarget = job.status === "partial" ? "complete" : job.status
-    const targetIdx = STATUS_PROGRESSION.indexOf(effectiveTarget as typeof STATUS_PROGRESSION[number])
-    const currentIdx = STATUS_PROGRESSION.indexOf(visibleStatus as typeof STATUS_PROGRESSION[number])
-
-    if (targetIdx === -1 || currentIdx === -1) return
-    if (targetIdx <= currentIdx) return
-
-    if (dwellTimerRef.current) clearTimeout(dwellTimerRef.current)
-    dwellTimerRef.current = setTimeout(() => {
-      const next = STATUS_PROGRESSION[currentIdx + 1]
-      // When catching up to "complete" and the backend already reported
-      // "partial", surface the partial status so the badge shows.
-      setVisibleStatus(next === "complete" && job.status === "partial" ? "partial" : next)
-    }, LIVE_MIN_STEP_DWELL_MS)
-  }, [job, visibleStatus, simulatedStep])
+  const visibleStatus = useVisibleStatus(job, simulatedStep !== null)
 
   if (notFound) {
     return (
@@ -348,32 +169,31 @@ function PageViewInner() {
     )
   }
 
-  // When a simulation is running, visibleStatus is irrelevant (the
-  // simulated-step UI controls the view). Otherwise, clamp the job's
+  // When a simulation is running, visibleStatus is irrelevant — the
+  // simulated-step UI controls the view. Otherwise, clamp the job's
   // status to visibleStatus so fast live-crawl transitions are paced.
-  const displayJob = job
+  const displayJob: ApiJob | null = job
     ? simulatedStep !== null
       ? job
-      : { ...job, status: visibleStatus as ApiJob["status"] }
+      : { ...job, status: visibleStatus }
     : null
   const isDone = !!displayJob && (displayJob.status === "complete" || displayJob.status === "partial")
   const showResult = isDone && simulatedStep === null
-  const domain = job ? (() => { try { return new URL(job.url).hostname } catch { return job.url } })() : ""
-  const pages = job?.pages || []
-  const crawledCount = pages.filter((p) => p.fetchStatus === "ok").length
+  const domain = job ? hostnameOf(job.url) : ""
+  const crawledCount = (job?.pages ?? []).filter((p) => p.fetchStatus === "ok").length
   // Only validate once we have a non-empty result — otherwise a
   // half-propagated write (job.status=complete before pages.result lands)
-  // would trip "missing H1" on empty text. The store now writes pages
-  // first, so this is belt-and-suspenders.
-  const validation = showResult && job!.result ? validateLlmsTxt(job!.result) : null
+  // would trip "missing H1" on empty text. The store writes pages first,
+  // so this is belt-and-suspenders.
+  const result = showResult ? job?.result : undefined
+  const validation = result ? validateLlmsTxt(result) : null
 
   return (
     <div className="h-screen font-sans bg-white flex flex-col">
-      {/* Header */}
       <header className="border-b border-zinc-100 px-6 py-3 flex items-center gap-4 shrink-0">
-        <Link href="/" className="flex items-center gap-2 mr-2 shrink-0">
+        <Link href="/" className="flex items-center gap-2 mr-2 shrink-0" aria-label="Home">
           <div className="w-5 h-5 bg-zinc-950 rounded-[4px] flex items-center justify-center">
-            <span className="text-white font-mono text-[8px] font-bold">//</span>
+            <span className="text-white font-mono text-[8px] font-bold">{"//"}</span>
           </div>
         </Link>
         <div className="h-4 w-px bg-zinc-200 shrink-0" />
@@ -387,7 +207,6 @@ function PageViewInner() {
             <>
               <span className="text-zinc-300 hidden sm:block">·</span>
               <span className="text-xs text-zinc-400 font-mono hidden sm:block shrink-0">{crawledCount} pages</span>
-              {job!.genre && <span className="text-xs text-zinc-400 font-mono hidden md:block shrink-0">· {job!.genre.replace(/_/g, " ")}</span>}
               {validation && (
                 <span className={`flex items-center gap-1.5 ml-1 text-xs font-medium px-2.5 py-1 rounded-full ring-1 shrink-0 ${
                   validation.valid
@@ -408,7 +227,7 @@ function PageViewInner() {
 
         <div className="flex items-center gap-2 shrink-0">
           <Link
-            href="/?focus=1"
+            href="/"
             className="flex items-center gap-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-all"
           >
             <Plus size={12} className="text-zinc-400" />
@@ -425,7 +244,6 @@ function PageViewInner() {
         </div>
       </header>
 
-      {/* Validation errors banner */}
       {validation && !validation.valid && (
         <div className="bg-red-50 border-b border-red-100 px-6 py-2 shrink-0">
           <ul className="text-xs text-red-600 space-y-0.5">
@@ -437,7 +255,14 @@ function PageViewInner() {
         </div>
       )}
 
-      {/* Main content */}
+      {pollDead && (
+        <div role="alert" className="bg-amber-50 border-b border-amber-100 px-6 py-2 shrink-0">
+          <p className="text-xs text-amber-700">
+            Lost connection to the server. <button type="button" onClick={() => window.location.reload()} className="underline font-medium">Reload</button> to try again.
+          </p>
+        </div>
+      )}
+
       <div className="flex-1 flex overflow-hidden">
         {!job ? (
           <div className="flex-1 flex items-center justify-center">
@@ -445,20 +270,45 @@ function PageViewInner() {
           </div>
         ) : showResult && job.result ? (
           <ResultPane job={job} />
-        ) : (
+        ) : displayJob ? (
           <ProgressPane
-            job={displayJob!}
+            job={displayJob}
             simulatedStep={simulatedStep !== null ? simulatedStep : undefined}
           />
-        )}
+        ) : null}
       </div>
+    </div>
+  )
+}
+
+function hostnameOf(url: string): string {
+  try { return new URL(url).hostname } catch { return url }
+}
+
+/** Remove a single query param from the browser URL without routing. */
+function stripQueryParam(name: string): void {
+  if (typeof window === "undefined") return
+  const url = new URL(window.location.href)
+  if (!url.searchParams.has(name)) return
+  url.searchParams.delete(name)
+  const qs = url.searchParams.toString()
+  window.history.replaceState(
+    null, "",
+    `${url.pathname}${qs ? `?${qs}` : ""}${url.hash}`,
+  )
+}
+
+function PageViewFallback() {
+  return (
+    <div className="h-screen flex items-center justify-center bg-white">
+      <Loader2 size={24} className="text-zinc-400 animate-spin" />
     </div>
   )
 }
 
 export default function PageView() {
   return (
-    <Suspense>
+    <Suspense fallback={<PageViewFallback />}>
       <PageViewInner />
     </Suspense>
   )

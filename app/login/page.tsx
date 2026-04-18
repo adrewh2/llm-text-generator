@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { Github } from "lucide-react"
 import Link from "next/link"
@@ -9,6 +10,16 @@ export default function LoginPage() {
   const [loading, setLoading] = useState<string | null>(null)
   const [error, setError] = useState("")
   const supabase = createClient()
+  const router = useRouter()
+
+  // Already signed in → skip the login screen entirely. Prevents the
+  // awkward "sign in again" flash for users who have a valid session
+  // but accidentally navigate back to /login.
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) router.replace("/dashboard")
+    })
+  }, [supabase, router])
 
   const signIn = async (provider: "github" | "google") => {
     setLoading(provider)
@@ -31,7 +42,7 @@ export default function LoginPage() {
         <nav className="max-w-6xl mx-auto px-6 h-14 flex items-center">
           <Link href="/" className="flex items-center gap-2.5">
             <div className="w-6 h-6 bg-zinc-950 rounded-[5px] flex items-center justify-center shrink-0">
-              <span className="text-white font-mono text-[9px] font-bold leading-none">//</span>
+              <span className="text-white font-mono text-[9px] font-bold leading-none">{"//"}</span>
             </div>
             <span className="font-semibold text-zinc-950 text-sm tracking-tight">llms.txt</span>
           </Link>

@@ -40,6 +40,12 @@ export function normalizeUrl(url: string, base?: string): string | null {
     u.hash = ""
     u.hostname = u.hostname.toLowerCase()
 
+    // Strip trailing slash on any non-root path so "/docs" and
+    // "/docs/" don't become two cache keys.
+    if (u.pathname !== "/" && u.pathname.endsWith("/")) {
+      u.pathname = u.pathname.replace(/\/+$/, "")
+    }
+
     for (const key of [...u.searchParams.keys()]) {
       if (TRACKING_PARAMS.has(key.toLowerCase())) {
         u.searchParams.delete(key)
@@ -112,12 +118,14 @@ export function shouldSkipUrl(url: string): boolean {
 }
 
 /**
- * Caps URLs per path prefix so a single section of the site
- * can't flood the queue (e.g. 500 /watch URLs).
+ * Caps URLs per path prefix so a single section of the site can't
+ * flood the queue (e.g. 500 /watch URLs on YouTube). Tunable via
+ * config.crawler.URLS_PER_PREFIX_CAP and config.crawler.PREFIX_SEGMENT_DEPTH.
  */
 export function capByPathPrefix(
   urls: string[],
-  maxPerPrefix = 5,
+  maxPerPrefix: number,
+  segmentDepth: number,
 ): string[] {
   const prefixCounts = new Map<string, number>()
   const result: string[] = []
@@ -125,8 +133,9 @@ export function capByPathPrefix(
   for (const url of urls) {
     try {
       const segments = new URL(url).pathname.split("/").filter(Boolean)
-      // Use first two path segments as prefix key, e.g. "/docs/api" → "docs/api"
-      const prefix = segments.slice(0, 2).join("/") || "root"
+      // Take the first `segmentDepth` segments as the bucket key.
+      // e.g. depth=2 → "/docs/api/users" → "docs/api"
+      const prefix = segments.slice(0, segmentDepth).join("/") || "root"
       const count = prefixCounts.get(prefix) ?? 0
       if (count < maxPerPrefix) {
         prefixCounts.set(prefix, count + 1)

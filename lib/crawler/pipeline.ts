@@ -1,27 +1,72 @@
 import { fetchRobots, isAllowed, hasFullDisallow } from "./robots"
 import { fetchSitemapUrls } from "./sitemap"
 import { fetchPage } from "./fetchPage"
-import { extractMetadata, extractSiteName } from "./extract"
+import { extractMetadata, extractSiteName, extractSiteNameCandidates } from "./extract"
 import { probeMarkdown } from "./markdownProbe"
 import { extractLinksFromHtml } from "./discover"
 import { isSpaHtml, SpaBrowser } from "./spaCrawler"
 import { scorePages } from "./score"
-import { llmEnrichPages, generateSitePreamble, rankCandidateUrls } from "./llmEnrich"
+import { llmEnrichPages, generateSitePreamble, rankCandidateUrls, llmSiteName } from "./llmEnrich"
 import { assignSections, filterAndSelectPages } from "./group"
 import { assembleFile } from "./assemble"
 import { detectGenre } from "./genre"
 import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix } from "./url"
 import { updateJob } from "../store"
-import type { ExtractedPage } from "./types"
-import { MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS } from "./config"
+import type { ExtractedPage, JobStatus } from "./types"
+import { crawler } from "../config"
+import { assertSafeUrl, UnsafeUrlError } from "./ssrf"
+
+const {
+  MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS,
+  PIPELINE_BUDGET_MS, URLS_PER_PREFIX_CAP, PREFIX_SEGMENT_DEPTH,
+} = crawler
+
+class PipelineTimeoutError extends Error {
+  constructor() { super("Exceeded time budget") }
+}
 
 export async function runCrawlPipeline(jobId: string, targetUrl: string): Promise<void> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new PipelineTimeoutError()), PIPELINE_BUDGET_MS)
+  })
+  try {
+    await Promise.race([runPipelineInner(jobId, targetUrl), timeout])
+  } catch (err: unknown) {
+    if (err instanceof PipelineTimeoutError) {
+      await updateJob(jobId, { status: "failed", error: "Exceeded time budget" })
+    }
+    // runPipelineInner already writes its own failure states; nothing
+    // else to do here.
+  } finally {
+    // Clear the timer once the race has settled. Without this, the
+    // timer keeps the Fluid Compute instance's event loop alive for
+    // up to 270s past a quick completion — the eventual rejection is
+    // a no-op on an already-settled Promise.race, but the handle
+    // reference pins the closure and delays GC.
+    if (timeoutHandle) clearTimeout(timeoutHandle)
+  }
+}
+
+async function runPipelineInner(jobId: string, targetUrl: string): Promise<void> {
   const spaBrowser = new SpaBrowser()
 
   try {
     await setStatus(jobId, "crawling")
 
     const baseUrl = normalizeUrl(targetUrl) || targetUrl
+
+    // SSRF: block attempts to point the crawler at private/loopback/
+    // metadata IPs before the first network call. Individual fetches
+    // (fetchPage, sitemap, etc.) also pre-flight — this guards the
+    // hot path and fails the job with a clear reason.
+    try {
+      await assertSafeUrl(baseUrl)
+    } catch (err) {
+      const reason = err instanceof UnsafeUrlError ? err.message : "unsafe URL"
+      await updateJob(jobId, { status: "failed", error: reason })
+      return
+    }
 
     // Fetch robots.txt
     const robots = await fetchRobots(baseUrl)
@@ -66,9 +111,8 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     // Trigger the SPA (Puppeteer) path if either: plain fetch failed, or
     // the returned HTML looks like a JS shell / bot-challenge.
     const plainFetchFailed = rawHomepageHtml === null
-    const isSpa = !plainFetchFailed && isSpaHtml(rawHomepageHtml!, rawHomepageMeta?.bodyExcerpt || "")
+    const isSpa = !!rawHomepageHtml && isSpaHtml(rawHomepageHtml, rawHomepageMeta?.bodyExcerpt || "")
     const needsBrowser = plainFetchFailed || isSpa
-    console.log(`[pipeline] plainFetchFailed=${plainFetchFailed} isSpa=${isSpa} bodyExcerptLen=${rawHomepageMeta?.bodyExcerpt?.length ?? 0} htmlLen=${rawHomepageHtml?.length ?? 0}`)
     if (needsBrowser) await spaBrowser.init()
 
     // Try the browser render as our homepage source when needed.
@@ -76,7 +120,6 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     let homepageMeta = rawHomepageMeta
     if (needsBrowser) {
       const rendered = await spaBrowser.fetchPageWithLinks(baseUrl, baseUrl)
-      console.log(`[pipeline] browser render ok=${rendered.ok} links=${rendered.links.length}`)
       if (rendered.ok && rendered.html) {
         homepageHtml = rendered.html
         homepageMeta = extractMetadata(baseUrl, homepageHtml)
@@ -118,7 +161,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     }
 
     // Cap URLs per path prefix to prevent content-heavy sites from flooding the queue
-    const cappedUrls = capByPathPrefix(queue.map((q) => q.url), 5)
+    const cappedUrls = capByPathPrefix(queue.map((q) => q.url), URLS_PER_PREFIX_CAP, PREFIX_SEGMENT_DEPTH)
     const cappedSet = new Set(cappedUrls)
     queue.splice(0, queue.length, ...queue.filter((q) => cappedSet.has(q.url)))
 
@@ -139,9 +182,6 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       .map((u) => urlToItem.get(u))
       .filter((q): q is { url: string; depth: number } => !!q)
     queue.splice(0, queue.length, ...reordered)
-
-    console.log(`[pipeline] queue after capping+ranking: ${queue.length} urls`)
-    queue.slice(0, 5).forEach(q => console.log(`  ${q.url}`))
 
     await updateJob(jobId, {
       progress: { discovered: discoveredUrls.size, crawled, failed },
@@ -180,8 +220,10 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
         }
 
         if (!html) {
+          // No title needed: failed pages are filtered out before the
+          // enrichment / scoring / output passes.
           failed++
-          pages.push({ url, title: urlToLabel(url), headings: [], fetchStatus: "error", descriptionProvenance: "none" })
+          pages.push({ url, title: "", headings: [], fetchStatus: "error", descriptionProvenance: "none" })
         } else if (crawled < MAX_PAGES) {
           const meta = extractMetadata(url, html)
           const mdUrl = needsBrowser ? await probeMarkdown(url) : mdUrlResolved
@@ -204,9 +246,18 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
 
     await Promise.all(Array.from({ length: needsBrowser ? 1 : CONCURRENCY }, () => worker()))
 
-    // Detect genre + site name
+    // Detect genre + site name. The deterministic extractor gives us
+    // a cheap best-guess; the LLM then picks the actual brand out of
+    // all the raw candidates (og:site_name, title, h1, JSON-LD) —
+    // otherwise we end up storing things like
+    // "Uber Eats | Food & Grocery Delivery | Order Groceries…" or a
+    // cheerio-concatenated nav-icon mess as the dashboard label. If
+    // the LLM is unavailable the deterministic guess is returned as-is.
+    const hostname = new URL(baseUrl).hostname
     const genre = detectGenre(homepageHtml, [...discoveredUrls])
-    const siteName = extractSiteName(homepageHtml, new URL(baseUrl).hostname)
+    const deterministicName = extractSiteName(homepageHtml, hostname)
+    const nameCandidates = extractSiteNameCandidates(homepageHtml, hostname)
+    const siteName = await llmSiteName(nameCandidates, hostname, deterministicName)
 
     // Strip pages whose description exactly matches the generic homepage tagline
     const homepageDesc = homepageMeta.description?.trim()
@@ -232,7 +283,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
         : undefined
 
     const scored = scorePages(successful, genre, enrichment)
-    const withSections = assignSections(scored, genre)
+    const withSections = assignSections(scored)
     const { primary, optional } = filterAndSelectPages(withSections, baseUrl)
 
     // Deduplicate for display
@@ -278,20 +329,10 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
   }
 }
 
-async function setStatus(jobId: string, status: string) {
-  await updateJob(jobId, { status: status as never })
+async function setStatus(jobId: string, status: JobStatus) {
+  await updateJob(jobId, { status })
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
-}
-
-function urlToLabel(url: string): string {
-  try {
-    const path = new URL(url).pathname
-    const seg = path.split("/").filter(Boolean).pop() || path
-    return seg.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
-  } catch {
-    return url
-  }
 }

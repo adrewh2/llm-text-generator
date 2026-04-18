@@ -1,4 +1,4 @@
-import type { ScoredPage, SiteGenre } from "./types"
+import type { ScoredPage } from "./types"
 
 function normalizeForComparison(url: string): string {
   try {
@@ -16,7 +16,7 @@ function normalizeForComparison(url: string): string {
   }
 }
 
-export function assignSections(pages: ScoredPage[], _genre: SiteGenre): ScoredPage[] {
+export function assignSections(pages: ScoredPage[]): ScoredPage[] {
   return pages.map((page) => {
     if (page.score < 15) return { ...page, section: undefined }
 

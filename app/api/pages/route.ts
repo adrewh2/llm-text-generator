@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getUserPages } from "@/lib/store"
+import { api } from "@/lib/config"
 import { createClient } from "@/lib/supabase/server"
 
 export const runtime = "nodejs"
 
-const DEFAULT_LIMIT = 20
-const MAX_LIMIT = 50
+const { PAGES_DEFAULT_LIMIT: DEFAULT_LIMIT, PAGES_MAX_LIMIT: MAX_LIMIT } = api
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()

@@ -10,7 +10,7 @@ export type SiteGenre =
 export type FetchStatus = "ok" | "timeout" | "error" | "skipped"
 
 export type DescriptionProvenance =
-  | "json_ld" | "og" | "meta" | "excerpt" | "heading" | "none"
+  | "json_ld" | "og" | "meta" | "excerpt" | "heading" | "llm" | "none"
 
 export interface ExtractedPage {
   url: string

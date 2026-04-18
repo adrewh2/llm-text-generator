@@ -2,24 +2,33 @@ import { NextResponse } from "next/server"
 import JSZip from "jszip"
 import { getUserPageResults } from "@/lib/store"
 import { createClient } from "@/lib/supabase/server"
+import { urlToFilename } from "@/lib/crawler/urlLabel"
+import { api } from "@/lib/config"
 
 export const runtime = "nodejs"
+
+const MAX_DOWNLOAD_ENTRIES = api.DOWNLOAD_MAX_ENTRIES
 
 export async function GET() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return new NextResponse(null, { status: 401 })
 
-  const pages = await getUserPageResults(user.id)
+  const pages = await getUserPageResults(user.id, { limit: MAX_DOWNLOAD_ENTRIES })
   if (pages.length === 0) {
     return NextResponse.json({ error: "No completed pages to download" }, { status: 404 })
   }
 
   const zip = new JSZip()
-  const folder = zip.folder("llms-txt")!
+  // `folder()` can only return null when the given path conflicts with
+  // an existing file — impossible on a fresh zip, but guard anyway.
+  const folder = zip.folder("llms-txt")
+  if (!folder) {
+    return NextResponse.json({ error: "Failed to create archive folder" }, { status: 500 })
+  }
   const usedNames = new Set<string>()
   for (const page of pages) {
-    const filename = uniqueFilename(buildFilename(page.url), usedNames)
+    const filename = uniqueFilename(urlToFilename(page.url), usedNames)
     folder.file(filename, page.result)
   }
 
@@ -35,25 +44,6 @@ export async function GET() {
       "Cache-Control": "no-store",
     },
   })
-}
-
-/** Turn a URL into a safe, readable filename ending in `.txt`. */
-function buildFilename(url: string): string {
-  try {
-    const u = new URL(url)
-    const host = u.hostname.replace(/^www\./, "")
-    const pathSegs = u.pathname
-      .split("/")
-      .filter((s) => s && !/^index\.(html?|php|aspx?)$/i.test(s))
-      .map((s) => s.replace(/\.[^.]+$/, ""))
-    const suffix = pathSegs.length > 0 ? `_${pathSegs.join("_")}` : ""
-    const raw = `${host}${suffix}`
-    // Replace anything outside [A-Za-z0-9._-] with "-" and trim repeats
-    const safe = raw.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-+/g, "-")
-    return `${safe}.txt`
-  } catch {
-    return `page-${Date.now()}.txt`
-  }
 }
 
 /** Suffix with `-2`, `-3`, … when the same base name repeats. */
