@@ -334,7 +334,7 @@ The result page keeps a per-tab LRU (`JOB_CACHE_MAX = 30`) of recently-seen jobs
 
 ## 10. Security Model
 
-Full discussion in `SECURITY.md`. Summary:
+Full discussion in [`SECURITY.md`](./SECURITY.md). Summary:
 
 ### SSRF
 
@@ -517,7 +517,7 @@ The following are out of scope for the current implementation. Each is plausible
 /middleware.ts                       Supabase SSR session + /dashboard gate
 /next.config.ts                      CSP + security headers
 /vercel.json                         function duration + cron schedule
-/SECURITY.md                         threat model + defenses
+/docs/SECURITY.md                    threat model + defenses
 ```
 
 ---
