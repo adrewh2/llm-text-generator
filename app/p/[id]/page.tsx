@@ -338,14 +338,22 @@ function PageViewInner() {
           ) : null}
         </div>
 
-        {showResult && isSignedIn && (
+        <div className="flex items-center gap-2 shrink-0">
           <Link
-            href="/dashboard"
-            className="flex items-center gap-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 bg-zinc-50 hover:bg-zinc-100 px-3 py-1.5 rounded-lg border border-zinc-200 transition-all shrink-0"
+            href="/"
+            className="flex items-center gap-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-300 transition-all"
           >
-            <LayoutDashboard size={12} /> Dashboard
+            Generate another
           </Link>
-        )}
+          {showResult && isSignedIn && (
+            <Link
+              href="/dashboard"
+              className="flex items-center gap-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 bg-zinc-50 hover:bg-zinc-100 px-3 py-1.5 rounded-lg border border-zinc-200 transition-all"
+            >
+              <LayoutDashboard size={12} /> Dashboard
+            </Link>
+          )}
+        </div>
       </header>
 
       {/* Validation errors banner */}

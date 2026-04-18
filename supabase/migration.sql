@@ -11,7 +11,6 @@ CREATE TABLE pages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
--- RLS disabled — all writes go through server-side API routes
 
 -- jobs: one row per crawl execution, linked to a page
 CREATE TABLE jobs (
@@ -25,7 +24,6 @@ CREATE TABLE jobs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
--- RLS disabled — all writes go through server-side API routes
 
 -- user_requests: tracks which pages each signed-in user has visited
 CREATE TABLE user_requests (
@@ -36,7 +34,23 @@ CREATE TABLE user_requests (
   UNIQUE(user_id, page_url)
 );
 
-ALTER TABLE user_requests ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "user_requests_own" ON user_requests
-  USING (auth.uid() = user_id)
+-- RLS is enabled on every table. All app reads/writes go through server
+-- API routes using the service-role key, which bypasses RLS. The
+-- policies below define what anon + authenticated clients could do if
+-- they ever queried Supabase directly (e.g. via the leaked anon key).
+ALTER TABLE pages          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE jobs           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_requests  ENABLE ROW LEVEL SECURITY;
+
+-- pages + jobs are globally shared and safe to expose as read-only: the
+-- llms.txt output is the whole point of the product, and finding a job
+-- requires already knowing its UUID.
+CREATE POLICY pages_public_read ON pages FOR SELECT USING (true);
+CREATE POLICY jobs_public_read  ON jobs  FOR SELECT USING (true);
+
+-- A user may only touch rows that belong to them. This is the critical
+-- policy — it's what stops one user from reading another user's history.
+CREATE POLICY user_requests_own ON user_requests
+  FOR ALL
+  USING      (auth.uid() = user_id)
   WITH CHECK (auth.uid() = user_id);

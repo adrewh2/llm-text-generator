@@ -40,7 +40,7 @@ export default async function DashboardPage() {
             href="/"
             className="flex items-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-zinc-800 transition-colors"
           >
-            New page
+            Generate new
           </Link>
         </div>
 

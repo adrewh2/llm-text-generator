@@ -13,11 +13,7 @@ import { detectGenre } from "./genre"
 import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix } from "./url"
 import { updateJob } from "../store"
 import type { ExtractedPage } from "./types"
-
-const MAX_PAGES = 25
-const MAX_DEPTH = 2
-const CONCURRENCY = 5
-const POLITENESS_DELAY_MS = 300
+import { MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS } from "./config"
 
 export async function runCrawlPipeline(jobId: string, targetUrl: string): Promise<void> {
   const spaBrowser = new SpaBrowser()

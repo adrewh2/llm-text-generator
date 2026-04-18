@@ -1,11 +1,14 @@
 import { createClient } from "@supabase/supabase-js"
 import type { CrawlJob, ScoredPage } from "./crawler/types"
+import { PAGE_TTL_HOURS } from "./crawler/config"
 
+// Server-only store: uses the service role key so writes bypass RLS.
+// This key must never be exposed to the client.
 function getClient() {
   const url = process.env.SUPABASE_URL
-  const key = process.env.SUPABASE_ANON_KEY
-  if (!url || !key) throw new Error("Missing SUPABASE_URL or SUPABASE_ANON_KEY")
-  return createClient(url, key)
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !key) throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
+  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
 }
 
 // ─── Jobs ────────────────────────────────────────────────────────────────────
@@ -90,7 +93,6 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
 
 // ─── Pages ───────────────────────────────────────────────────────────────────
 
-const PAGE_TTL_HOURS = 24
 
 export async function getPageByUrl(url: string): Promise<{ jobId: string; isStale: boolean } | undefined> {
   const supabase = getClient()
