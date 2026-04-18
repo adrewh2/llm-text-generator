@@ -29,8 +29,24 @@ import { debugLog } from "./log"
 
 const qstash: Client | null = (() => {
   if (!process.env.QSTASH_TOKEN) return null
+  // `baseUrl` is region-specific. The Upstash Vercel integration
+  // ships a `QSTASH_URL` env var pointing at the account's home
+  // region (e.g. `https://qstash-us-east-1.upstash.io`). If we
+  // don't pass it, the SDK defaults to the eu-central-1 endpoint,
+  // which silently returns 404 for accounts hosted elsewhere —
+  // no exception, no visible error, message never lands.
+  if (!process.env.QSTASH_URL) {
+    console.warn(
+      "[jobQueue] QSTASH_TOKEN is set but QSTASH_URL is not — " +
+      "publishes will go to the SDK default (eu-central-1) and " +
+      "may silently fail if the account is hosted elsewhere.",
+    )
+  }
   try {
-    return new Client({ token: process.env.QSTASH_TOKEN })
+    return new Client({
+      token: process.env.QSTASH_TOKEN,
+      baseUrl: process.env.QSTASH_URL,
+    })
   } catch (err) {
     debugLog("jobQueue.clientInit", err)
     return null
