@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect, useRef } from "react"
 import { ArrowRight, Globe, Zap, CheckCircle, RefreshCw, Loader2, BookMarked } from "lucide-react"
 import { useRouter } from "next/navigation"
 import NavAuth from "./NavAuth"
@@ -28,6 +28,13 @@ export default function LandingPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const router = useRouter()
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("focus") === "1") {
+      inputRef.current?.focus()
+    }
+  }, [])
 
   const normalizeInput = (raw: string): string => {
     const trimmed = raw.trim()
@@ -134,6 +141,7 @@ export default function LandingPage() {
             >
               <Globe size={15} className="ml-2.5 text-zinc-400 shrink-0" />
               <input
+                ref={inputRef}
                 type="text"
                 value={url}
                 onChange={(e) => { setUrl(e.target.value); setError("") }}

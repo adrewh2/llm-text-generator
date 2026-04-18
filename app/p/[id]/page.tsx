@@ -347,7 +347,7 @@ function PageViewInner() {
 
         <div className="flex items-center gap-2 shrink-0">
           <Link
-            href="/"
+            href="/?focus=1"
             className="flex items-center gap-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-300 transition-all"
           >
             Generate another
