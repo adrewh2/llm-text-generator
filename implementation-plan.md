@@ -260,9 +260,6 @@ Upgrade the local MVP into a more product-like application with saved jobs, user
 - Preview mode vs full mode
 - Preview token flow
 - Override saving and re-assembly
-- LLM refinement pass:
-  - site summary
-  - gap-filling for missing descriptions
 - Better error handling and partial-job UX
 
 ## Implementation tasks
