@@ -62,13 +62,32 @@ export function assembleFile(
 }
 
 function formatEntry(page: ScoredPage, label?: string): string {
-  const url = page.mdUrl || page.url
+  const url = formatDisplayUrl(page.mdUrl || page.url)
   const title = (label ?? page.title ?? url).replace(/[\[\]]/g, "")
   if (page.description && page.descriptionProvenance !== "none") {
     const desc = page.description.replace(/\r?\n/g, " ").trim()
     return `- [${title}](${url}): ${desc}`
   }
   return `- [${title}](${url})`
+}
+
+/**
+ * Trim the trailing slash from bare-origin URLs (`https://host.tld/`)
+ * so the rendered markdown reads the way the site itself writes its
+ * own links — `https://llmstxt.org`, not `https://llmstxt.org/`. The
+ * WHATWG URL parser always emits `/` for root paths, so the stored
+ * cache key keeps it (stability); we strip it only at render time.
+ */
+function formatDisplayUrl(url: string): string {
+  try {
+    const u = new URL(url)
+    if (u.pathname === "/" && !u.search && !u.hash) {
+      return `${u.protocol}//${u.host}`
+    }
+    return url
+  } catch {
+    return url
+  }
 }
 
 // ─── Label resolution ────────────────────────────────────────────────────────
