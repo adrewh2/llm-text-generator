@@ -57,10 +57,12 @@ An unauthenticated HTTP client can POST any URL to `/api/p` and trigger up to 25
 
 ### The control
 
-`lib/rateLimit.ts` — a token-bucket rate limiter, in-memory, keyed by user id when signed in and by client IP (via `X-Forwarded-For`) when not. Applied at the top of `POST /api/p`.
+`lib/rateLimit.ts` — a token-bucket rate limiter, keyed by user id when signed in and by client IP (via `X-Forwarded-For`) when not. Applied at the top of `POST /api/p`.
 
 - **Anon**: 3 requests / hour with a burst of 3.
 - **Signed-in**: 10 requests / hour with a burst of 10 (we can revoke specific accounts if we need to).
+
+Backend selected at module load: **Upstash Redis** (`@upstash/ratelimit`) when `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` are set — bucket state is centralized, immune to instance churn / region failover / distributed-IP dodges. **In-memory fallback** otherwise, used for local development. Upstash errors fail open (logged) on the principle that a flaky Redis shouldn't take down all submissions.
 
 On denial the endpoint returns `429 Too Many Requests` with a `Retry-After` header.
 
@@ -76,7 +78,7 @@ Upper-bound inputs are also limited independently. All constants live in `lib/co
 
 ### Known gap
 
-The rate limiter is per-instance in memory. Vercel Fluid Compute reuses instances, so in practice one bucket survives across many requests for a single user, but an attacker using many cold starts in a distributed region could slip through more than the nominal quota. For real production we'd move the bucket to Vercel KV or Upstash Redis. Swap is localized to `lib/rateLimit.ts`.
+When the Upstash env vars are absent the limiter falls back to in-memory per-instance state — a cold start or autoscale event gives the attacker a fresh bucket. Production should always set the Upstash env vars; the fallback exists so `npm run dev` doesn't require a Redis dependency.
 
 ---
 

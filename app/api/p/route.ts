@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
   // anon bucket is tiny so bots can't drain our LLM / Puppeteer
   // budget; signed-in users get a bigger one.
   const rateKey = user ? `user:${user.id}` : `ip:${clientIp(req)}`
-  const rate = consumeRateLimit(rateKey, user ? rateLimit.AUTH : rateLimit.ANON)
+  const rate = await consumeRateLimit(rateKey, user ? rateLimit.AUTH : rateLimit.ANON)
   if (!rate.allowed) {
     return NextResponse.json(
       {

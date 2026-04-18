@@ -353,9 +353,12 @@ Known limitation: TOCTOU between `assertSafeUrl` and the actual fetch (DNS rebin
 
 ### Rate limiting
 
-`lib/rateLimit.ts` — token bucket, keyed per process. Anon: capacity 3, refill `3/3600` per second. Auth: capacity 10, refill `10/3600`. Applied on `POST /api/p` only — reads and cached-hit responses are free.
+`lib/rateLimit.ts` — token bucket, keyed by user id when signed in and by client IP otherwise. Anon: capacity 3, refill `3/3600` per second. Auth: capacity 10, refill `10/3600`. Applied on `POST /api/p` only — reads and cached-hit responses are free.
 
-Known limitation: in-memory per-instance, so a cold start resets the bucket. Acceptable at current traffic; the upgrade path is Upstash Redis with the same token-bucket semantics.
+Two backends, selected at module load:
+
+- **Upstash Redis** (`@upstash/ratelimit`) when both `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are set. State is centralized so instance churn / region failover / autoscale can't reset a user's bucket, and the limits hold up against distributed IPs. On a transient Redis error the limiter fails open (logged) — a flaky Redis shouldn't take down all crawl submissions.
+- **In-memory token bucket** otherwise. Keeps `npm run dev` working without a Redis dependency. Fine for a single Fluid Compute instance; not fit for production at scale since a cold-start or autoscale event gives the attacker a fresh bucket.
 
 ### Prompt injection
 
@@ -418,9 +421,9 @@ Secrets come from environment variables: `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_
 
 *Trade-off:* Crawls share the request's Fluid Compute instance; no durable retry on platform-level failure. *Why:* avoids a queue service (Inngest, Vercel Queues, SQS) for MVP. Vercel's graceful shutdown gives the crawl several seconds to checkpoint if the instance is recycled, and the 270 s pipeline budget stays comfortably under the 300 s function cap. Moving to a durable queue is an isolated refactor when it's needed.
 
-### In-memory rate limiter
+### Rate limiter backend
 
-*Trade-off:* Per-instance state; a cold start resets the bucket. *Why:* acceptable at current traffic and trivially upgradeable to Redis later. The bucket key (user id or IP) doesn't change with the backend, so the migration is dropping in a different store.
+*Trade-off:* The same module has an in-memory path (dev) and a Redis path (prod) selected by env. *Why:* local dev shouldn't require a network dependency, and the interface is identical in both paths so callers are unaffected. Upstash is the production target because Vercel KV is deprecated and Upstash Redis is the Marketplace-recommended replacement; the `@upstash/ratelimit` library wraps the right Lua-atomic token-bucket primitives.
 
 ### Public `jobs` reads
 
