@@ -1,20 +1,7 @@
-// Rate limiter. Two paths:
-//
-//   - Upstash Redis (preferred in production). Activated when both
-//     UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are set.
-//     State is centralized so instance churn / region failover / cold
-//     starts can't reset a user's bucket, and the bucket also holds
-//     up against distributed IPs hitting us across instances.
-//
-//   - In-memory token bucket (fallback). Used when the Upstash env
-//     vars are absent — keeps `npm run dev` working without requiring
-//     a network dependency. On Vercel Fluid Compute a single instance
-//     reuses memory across requests, which is good enough to stop
-//     casual abuse but won't hold up against attackers aiming at cold
-//     starts or autoscale events.
-//
-// Both paths speak the same `consumeRateLimit(key, cfg) → LimitResult`
-// interface. Callers `await` regardless of which one's active.
+// Rate limiter. Upstash Redis when UPSTASH_REDIS_REST_* env vars are
+// set (centralised state, survives instance churn and distributed
+// IPs); in-memory token bucket otherwise (local dev only — resets on
+// cold start). Both paths share the same `consumeRateLimit` signature.
 
 import { Ratelimit } from "@upstash/ratelimit"
 import { Redis } from "@upstash/redis"
@@ -51,19 +38,16 @@ const redis: Redis | null = (() => {
   }
 })()
 
-// Ratelimit instances are keyed by (capacity, refillPerSec) so the
-// two configs we ship today (anon, auth) each produce one stable
-// instance per process. Cheap to hold — they wrap the Redis client.
+// Cached per unique (capacity, refillPerSec) — one stable instance
+// per config (anon + auth).
 const limiterCache = new Map<string, Ratelimit>()
 function getUpstashLimiter(cfg: LimitConfig): Ratelimit | null {
   if (!redis) return null
   const cacheKey = `${cfg.capacity}:${cfg.refillPerSec}`
   let limiter = limiterCache.get(cacheKey)
   if (!limiter) {
-    // Upstash's tokenBucket wants integer refill rates. Our configs
-    // are expressed as tokens-per-second (often a fraction like
-    // 3/3600). Translate to a per-hour window — all current configs
-    // produce clean integers (anon=3/hr, auth=10/hr).
+    // Upstash tokenBucket wants integer tokens-per-interval; we hold
+    // sub-1/sec rates, so convert to tokens-per-hour.
     const perHour = Math.max(1, Math.round(cfg.refillPerSec * 3600))
     limiter = new Ratelimit({
       redis,

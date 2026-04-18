@@ -207,8 +207,7 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
       if (wait > 0) await delay(wait)
     }
 
-    // Worker pool: each worker grabs the next URL as soon as it finishes,
-    // no waiting for batch siblings. Safe in JS because sync code is atomic.
+    // Worker pool: pull-based, no batch sync (JS sync code is atomic).
     let queueIdx = 0
     const worker = async (): Promise<void> => {
       while (crawled < MAX_PAGES) {

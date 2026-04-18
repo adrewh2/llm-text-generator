@@ -1,16 +1,7 @@
-// Monitoring cron entrypoint.
-//
-// Invoked on a schedule (see vercel.json). For each monitored page, we:
-//   1. Compute a fresh signature over sitemap + homepage.
-//   2. Compare to the stored signature.
-//   3. On mismatch, create a new job row and dispatch a full re-crawl.
-//
-// The detection phase is I/O-light and runs inline. The re-crawl phase
-// is isolated behind dispatchRecrawl() — that is the seam a future
-// queue (Vercel Queues, Inngest) would replace so individual re-crawls
-// become their own durable invocations. For now we fan out via
-// waitUntil within this same function, which is fine up to a few dozen
-// concurrent changed pages.
+// Monitor cron. For each monitored page: re-compute a signature over
+// sitemap + homepage, compare to the stored one, and enqueue a
+// re-crawl if it drifted. Also sweeps stuck non-terminal jobs and
+// retires URLs nobody has touched in the last N days.
 
 import { NextRequest, NextResponse } from "next/server"
 import { randomUUID, timingSafeEqual } from "crypto"

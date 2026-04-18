@@ -53,9 +53,7 @@ function PageViewInner() {
   // would clean up simTimerRef mid-simulation.
   const shouldSimulateRef = useRef(shouldSimulate)
   useEffect(() => { shouldSimulateRef.current = shouldSimulate }, [shouldSimulate])
-  // Circuit breaker: after MAX_POLL_FAILURES consecutive polling
-  // failures, stop polling and show an error. Prevents grinding a
-  // dead endpoint forever if the server starts consistently 5xx-ing.
+  // Circuit breaker: stop polling after MAX_POLL_FAILURES in a row.
   const pollFailuresRef = useRef(0)
   const [pollDead, setPollDead] = useState(false)
 
@@ -162,9 +160,8 @@ function PageViewInner() {
     )
   }
 
-  // When a simulation is running, visibleStatus is irrelevant — the
-  // simulated-step UI controls the view. Otherwise, clamp the job's
-  // status to visibleStatus so fast live-crawl transitions are paced.
+  // Simulating → pass the raw status; live → clamp to visibleStatus
+  // so fast transitions stay paced.
   const displayJob: ApiJob | null = job
     ? simulatedStep !== null
       ? job

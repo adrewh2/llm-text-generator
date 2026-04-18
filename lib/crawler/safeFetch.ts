@@ -1,15 +1,8 @@
-// Fetch wrapper that:
-//   1. Pre-validates the URL via the SSRF guard before every hop.
-//   2. Follows redirects manually so each hop's destination is
-//      re-validated. Plain `redirect: "follow"` skips this — an
-//      attacker-controlled public URL that 302s to 169.254.169.254
-//      would slip past our initial check otherwise.
-//
-// There is a residual TOCTOU gap: between our DNS lookup in
-// `assertSafeUrl` and Node's own lookup inside `fetch`, the answer
-// could change (DNS rebinding). Closing this requires a custom
-// `undici` dispatcher that pins the resolved IP — out of scope here.
-// See README "Known limitations" for the trade-off.
+// SSRF-aware fetch: validates each redirect hop (plain
+// `redirect: "follow"` would skip — a public URL 302-ing to
+// 169.254.169.254 slips past a one-time check). Known TOCTOU gap:
+// DNS can rebind between our assertSafeUrl and Node's fetch. Closing
+// it requires a custom undici dispatcher; out of scope.
 
 import { assertSafeUrl } from "./ssrf"
 import { crawler } from "../config"

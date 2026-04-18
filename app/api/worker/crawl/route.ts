@@ -34,10 +34,8 @@ async function handler(req: Request): Promise<Response> {
   if (!jobId || !url) {
     return NextResponse.json({ error: "Missing jobId or url" }, { status: 400 })
   }
-  // Shape-check the payload even though QStash has already verified
-  // the signature — a stray message, a replay from a different
-  // project, or an operator testing with the signing key shouldn't be
-  // able to drive runCrawlPipeline with arbitrary strings.
+  // Shape-check even after signature verification — defence in depth
+  // against stray / replayed messages from another project.
   if (typeof jobId !== "string" || !UUID_RE.test(jobId)) {
     return NextResponse.json({ error: "Invalid jobId" }, { status: 400 })
   }

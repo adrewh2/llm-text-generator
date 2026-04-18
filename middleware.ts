@@ -29,9 +29,8 @@ export async function middleware(request: NextRequest) {
     const url = request.nextUrl.clone()
     url.pathname = "/login"
     const redirect = NextResponse.redirect(url)
-    // Carry over any cookies Supabase queued on supabaseResponse during
-    // the getUser() session-refresh so the refreshed session cookie
-    // survives the redirect (per Supabase's SSR guide).
+    // Carry queued Supabase cookies onto the redirect so the refreshed
+    // session survives (per Supabase SSR guide).
     supabaseResponse.cookies.getAll().forEach((c) => redirect.cookies.set(c))
     return redirect
   }
@@ -40,10 +39,8 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Run on every non-static request so the Supabase session cookie is
-  // refreshed on API routes too (per Supabase's SSR guidance). Without
-  // this, supabase.auth.getUser() may return null inside POST /api/p
-  // even when the user is signed in.
+  // Runs on every non-static request; API routes need the session
+  // refresh too, otherwise getUser() may return null mid-session.
   matcher: [
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js)$).*)",
   ],

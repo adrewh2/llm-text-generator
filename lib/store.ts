@@ -26,11 +26,9 @@ function getClient(): SupabaseClient {
 
 export async function createJob(id: string, url: string): Promise<void> {
   const supabase = getClient()
-  // Ensure the pages row exists before inserting the job (FK requires
-  // it). Always set monitored=true — a user kicking off a fresh crawl
-  // implies they care about this URL again, and the monitor sweeper
-  // may have turned it off recently. We leave last_requested_at alone
-  // here; the caller bumps it via bumpPageRequest.
+  // pages row must exist before the job (FK). monitored=true re-enables
+  // any URL the sweeper had retired; last_requested_at is bumped by
+  // the caller via bumpPageRequest.
   await supabase.from("pages").upsert(
     { url, monitored: true },
     { onConflict: "url" },
@@ -85,12 +83,10 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
   if (updates.siteName !== undefined) jobRow.site_name = updates.siteName
   if (updates.error !== undefined) jobRow.error = updates.error
 
-  // When the result is ready, write the canonical page FIRST — only if
-  // non-empty so a failed re-crawl never wipes out the last good
-  // result. Writing pages before the job status flip means any polling
-  // client that sees status=complete is guaranteed to also see the
-  // result (avoids the status=complete + result=null window that would
-  // trip empty-text validation).
+  // Write the pages row FIRST (before the job status flip) so polling
+  // clients never see status=complete with result=null. Skip if
+  // updates.result is empty so a failed re-crawl can't wipe the last
+  // good result.
   if (updates.result !== undefined && updates.result.trim().length > 0) {
     const { data: job, error: lookupErr } = await supabase
       .from("jobs")
@@ -99,9 +95,7 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
       .maybeSingle()
 
     if (lookupErr) {
-      // Throw so the worker returns non-2xx and QStash retries. A
-      // silent swallow here used to leave the job on the prior
-      // status forever (a classic "complete-but-result-null" window).
+      // Throw so the worker returns non-2xx and QStash retries.
       errorLog("store.updateJob.lookup", new Error(`${id}: ${lookupErr.message}`))
       throw new Error(lookupErr.message)
     }
@@ -113,11 +107,9 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
         site_name: updates.siteName ?? job.site_name ?? null,
         genre: updates.genre ?? job.genre ?? null,
         crawled_pages: updates.pages ?? null,
-        // A successful crawl is the strongest possible "check" of a
-        // site's current state — we just fetched it end-to-end. Mark
-        // it as such so the dashboard shows "Checked just now" from
-        // the moment the page is generated, rather than dangling on
-        // "Awaiting check" until the next cron tick.
+        // A fresh crawl is itself the strongest check signal — set
+        // last_checked_at so the dashboard doesn't dangle on "Awaiting
+        // check" until the next cron tick.
         last_checked_at: now,
         updated_at: now,
       }, { onConflict: "url" })
@@ -126,12 +118,8 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
         throw new Error(pagesErr.message)
       }
 
-      // Purge the edge cache for every historical /api/p/:id that
-      // resolves to this URL. getJob() reads pages.result by
-      // page_url, so an old job id's JSON changes the moment the
-      // shared row is rewritten here. Without this, CDN-cached
-      // responses for older jobs would serve yesterday's result
-      // until their s-maxage window expires.
+      // All job ids for this URL share pages.result, so re-crawls
+      // must invalidate every sibling's /api/p/:id cache entry.
       const { data: siblings } = await supabase
         .from("jobs")
         .select("id")

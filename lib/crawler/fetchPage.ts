@@ -48,9 +48,7 @@ export function isBlockedByChallenge(html: string): boolean {
 
 export async function fetchPage(url: string): Promise<FetchResult> {
   try {
-    // safeFetch does SSRF pre-flight on every hop, so an attacker-
-    // controlled public URL that 302-redirects to 169.254.169.254 is
-    // blocked instead of silently followed.
+    // safeFetch re-validates every redirect hop for SSRF.
     const res = await safeFetch(url, {
       signal: AbortSignal.timeout(8000),
       headers: {
