@@ -215,7 +215,7 @@ export async function removeUserRequest(userId: string, pageUrl: string): Promis
   await supabase.from("user_requests").delete().eq("user_id", userId).eq("page_url", pageUrl)
 }
 
-export async function getUserPages(userId: string): Promise<Array<{
+export interface UserPageEntry {
   pageUrl: string
   siteName: string | null
   genre: string | null
@@ -224,14 +224,19 @@ export async function getUserPages(userId: string): Promise<Array<{
   latestJobStatus: string | null
   monitored: boolean
   lastCheckedAt: Date | null
-}>> {
+}
+
+export async function getUserPages(
+  userId: string,
+  { offset = 0, limit = 20 }: { offset?: number; limit?: number } = {},
+): Promise<UserPageEntry[]> {
   const supabase = getClient()
   const { data } = await supabase
     .from("user_requests")
     .select("page_url, created_at")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
-    .limit(200)
+    .range(offset, offset + limit - 1)
 
   if (!data || data.length === 0) return []
 
