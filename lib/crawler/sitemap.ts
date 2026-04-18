@@ -4,7 +4,7 @@ import { safeFetch } from "./safeFetch"
 import { USER_AGENT } from "./fetchPage"
 
 const MAX_SITEMAP_URLS = 500
-const SITEMAP_TIMEOUT = 10000
+const SITEMAP_TIMEOUT_MS = 10000
 
 export async function fetchSitemapUrls(sitemapUrl: string, baseUrl: string): Promise<string[]> {
   const urls: string[] = []
@@ -24,7 +24,7 @@ async function processSitemap(
     // safeFetch enforces SSRF per-hop — important because a sitemap
     // index can declare arbitrary cross-origin Sitemap: URLs.
     const res = await safeFetch(url, {
-      signal: AbortSignal.timeout(SITEMAP_TIMEOUT),
+      signal: AbortSignal.timeout(SITEMAP_TIMEOUT_MS),
       headers: { "User-Agent": USER_AGENT },
     })
     if (!res.ok) return
