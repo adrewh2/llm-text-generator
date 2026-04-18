@@ -26,13 +26,18 @@ const MAX_SECTION_LEN = SECTION_MAX_CHARS
 const MAX_DESCRIPTION_LEN = DESCRIPTION_MAX_CHARS
 
 // Remove characters that can be used to close our prompt delimiters
-// and re-open an injected instruction block. Keeps the content readable
-// but prevents `</untrusted_pages>` or control tokens from bleeding out.
+// or re-open an injected instruction block. Keeps the content readable
+// but prevents `</untrusted_pages>`, markdown-link syntax, template
+// markers, or code fences from bleeding out of the fenced section the
+// model is told to treat as data.
 function neuter(s: string): string {
   return s
-    .replace(/<\/?[a-z_]+>/gi, "")     // strip tag-like constructs
-    .replace(/\[\[[\s\S]*?\]\]/g, "")  // prompt-template guards
-    .replace(/\r?\n/g, " ")             // collapse newlines
+    .replace(/<\/?[a-z_]+>/gi, "")                 // strip tag-like constructs
+    .replace(/\[\[[\s\S]*?\]\]/g, "")              // [[prompt-template guards]]
+    .replace(/\{\{[\s\S]*?\}\}/g, "")              // {{template markers}}
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")       // [text](url) → text (keeps readable content, drops the URL payload)
+    .replace(/`+/g, "")                             // backticks — no inline code / code fences
+    .replace(/\r?\n/g, " ")                         // collapse newlines
     .trim()
 }
 

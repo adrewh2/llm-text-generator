@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import type { CrawlJob, ScoredPage } from "./crawler/types"
 import { crawler } from "./config"
 import { requireEnv } from "./env"
+import { errorLog } from "./log"
 
 const { PAGE_TTL_HOURS } = crawler
 
@@ -90,14 +91,22 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
   // result (avoids the status=complete + result=null window that would
   // trip empty-text validation).
   if (updates.result !== undefined && updates.result.trim().length > 0) {
-    const { data: job } = await supabase
+    const { data: job, error: lookupErr } = await supabase
       .from("jobs")
       .select("page_url, site_name, genre")
       .eq("id", id)
       .maybeSingle()
 
+    if (lookupErr) {
+      // Throw so the worker returns non-2xx and QStash retries. A
+      // silent swallow here used to leave the job on the prior
+      // status forever (a classic "complete-but-result-null" window).
+      errorLog("store.updateJob.lookup", new Error(`${id}: ${lookupErr.message}`))
+      throw new Error(lookupErr.message)
+    }
+
     if (job) {
-      await supabase.from("pages").upsert({
+      const { error: pagesErr } = await supabase.from("pages").upsert({
         url: job.page_url,
         result: updates.result,
         site_name: updates.siteName ?? job.site_name ?? null,
@@ -111,10 +120,18 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
         last_checked_at: now,
         updated_at: now,
       }, { onConflict: "url" })
+      if (pagesErr) {
+        errorLog("store.updateJob.pages", new Error(`${id}: ${pagesErr.message}`))
+        throw new Error(pagesErr.message)
+      }
     }
   }
 
-  await supabase.from("jobs").update(jobRow).eq("id", id)
+  const { error: jobErr } = await supabase.from("jobs").update(jobRow).eq("id", id)
+  if (jobErr) {
+    errorLog("store.updateJob.jobs", new Error(`${id}: ${jobErr.message}`))
+    throw new Error(jobErr.message)
+  }
 }
 
 // ─── Pages ───────────────────────────────────────────────────────────────────
