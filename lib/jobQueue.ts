@@ -58,17 +58,24 @@ const qstash: Client | null = (() => {
  *
  *   1. Explicit `QSTASH_WORKER_URL` wins — useful for ngrok-tunneled
  *      local testing or pointing one environment at another.
- *   2. On Vercel (`VERCEL=1` is set by the runtime on Production and
- *      Preview deployments), derive `https://${VERCEL_URL}/...`.
- *   3. Otherwise — local `npm run dev`, or any non-Vercel env —
+ *   2. On Vercel production, prefer `VERCEL_PROJECT_PRODUCTION_URL`
+ *      (the stable public alias, e.g. `llm-text-generator.vercel.app`).
+ *      The per-deployment `VERCEL_URL` is gated by Vercel Deployment
+ *      Protection out of the box — QStash callbacks would land on a
+ *      401 login page instead of our worker.
+ *   3. Fall back to `VERCEL_URL` for Preview deploys and older
+ *      projects that don't have the production alias env var.
+ *   4. Otherwise — local `npm run dev`, or any non-Vercel env —
  *      return `null`. `enqueueCrawl` falls through to the in-process
  *      `waitUntil` path, so QStash env vars in a local `.env` are
  *      inert by design.
  */
 function resolveWorkerUrl(): string | null {
   if (process.env.QSTASH_WORKER_URL) return process.env.QSTASH_WORKER_URL
-  if (process.env.VERCEL === "1" && process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}/api/worker/crawl`
+  if (process.env.VERCEL === "1") {
+    const host =
+      process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL
+    if (host) return `https://${host}/api/worker/crawl`
   }
   return null
 }
