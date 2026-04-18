@@ -1,6 +1,7 @@
 "use client"
 
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 
 interface Props {
   title: string
@@ -22,6 +23,9 @@ export default function ConfirmDialog({
   const previouslyFocused = useRef<HTMLElement | null>(null)
   const cancelButtonRef = useRef<HTMLButtonElement>(null)
   const confirmButtonRef = useRef<HTMLButtonElement>(null)
+  // Only render once mounted so the portal target exists (SSR-safe).
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
 
   // Remember what had focus before we opened so we can return focus
   // there on close (standard modal a11y contract). Move focus to the
@@ -62,7 +66,14 @@ export default function ConfirmDialog({
   const cancel = (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); onCancel() }
   const confirm = (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); onConfirm() }
 
-  return (
+  // Render via a portal to document.body. `position: fixed` is
+  // normally viewport-relative — but any ancestor with a CSS
+  // transform (common for centered icon buttons using
+  // `-translate-y-1/2`) establishes a new containing block and the
+  // dialog ends up scoped to that tiny ancestor box instead of the
+  // viewport. Portaling out of the subtree sidesteps that entirely.
+  if (!mounted) return null
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 px-4"
       onClick={cancel}
@@ -96,6 +107,7 @@ export default function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

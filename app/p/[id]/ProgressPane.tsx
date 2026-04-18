@@ -57,8 +57,12 @@ export default function ProgressPane({
     <div className="flex-1 flex items-center justify-center p-8 overflow-y-auto">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-[0.12em] mb-2">Generating</p>
-          <h2 className="text-xl font-semibold text-zinc-950 tracking-tight">Analyzing {domain}</h2>
+          <p className="text-sm font-medium text-zinc-500 mb-2">
+            Generating llms.txt for
+          </p>
+          <h2 className="text-xl font-semibold text-zinc-950 tracking-tight">
+            {domain}
+          </h2>
         </div>
 
         <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm mb-4">
@@ -141,15 +145,15 @@ export default function ProgressPane({
 function bottomLabel(job: ApiJob, simulatedStep: number | undefined, domain: string): string {
   if (simulatedStep !== undefined) {
     if (simulatedStep === 0) return `Crawling ${domain}…`
-    if (simulatedStep === 1) return "Classifying pages with AI…"
-    if (simulatedStep === 2) return "Scoring and classifying pages…"
+    if (simulatedStep === 1) return "Summarizing pages with AI…"
+    if (simulatedStep === 2) return "Scoring and ranking pages…"
     return "Assembling llms.txt…"
   }
   switch (job.status) {
     case "pending":    return "Starting crawl…"
     case "crawling":   return `Crawling ${domain}…`
-    case "enriching":  return "Classifying pages with AI…"
-    case "scoring":    return "Scoring and classifying pages…"
+    case "enriching":  return "Summarizing pages with AI…"
+    case "scoring":    return "Scoring and ranking pages…"
     case "assembling": return "Assembling llms.txt…"
     default:           return ""
   }

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react"
 import { ArrowRight, Globe, Zap, CheckCircle, RefreshCw, Loader2, BookMarked, FolderDown } from "lucide-react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import NavAuth from "./NavAuth"
 
@@ -27,6 +28,9 @@ export default function LandingPage() {
   const [focused, setFocused] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
+  // Set when the server's 429 response tagged this anon session —
+  // renders a "Sign in for higher limits" link next to the error.
+  const [showSignInHint, setShowSignInHint] = useState(false)
   const router = useRouter()
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -86,8 +90,10 @@ export default function LandingPage() {
         if (res.status === 429) {
           const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10)
           setError(`Too many requests — try again in ${formatRetry(retryAfter)}.`)
+          setShowSignInHint(data.signInPrompt === true)
         } else {
           setError(data.error || "Something went wrong")
+          setShowSignInHint(false)
         }
         setLoading(false)
         return
@@ -105,7 +111,7 @@ export default function LandingPage() {
     <div className="min-h-screen bg-white font-sans">
       {/* Navigation */}
       <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-sm border-b border-zinc-100">
-        <nav className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
+        <nav className="px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-6 h-6 bg-zinc-950 rounded-[5px] flex items-center justify-center shrink-0">
               <span className="text-white font-mono text-[9px] font-bold leading-none">{"//"}</span>
@@ -172,7 +178,7 @@ export default function LandingPage() {
                 ref={inputRef}
                 type="text"
                 value={url}
-                onChange={(e) => { setUrl(e.target.value); setError("") }}
+                onChange={(e) => { setUrl(e.target.value); setError(""); setShowSignInHint(false) }}
                 onFocus={() => setFocused(true)}
                 onBlur={() => setFocused(false)}
                 placeholder="https://your-website.com"
@@ -198,6 +204,15 @@ export default function LandingPage() {
             {error && (
               <p id="url-error" role="alert" className="text-xs text-red-500 mt-2 text-left">
                 {error}
+                {showSignInHint && (
+                  <>
+                    {" "}
+                    <Link href="/login" className="underline font-medium text-red-600 hover:text-red-700">
+                      Sign in
+                    </Link>{" "}
+                    for higher limits.
+                  </>
+                )}
               </p>
             )}
           </form>
@@ -270,7 +285,16 @@ export default function LandingPage() {
             <div>
               <h4 className="font-semibold text-zinc-900 text-sm mb-1">Works for any website</h4>
               <p className="text-sm text-zinc-500 leading-relaxed">
-                The LLM adapts section names and descriptions to the site&apos;s domain, whether it&apos;s a recipe blog, a law firm, or a SaaS product.
+                Our LLM reads each site and adapts to its domain — section names, descriptions, and page selection all shift depending on whether it&apos;s a recipe blog, a law firm, or a SaaS product. The output is always a spec-compliant llms.txt. Learn more about the llms.txt spec{" "}
+                <a
+                  href="https://llmstxt.org"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-zinc-700 underline underline-offset-2 hover:text-zinc-900"
+                >
+                  here
+                </a>
+                .
               </p>
             </div>
           </div>

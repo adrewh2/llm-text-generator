@@ -16,7 +16,10 @@ import type { ExtractedPage, JobStatus } from "./types"
 import { crawler } from "../config"
 import { assertSafeUrl, UnsafeUrlError } from "./ssrf"
 
-const { MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS, PIPELINE_BUDGET_MS } = crawler
+const {
+  MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS,
+  PIPELINE_BUDGET_MS, URLS_PER_PREFIX_CAP, PREFIX_SEGMENT_DEPTH,
+} = crawler
 
 class PipelineTimeoutError extends Error {
   constructor() { super("Exceeded time budget") }
@@ -150,7 +153,7 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
     }
 
     // Cap URLs per path prefix to prevent content-heavy sites from flooding the queue
-    const cappedUrls = capByPathPrefix(queue.map((q) => q.url), 5)
+    const cappedUrls = capByPathPrefix(queue.map((q) => q.url), URLS_PER_PREFIX_CAP, PREFIX_SEGMENT_DEPTH)
     const cappedSet = new Set(cappedUrls)
     queue.splice(0, queue.length, ...queue.filter((q) => cappedSet.has(q.url)))
 

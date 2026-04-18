@@ -16,6 +16,16 @@ export const crawler = {
   POLITENESS_DELAY_MS: 300,
   /** Hours before a cached page is considered stale and re-crawled. */
   PAGE_TTL_HOURS: 24,
+  /**
+   * Max discovered URLs per path-prefix bucket before crawling. Belt-
+   * and-suspenders alongside LLM ranking — keeps a single section of
+   * a content-heavy site (e.g. 500 /watch URLs) from flooding the
+   * queue the LLM ranks over. Long-term we could drop this cap
+   * entirely and trust the LLM; for now it bounds the prompt size.
+   */
+  URLS_PER_PREFIX_CAP: 5,
+  /** Path segments that form the prefix-bucket key. `/docs/api/x` + depth 2 → bucket `docs/api`. */
+  PREFIX_SEGMENT_DEPTH: 2,
   /** Cap on sitemap parsing — stops a 1M-URL sitemap from OOMing us. */
   MAX_SITEMAP_URLS: 500,
   /** Sitemap fetch timeout. */

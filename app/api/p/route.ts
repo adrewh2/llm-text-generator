@@ -41,7 +41,13 @@ export async function POST(req: NextRequest) {
   const rate = consumeRateLimit(rateKey, user ? rateLimit.AUTH : rateLimit.ANON)
   if (!rate.allowed) {
     return NextResponse.json(
-      { error: "Too many requests — please slow down." },
+      {
+        error: "Too many requests — please slow down.",
+        // Hint the client to surface a Sign-In CTA. Anon users get
+        // a tighter bucket than signed-in users; a nudge to sign in
+        // is a reasonable response to the denial.
+        signInPrompt: !user,
+      },
       { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
     )
   }
