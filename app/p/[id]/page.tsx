@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, Suspense } from "react"
 import { useParams, useSearchParams } from "next/navigation"
 import {
   CheckCircle2, Circle, Loader2, Copy, Download, Check, Link2,
-  Shield, AlertCircle, XCircle, LayoutDashboard,
+  Shield, AlertCircle, XCircle, LayoutDashboard, Plus,
 } from "lucide-react"
 import Link from "next/link"
 import type { CrawlJob, JobStatus } from "@/lib/crawler/types"
@@ -30,6 +30,16 @@ const STEPS: Array<{ id: JobStatus | "done"; label: string }> = [
 
 // Simulated step durations (ms) for cached results
 const SIM_STEP_DURATIONS = [1800, 1600, 1400, 1200]
+
+// Minimum time each step stays visible during a live crawl, so fast
+// backend transitions (scoring → assembling → complete in <100ms) are
+// still readable. Doesn't slow down genuinely slow steps — it only
+// caps how fast visibleStatus can catch up to the real job status.
+const LIVE_MIN_STEP_DWELL_MS = 1200
+
+const STATUS_PROGRESSION = [
+  "pending", "crawling", "enriching", "scoring", "assembling", "complete",
+] as const
 
 // ─── Progress Pane ────────────────────────────────────────────────────────────
 
@@ -104,17 +114,17 @@ function ProgressPane({ job, simulatedStep }: { job: ApiJob; simulatedStep?: num
           </div>
         )}
 
-        <div className="bg-zinc-950 rounded-xl overflow-hidden border border-zinc-800">
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-zinc-800">
+        <div className="bg-zinc-50 rounded-xl overflow-hidden border border-zinc-200">
+          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-zinc-200">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-zinc-400 text-xs font-mono">
+            <span className="text-zinc-500 text-xs font-mono">
               {isSimulated
                 ? `${domain} · retrieving cached result`
                 : `${job.progress.discovered} URLs discovered · ${job.progress.crawled} crawled`}
             </span>
           </div>
           <div className="h-24 flex items-center justify-center p-4">
-            <p className="text-zinc-600 text-xs font-mono">
+            <p className="text-zinc-400 text-xs font-mono">
               {isSimulated
                 ? simulatedStep === 0 ? `Crawling ${domain}…`
                   : simulatedStep === 1 ? "Classifying pages with AI…"
@@ -218,8 +228,13 @@ function PageViewInner() {
   // a cached job (already status=complete on first fetch) briefly paints the
   // result pane before the simulation timers get a chance to kick in.
   const [simulatedStep, setSimulatedStep] = useState<number | null>(shouldSimulate ? 0 : null)
+  // Client-side display status for live crawls — advances at most one
+  // step per LIVE_MIN_STEP_DWELL_MS so the later (usually fast) steps
+  // are legible instead of flashing by.
+  const [visibleStatus, setVisibleStatus] = useState<string>(() => job?.status ?? "pending")
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const simTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const dwellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const simulationStarted = useRef(false)
 
   useEffect(() => {
@@ -280,8 +295,39 @@ function PageViewInner() {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
       if (simTimerRef.current) clearTimeout(simTimerRef.current)
+      if (dwellTimerRef.current) clearTimeout(dwellTimerRef.current)
     }
   }, [fetchJob])
+
+  // Pace visibleStatus so the stepper can't advance faster than
+  // LIVE_MIN_STEP_DWELL_MS per step. Simulation mode manages its own
+  // timing via simulatedStep and bypasses this effect.
+  useEffect(() => {
+    if (!job || simulatedStep !== null) return
+
+    // Fast-path failures — show the error state immediately.
+    if (job.status === "failed") {
+      setVisibleStatus("failed")
+      return
+    }
+
+    // "partial" completes the pipeline just like "complete" — collapse it
+    // into the "complete" step for progression purposes.
+    const effectiveTarget = job.status === "partial" ? "complete" : job.status
+    const targetIdx = STATUS_PROGRESSION.indexOf(effectiveTarget as typeof STATUS_PROGRESSION[number])
+    const currentIdx = STATUS_PROGRESSION.indexOf(visibleStatus as typeof STATUS_PROGRESSION[number])
+
+    if (targetIdx === -1 || currentIdx === -1) return
+    if (targetIdx <= currentIdx) return
+
+    if (dwellTimerRef.current) clearTimeout(dwellTimerRef.current)
+    dwellTimerRef.current = setTimeout(() => {
+      const next = STATUS_PROGRESSION[currentIdx + 1]
+      // When catching up to "complete" and the backend already reported
+      // "partial", surface the partial status so the badge shows.
+      setVisibleStatus(next === "complete" && job.status === "partial" ? "partial" : next)
+    }, LIVE_MIN_STEP_DWELL_MS)
+  }, [job, visibleStatus, simulatedStep])
 
   if (notFound) {
     return (
@@ -294,12 +340,24 @@ function PageViewInner() {
     )
   }
 
-  const isDone = !!job && (job.status === "complete" || job.status === "partial")
+  // When a simulation is running, visibleStatus is irrelevant (the
+  // simulated-step UI controls the view). Otherwise, clamp the job's
+  // status to visibleStatus so fast live-crawl transitions are paced.
+  const displayJob = job
+    ? simulatedStep !== null
+      ? job
+      : { ...job, status: visibleStatus as ApiJob["status"] }
+    : null
+  const isDone = !!displayJob && (displayJob.status === "complete" || displayJob.status === "partial")
   const showResult = isDone && simulatedStep === null
   const domain = job ? (() => { try { return new URL(job.url).hostname } catch { return job.url } })() : ""
   const pages = job?.pages || []
   const crawledCount = pages.filter((p) => p.fetchStatus === "ok").length
-  const validation = showResult ? validateLlmsTxt(job!.result ?? "") : null
+  // Only validate once we have a non-empty result — otherwise a
+  // half-propagated write (job.status=complete before pages.result lands)
+  // would trip "missing H1" on empty text. The store now writes pages
+  // first, so this is belt-and-suspenders.
+  const validation = showResult && job!.result ? validateLlmsTxt(job!.result) : null
 
   return (
     <div className="h-screen font-sans bg-white flex flex-col">
@@ -322,7 +380,7 @@ function PageViewInner() {
               <span className="text-zinc-300 hidden sm:block">·</span>
               <span className="text-xs text-zinc-400 font-mono hidden sm:block shrink-0">{crawledCount} pages</span>
               {job!.genre && <span className="text-xs text-zinc-400 font-mono hidden md:block shrink-0">· {job!.genre.replace(/_/g, " ")}</span>}
-              {job!.status === "partial" && (
+              {displayJob!.status === "partial" && (
                 <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 text-xs font-medium px-2 py-0.5 rounded-full ring-1 ring-amber-100 shrink-0">
                   <AlertCircle size={10} /> Partial
                 </span>
@@ -348,9 +406,10 @@ function PageViewInner() {
         <div className="flex items-center gap-2 shrink-0">
           <Link
             href="/?focus=1"
-            className="flex items-center gap-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-300 transition-all"
+            className="flex items-center gap-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-all"
           >
-            Generate another
+            <Plus size={12} className="text-zinc-400" />
+            Generate
           </Link>
           {showResult && isSignedIn && (
             <Link
@@ -385,7 +444,7 @@ function PageViewInner() {
           <ResultPane job={job} />
         ) : (
           <ProgressPane
-            job={job}
+            job={displayJob!}
             simulatedStep={simulatedStep !== null ? simulatedStep : undefined}
           />
         )}

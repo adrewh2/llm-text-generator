@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { randomUUID } from "crypto"
 import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, upsertUserRequest } from "@/lib/store"
 import { runCrawlPipeline } from "@/lib/crawler/pipeline"
-import { isValidHttpUrl } from "@/lib/crawler/url"
+import { isValidHttpUrl, normalizeUrl } from "@/lib/crawler/url"
 import { waitUntil } from "@vercel/functions"
 import { createClient } from "@/lib/supabase/server"
 
@@ -28,12 +28,16 @@ export async function POST(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  // Resolve canonical URL
+  // Resolve canonical URL. The redirect target often carries per-request
+  // session/OAuth tokens (e.g. Google's dsh/ifkv/osid); those expire and
+  // must not be stored as part of the cache key — strip them via our
+  // normalizer so the canonical URL is stable across re-submissions.
   let canonicalUrl = url.trim()
   try {
     const probe = await fetch(canonicalUrl, { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(5000) })
     canonicalUrl = probe.url || canonicalUrl
   } catch { /* use original */ }
+  canonicalUrl = normalizeUrl(canonicalUrl) || canonicalUrl
 
   // Check for an existing result
   const existing = await getPageByUrl(canonicalUrl)

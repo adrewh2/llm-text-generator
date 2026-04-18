@@ -1,7 +1,17 @@
+// Query params that don't affect which *structural* page is shown.
+// Stripping them at normalization time collapses same-page variants
+// like /privacy?hl=en vs /privacy?hl=en-US into one.
 const TRACKING_PARAMS = new Set([
+  // Marketing / analytics
   "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
   "fbclid", "gclid", "msclkid", "_ga", "mc_cid", "mc_eid",
   "ref", "source", "from", "via",
+  // Locale / geo — same page, different language
+  "hl", "gl", "lang", "locale", "lng", "ln",
+  // OAuth / redirect flow params — same landing page, different post-auth target
+  "continue", "followup", "passive", "ec",
+  "flowname", "flowentry", "service", "state",
+  "redirect_uri", "redirect_url", "return_url", "returnurl", "returnto", "next",
 ])
 
 const SKIP_EXTENSIONS = new Set([

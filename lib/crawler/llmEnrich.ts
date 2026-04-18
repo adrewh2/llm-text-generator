@@ -220,20 +220,27 @@ Respond ONLY with a JSON array of path strings (starting with /), e.g. ["/about"
 }
 
 /**
- * Given a large list of candidate URLs, returns a filtered subset worth crawling.
- * Focuses on structural pages useful for LLM tooling — not individual content items.
+ * Given a list of candidate URLs, returns a filtered subset worth crawling.
+ * Two responsibilities:
+ *   1. Pick structural pages over individual content items (ranking).
+ *   2. Collapse URLs that point to the same structural page under
+ *      different query params (link dedup — e.g. locale, session, OAuth
+ *      redirect targets). The deterministic tracking-param list catches
+ *      common cases; the LLM handles the long tail without us hardcoding
+ *      per-site param dictionaries.
  */
 export async function rankCandidateUrls(
   candidates: string[],
   siteName: string,
   homepageExcerpt: string,
-  maxKeep = 60,
+  maxKeep = 120,
 ): Promise<string[]> {
   const client = getClient()
   if (!client || candidates.length === 0) return candidates
 
-  // If the list is small enough, no need for LLM ranking
-  if (candidates.length <= maxKeep) return candidates
+  // Very small lists: not worth a round trip — the dedup upside is
+  // negligible and ranking is moot.
+  if (candidates.length <= 10) return candidates
 
   const numbered = candidates.map((u, i) => `${i + 1}. ${u}`).join("\n")
 
@@ -244,10 +251,15 @@ The goal of llms.txt is to help LLMs understand what a site offers. We want stru
 Good to crawl: documentation, guides, API references, feature pages, about/company pages, pricing, support, examples, tutorials, changelogs.
 Skip: individual videos, articles, products, user profiles, search results, login pages, or anything that's one of millions of similar items.
 
+IMPORTANT — collapse duplicate links. If multiple URLs point to the same structural page but differ only in query parameters that don't change what the page shows (locale like hl/lang, session tokens, OAuth flow parameters like continue/followup/state/service, redirect targets, tracking params), return ONLY ONE of them. Pick the shortest / cleanest variant. Examples:
+- /privacy?hl=en and /privacy?hl=en-US → same page, keep one
+- Three /ServiceLogin?continue=...&followup=... with different continue URLs → all the sign-in page, keep one
+- /terms?gl=US&hl=en and /terms?hl=en → same terms page, keep the shorter
+
 Homepage context:
 ${homepageExcerpt.slice(0, 400)}
 
-From the ${candidates.length} candidate URLs below, return a JSON array of up to ${maxKeep} 1-based indices for the most valuable pages to crawl. Prefer pages that give structural insight into the site.
+From the ${candidates.length} candidate URLs below, return a JSON array of up to ${maxKeep} 1-based indices for the most valuable pages to crawl, with duplicates collapsed. Prefer pages that give structural insight into the site.
 
 URLs:
 ${numbered}

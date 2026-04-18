@@ -1,10 +1,10 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { formatDistanceToNow } from "date-fns"
-import { Eye } from "lucide-react"
+import { Plus } from "lucide-react"
 import SignOutButton from "./SignOutButton"
 import JobActions from "./JobActions"
+import MonitorStatus from "./MonitorStatus"
 import { getUserPages } from "@/lib/store"
 
 export default async function DashboardPage() {
@@ -35,13 +35,14 @@ export default async function DashboardPage() {
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="text-2xl font-semibold text-zinc-950 tracking-tight">Dashboard</h1>
-            <p className="text-sm text-zinc-500 mt-1">Pages you&apos;ve generated</p>
+            <p className="text-sm text-zinc-500 mt-1">Your requested pages</p>
           </div>
           <Link
             href="/?focus=1"
-            className="flex items-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-zinc-800 transition-colors"
+            className="flex items-center gap-1.5 text-sm font-medium text-zinc-700 hover:text-zinc-900 px-3.5 py-2 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-colors"
           >
-            Generate new
+            <Plus size={14} className="text-zinc-400" />
+            Generate
           </Link>
         </div>
 
@@ -68,23 +69,16 @@ export default async function DashboardPage() {
                       <span className="font-medium text-zinc-900 text-sm truncate">
                         {page.siteName || hostname}
                       </span>
-                      {page.latestJobStatus && <StatusBadge status={page.latestJobStatus} />}
+                      {page.latestJobStatus && page.latestJobStatus !== "complete" && (
+                        <StatusBadge status={page.latestJobStatus} />
+                      )}
                     </div>
                     <p className="text-xs text-zinc-400 truncate">{page.pageUrl}</p>
                   </div>
-                  <div className="flex items-center gap-3 ml-4 shrink-0">
+                  <div className="flex items-center gap-2 ml-4 shrink-0">
                     <MonitorStatus monitored={page.monitored} lastCheckedAt={page.lastCheckedAt} />
-                    <div className="w-8 flex justify-center">
-                      <JobActions pageUrl={page.pageUrl} />
-                    </div>
-                    <div className="text-right" style={{ width: "5.5rem" }}>
-                      <span className="text-xs text-zinc-400">
-                        {formatDistanceToNow(page.requestedAt, { addSuffix: true }).replace("less than a minute ago", "< 1 min ago")}
-                      </span>
-                    </div>
-                    <div className="w-6 flex justify-end">
-                      <span className="text-zinc-300 group-hover:text-zinc-500 transition-colors">→</span>
-                    </div>
+                    <JobActions pageUrl={page.pageUrl} />
+                    <span className="text-zinc-300 group-hover:text-zinc-500 transition-colors w-4 text-right">→</span>
                   </div>
                 </Link>
               )
@@ -93,22 +87,6 @@ export default async function DashboardPage() {
         )}
       </main>
     </div>
-  )
-}
-
-function MonitorStatus({ monitored, lastCheckedAt }: { monitored: boolean; lastCheckedAt: Date | null }) {
-  if (!monitored) return null
-  const label = lastCheckedAt
-    ? `Checked ${formatDistanceToNow(lastCheckedAt, { addSuffix: true }).replace("less than a minute ago", "< 1 min ago")}`
-    : "Awaiting check"
-  return (
-    <span
-      title="We re-check this site's sitemap and homepage every hour and regenerate llms.txt when it changes"
-      className="hidden md:inline-flex items-center gap-1.5 text-xs font-medium text-zinc-600"
-    >
-      <Eye size={12} className="text-emerald-500" />
-      {label}
-    </span>
   )
 }
 

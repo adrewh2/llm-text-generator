@@ -1,5 +1,6 @@
 import type { Browser, Page } from "puppeteer"
 import { normalizeUrl, isSameDomain, shouldSkipUrl } from "./url"
+import { isBlockedByChallenge } from "./fetchPage"
 
 /**
  * Returns true if the HTML looks like a JS-rendered SPA shell or a
@@ -77,6 +78,7 @@ export class SpaBrowser {
       await new Promise((r) => setTimeout(r, 1500))
 
       const html = await page.content()
+      if (isBlockedByChallenge(html)) return { html: "", ok: false }
       return { html, ok: true }
     } catch {
       return { html: "", ok: false }
@@ -111,6 +113,7 @@ export class SpaBrowser {
       await new Promise((r) => setTimeout(r, 1500))
 
       const html = await page.content()
+      if (isBlockedByChallenge(html)) return { html: "", ok: false, links: [] }
       const rawLinks: string[] = await page.evaluate(() =>
         Array.from(document.querySelectorAll("a[href]"))
           .map((el) => (el as HTMLAnchorElement).href)

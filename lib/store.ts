@@ -67,10 +67,12 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
   if (updates.siteName !== undefined) jobRow.site_name = updates.siteName
   if (updates.error !== undefined) jobRow.error = updates.error
 
-  await supabase.from("jobs").update(jobRow).eq("id", id)
-
-  // When the result is ready, write the canonical page — only if non-empty
-  // so a failed re-crawl never wipes out the previous good result
+  // When the result is ready, write the canonical page FIRST — only if
+  // non-empty so a failed re-crawl never wipes out the previous good
+  // result. Writing pages before the job status flip means any polling
+  // client that sees status=complete is guaranteed to also see the
+  // result; the previous order occasionally left the client with
+  // status=complete + result=null, tripping validation on empty text.
   if (updates.result !== undefined && updates.result.trim().length > 0) {
     const { data: job } = await supabase
       .from("jobs")
@@ -89,6 +91,8 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
       }, { onConflict: "url" })
     }
   }
+
+  await supabase.from("jobs").update(jobRow).eq("id", id)
 }
 
 // ─── Pages ───────────────────────────────────────────────────────────────────
