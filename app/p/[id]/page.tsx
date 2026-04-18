@@ -227,7 +227,7 @@ function PageViewInner() {
 
         <div className="flex items-center gap-2 shrink-0">
           <Link
-            href="/?focus=1"
+            href="/"
             className="flex items-center gap-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-all"
           >
             <Plus size={12} className="text-zinc-400" />

@@ -113,7 +113,7 @@ export default function ProgressPane({
               Try a different site — most public sites crawl cleanly.
             </p>
             <Link
-              href="/?focus=1"
+              href="/"
               className="inline-flex items-center gap-1.5 text-sm font-medium text-zinc-700 hover:text-zinc-900 px-3.5 py-2 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-white transition-colors"
             >
               <Plus size={14} className="text-zinc-400" />
