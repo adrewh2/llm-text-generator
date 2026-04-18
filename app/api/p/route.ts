@@ -56,8 +56,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ page_id: active.jobId, cached: false }, { status: 200 })
   }
 
-  // Stale or new — run a fresh crawl
-  // (if stale, the old pages.result is preserved until the new crawl succeeds)
+  // Stale or new — run a fresh crawl. The user_request row is created
+  // by GET /api/p/[id] once the job completes and the user views it —
+  // this is intentional: forcing the user to wait on /p/[id] through
+  // to completion gates each submission against their own attention,
+  // which acts as a lightweight rate limit.
   const id = randomUUID()
   await createJob(id, canonicalUrl)
   await bumpPageRequest(canonicalUrl)

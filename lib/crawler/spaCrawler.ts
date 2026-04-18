@@ -74,7 +74,11 @@ export class SpaBrowser {
         }
       })
 
-      await page.goto(url, { waitUntil: "load", timeout: 15000 })
+      const response = await page.goto(url, { waitUntil: "load", timeout: 15000 })
+      // Reject HTTP errors even when the server returns a styled HTML
+      // body (Google's Error 400 page, rendered sign-in errors, etc.).
+      // Without this Puppeteer happily treats the error page as content.
+      if (response && !response.ok()) return { html: "", ok: false }
       await new Promise((r) => setTimeout(r, 1500))
 
       const html = await page.content()
@@ -109,7 +113,8 @@ export class SpaBrowser {
         }
       })
 
-      await page.goto(url, { waitUntil: "load", timeout: 15000 })
+      const response = await page.goto(url, { waitUntil: "load", timeout: 15000 })
+      if (response && !response.ok()) return { html: "", ok: false, links: [] }
       await new Promise((r) => setTimeout(r, 1500))
 
       const html = await page.content()

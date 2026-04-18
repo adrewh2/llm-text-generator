@@ -243,7 +243,10 @@ export async function getUserPages(userId: string): Promise<Array<{
     .select("url, site_name, genre, monitored, last_checked_at")
     .in("url", pageUrls)
 
-  // Fetch latest job per page_url
+  // Fetch latest job per page_url. Only consider terminal jobs —
+  // user_requests rows are only created on completion, so every URL in
+  // the dashboard has at least one. A re-crawl in progress (monitor
+  // tick) still links to the last completed result.
   const { data: jobs } = await supabase
     .from("jobs")
     .select("id, page_url, status, created_at")

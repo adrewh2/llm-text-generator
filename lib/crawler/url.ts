@@ -12,6 +12,9 @@ const TRACKING_PARAMS = new Set([
   "continue", "followup", "passive", "ec",
   "flowname", "flowentry", "service", "state",
   "redirect_uri", "redirect_url", "return_url", "returnurl", "returnto", "next",
+  // Google session identifiers — per-request tokens that expire and
+  // otherwise poison the cache key.
+  "dsh", "emr", "osid", "ifkv",
 ])
 
 const SKIP_EXTENSIONS = new Set([

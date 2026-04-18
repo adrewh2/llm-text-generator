@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { formatDistanceToNow } from "date-fns"
+import { formatDistanceToNowStrict } from "date-fns"
 import { Eye } from "lucide-react"
 
 interface Props {
@@ -23,7 +23,7 @@ export default function MonitorStatus({ monitored, lastCheckedAt }: Props) {
 
   if (!monitored) return null
   const label = lastCheckedAt
-    ? `Checked ${formatDistanceToNow(lastCheckedAt, { addSuffix: true })}`
+    ? `Checked ${formatDistanceToNowStrict(lastCheckedAt, { addSuffix: true })}`
     : "Awaiting check"
   return (
     <span

@@ -7,6 +7,12 @@ import JobActions from "./JobActions"
 import MonitorStatus from "./MonitorStatus"
 import { getUserPages } from "@/lib/store"
 
+// Force dynamic rendering — this page's content depends on whatever
+// was just written to user_requests / jobs, and Next's client router
+// cache would otherwise serve a stale RSC payload when navigating back
+// from /p/[id].
+export const dynamic = "force-dynamic"
+
 export default async function DashboardPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

@@ -309,6 +309,16 @@ function PageViewInner() {
       return
     }
 
+    // On first entry (fresh mount or after navigating back to this
+    // page), don't replay the stepper from "pending" through whatever
+    // state the backend is already in — just jump to the current real
+    // status. Pacing is for watching *new* transitions, not re-animating
+    // progress that has already happened.
+    if (visibleStatus === "pending" && job.status !== "pending") {
+      setVisibleStatus(job.status)
+      return
+    }
+
     // "partial" completes the pipeline just like "complete" — collapse it
     // into the "complete" step for progression purposes.
     const effectiveTarget = job.status === "partial" ? "complete" : job.status
@@ -404,7 +414,7 @@ function PageViewInner() {
             <Plus size={12} className="text-zinc-400" />
             Generate
           </Link>
-          {showResult && isSignedIn && (
+          {isSignedIn && (
             <Link
               href="/dashboard"
               className="flex items-center gap-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 bg-zinc-50 hover:bg-zinc-100 px-3 py-1.5 rounded-lg border border-zinc-200 transition-all"
