@@ -63,6 +63,12 @@ function PageViewInner() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const simTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const simulationStarted = useRef(false)
+  // Track shouldSimulate via a ref so fetchJob's useCallback identity
+  // doesn't change when we strip ?simulate=1 from the URL. If fetchJob
+  // re-created, the parent useEffect would clean up simTimerRef and
+  // the simulation would freeze mid-flight.
+  const shouldSimulateRef = useRef(shouldSimulate)
+  useEffect(() => { shouldSimulateRef.current = shouldSimulate }, [shouldSimulate])
   // Circuit breaker: after this many consecutive polling failures,
   // stop polling and show an error. Prevents grinding a dead endpoint
   // forever if the server starts consistently 5xx-ing.
@@ -123,11 +129,17 @@ function PageViewInner() {
 
       if (isDone || isFailed) {
         if (intervalRef.current) clearInterval(intervalRef.current)
-        if (isDone && shouldSimulate && !simulationStarted.current) {
+        if (isDone && shouldSimulateRef.current && !simulationStarted.current) {
           simulationStarted.current = true
           startSimulation()
+          // Clean the URL so the stepper-simulation isn't replayed for
+          // anyone who bookmarks, refreshes, or shares this page.
+          // `simulationStarted.current` guards re-entry — even if
+          // useSearchParams somehow re-fires with simulate gone, we
+          // won't double-start.
+          stripQueryParam("simulate")
         }
-      } else if (shouldSimulate && !simulationStarted.current) {
+      } else if (shouldSimulateRef.current && !simulationStarted.current) {
         // Job still running but URL asked to simulate — show real progress.
         setSimulatedStep(null)
       }
@@ -139,7 +151,7 @@ function PageViewInner() {
         setPollDead(true)
       }
     }
-  }, [pageId, shouldSimulate, startSimulation])
+  }, [pageId, startSimulation])
 
   useEffect(() => {
     fetchJob()
@@ -279,6 +291,19 @@ function PageViewInner() {
 
 function hostnameOf(url: string): string {
   try { return new URL(url).hostname } catch { return url }
+}
+
+/** Remove a single query param from the browser URL without routing. */
+function stripQueryParam(name: string): void {
+  if (typeof window === "undefined") return
+  const url = new URL(window.location.href)
+  if (!url.searchParams.has(name)) return
+  url.searchParams.delete(name)
+  const qs = url.searchParams.toString()
+  window.history.replaceState(
+    null, "",
+    `${url.pathname}${qs ? `?${qs}` : ""}${url.hash}`,
+  )
 }
 
 function PageViewFallback() {
