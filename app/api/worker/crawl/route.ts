@@ -20,6 +20,8 @@ interface CrawlMessage {
   url?: string
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 async function handler(req: Request): Promise<Response> {
   let body: CrawlMessage
   try {
@@ -31,6 +33,16 @@ async function handler(req: Request): Promise<Response> {
   const { jobId, url } = body
   if (!jobId || !url) {
     return NextResponse.json({ error: "Missing jobId or url" }, { status: 400 })
+  }
+  // Shape-check the payload even though QStash has already verified
+  // the signature — a stray message, a replay from a different
+  // project, or an operator testing with the signing key shouldn't be
+  // able to drive runCrawlPipeline with arbitrary strings.
+  if (typeof jobId !== "string" || !UUID_RE.test(jobId)) {
+    return NextResponse.json({ error: "Invalid jobId" }, { status: 400 })
+  }
+  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) {
+    return NextResponse.json({ error: "Invalid url" }, { status: 400 })
   }
 
   try {

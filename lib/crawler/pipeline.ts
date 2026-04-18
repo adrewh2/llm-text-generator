@@ -19,7 +19,7 @@ import { assertSafeUrl, UnsafeUrlError } from "./ssrf"
 const {
   MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS,
   PIPELINE_BUDGET_MS, URLS_PER_PREFIX_CAP, PREFIX_SEGMENT_DEPTH,
-  EXTERNAL_REFS_MAX_KEEP,
+  EXTERNAL_REFS_MAX_KEEP, MAX_CRAWL_DELAY_MS,
 } = crawler
 
 class PipelineTimeoutError extends Error {
@@ -188,6 +188,30 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
       progress: { discovered: discoveredUrls.size, crawled, failed },
     })
 
+    // Politeness. When robots.txt declares a `Crawl-delay`, honor it
+    // as a shared clock across workers — the directive's stated
+    // semantics are "gap between requests to this host", which a
+    // per-worker sleep can't deliver under CONCURRENCY > 1 (all
+    // workers sleep in parallel, then fire together). Capped at
+    // MAX_CRAWL_DELAY_MS so a hostile `Crawl-delay: 99999` can't burn
+    // the entire pipeline budget on sleep.
+    //
+    // With no directive we keep the prior behaviour: a light per-worker
+    // sleep on the HTTP path, nothing on the browser path (browser
+    // renders pace themselves via page-load time).
+    const crawlDelayMs = robots.crawlDelay != null
+      ? Math.min(Math.max(0, Math.round(robots.crawlDelay * 1000)), MAX_CRAWL_DELAY_MS)
+      : null
+    let nextSlot = Date.now()
+    const waitForRobotsSlot = async (): Promise<void> => {
+      if (crawlDelayMs === null) return
+      const now = Date.now()
+      const start = Math.max(now, nextSlot)
+      nextSlot = start + crawlDelayMs
+      const wait = start - now
+      if (wait > 0) await delay(wait)
+    }
+
     // Worker pool: each worker grabs the next URL as soon as it finishes,
     // no waiting for batch siblings. Safe in JS because sync code is atomic.
     let queueIdx = 0
@@ -202,7 +226,11 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
         visited.add(item.url)
 
         const { url, depth } = item
-        if (!needsBrowser) await delay(POLITENESS_DELAY_MS + Math.random() * 100)
+        if (crawlDelayMs !== null) {
+          await waitForRobotsSlot()
+        } else if (!needsBrowser) {
+          await delay(POLITENESS_DELAY_MS + Math.random() * 100)
+        }
 
         let html: string | null = null
         let links: string[] = []

@@ -136,8 +136,12 @@ export async function consumeRateLimit(
     } catch (err) {
       // Fail open on Upstash errors. A transient Redis outage
       // shouldn't take down all signups / crawls; better to permit
-      // the request and revisit if it becomes frequent.
-      debugLog("rateLimit.upstashLimit", err)
+      // the request and revisit if it becomes frequent. Route through
+      // console.warn directly (not the debugLog trace channel) so a
+      // persistent misconfig — which *silently disables* rate limiting
+      // platform-wide — is visible in the Vercel logs feed.
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn(`[rateLimit] Upstash call failed, FAILING OPEN: ${message}`)
       return { allowed: true, retryAfterSec: 0, remaining: cfg.capacity }
     }
   }

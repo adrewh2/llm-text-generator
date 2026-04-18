@@ -20,21 +20,23 @@ import {
   getMonitoredPages,
   recordMonitorCheck,
   sweepStaleMonitoredPages,
+  sweepStuckJobs,
 } from "@/lib/store"
 import { detectChange } from "@/lib/crawler/monitor"
 import { enqueueCrawl } from "@/lib/jobQueue"
-import { debugLog } from "@/lib/log"
+import { errorLog } from "@/lib/log"
 import { monitor } from "@/lib/config"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
 
-const { STALE_DAYS: STALE_MONITOR_DAYS, BATCH_SIZE: MONITOR_BATCH_SIZE, SAME_HOST_DELAY_MS } = monitor
+const { STALE_DAYS: STALE_MONITOR_DAYS, BATCH_SIZE: MONITOR_BATCH_SIZE, SAME_HOST_DELAY_MS, STUCK_JOB_AFTER_MS } = monitor
 
 interface Summary {
   checked: number
   changed: number
   swept: number
+  stuckFailed: number
   recrawls: string[]
   errors: Array<{ url: string; error: string }>
 }
@@ -42,12 +44,17 @@ interface Summary {
 export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) return new NextResponse("Unauthorized", { status: 401 })
 
-  // First, retire pages nobody has requested recently so we don't burn
+  // Force-fail jobs stuck in a non-terminal status beyond the pipeline
+  // budget + QStash retry window. Must run before getActiveJobForUrl
+  // elsewhere starts treating these as legit in-flight work.
+  const stuckFailed = await sweepStuckJobs(STUCK_JOB_AFTER_MS)
+
+  // Then retire pages nobody has requested recently so we don't burn
   // cycles detecting changes on dormant URLs.
   const swept = await sweepStaleMonitoredPages(STALE_MONITOR_DAYS)
 
   const pages = await getMonitoredPages({ limit: MONITOR_BATCH_SIZE })
-  const summary: Summary = { checked: 0, changed: 0, swept, recrawls: [], errors: [] }
+  const summary: Summary = { checked: 0, changed: 0, swept, stuckFailed, recrawls: [], errors: [] }
 
   // Sequential detection keeps memory flat and is polite to target
   // domains. The bottleneck is target-site response time, not CPU.
@@ -76,7 +83,7 @@ export async function GET(req: NextRequest) {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "unknown error"
       summary.errors.push({ url: page.url, error: message })
-      debugLog("monitor", `${page.url}: ${message}`)
+      errorLog("monitor", `${page.url}: ${message}`)
     }
   }
 

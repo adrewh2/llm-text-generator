@@ -130,7 +130,7 @@ Respond ONLY with a JSON array, one object per page, same order as input. No pro
       messages: [{ role: "user", content: prompt }],
     })
 
-    const text = message.content[0].type === "text" ? message.content[0].text : ""
+    const text = message.content[0]?.type === "text" ? message.content[0].text : ""
     const jsonMatch = text.match(/\[[\s\S]*\]/)
     if (!jsonMatch) return results
 
@@ -215,7 +215,7 @@ Return only the description text, nothing else.`
       messages: [{ role: "user", content: prompt }],
     })
 
-    const text = message.content[0].type === "text" ? message.content[0].text.trim() : ""
+    const text = message.content[0]?.type === "text" ? message.content[0].text.trim() : ""
     return text.length > 20 ? text : undefined
   } catch (err) {
     debugLog("llmEnrich.generateSitePreamble", err)
@@ -277,7 +277,7 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7, 12]`
       messages: [{ role: "user", content: prompt }],
     })
 
-    const text = message.content[0].type === "text" ? message.content[0].text : ""
+    const text = message.content[0]?.type === "text" ? message.content[0].text : ""
     const match = text.match(/\[[\d,\s]+\]/)
     if (!match) return candidates.slice(0, maxKeep)
 
@@ -348,7 +348,7 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7]`
       messages: [{ role: "user", content: prompt }],
     })
 
-    const text = message.content[0].type === "text" ? message.content[0].text : ""
+    const text = message.content[0]?.type === "text" ? message.content[0].text : ""
     const match = text.match(/\[[\d,\s]+\]/)
     if (!match) return []
 
@@ -423,7 +423,7 @@ Respond with JUST the brand name on a single line. No quotes, no prose, no expla
       max_tokens: 30,
       messages: [{ role: "user", content: prompt }],
     })
-    const text = message.content[0].type === "text" ? message.content[0].text.trim() : ""
+    const text = message.content[0]?.type === "text" ? message.content[0].text.trim() : ""
     // Strip surrounding quotes the LLM sometimes adds despite the
     // instruction, take only the first line (defence against a
     // two-paragraph response), then re-run the deterministic cleaner

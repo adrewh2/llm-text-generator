@@ -16,10 +16,11 @@
 import { createHash } from "crypto"
 import { fetchSitemapUrls } from "./sitemap"
 import { safeFetch } from "./safeFetch"
+import { readBoundedText } from "./readBounded"
 import { USER_AGENT } from "./fetchPage"
 import { crawler } from "../config"
 
-const { HOMEPAGE_FETCH_TIMEOUT_MS } = crawler
+const { HOMEPAGE_FETCH_TIMEOUT_MS, RESPONSE_MAX_BYTES } = crawler
 
 /**
  * Fetch the signature inputs and return a single hash. Returns `null`
@@ -87,7 +88,10 @@ async function hashHomepage(url: string): Promise<string | null> {
       },
     })
     if (!res.ok) return null
-    const html = await res.text()
+    // Same cap as fetchPage — this runs on every monitored page per
+    // cron tick, so an oversized homepage must not OOM the batch.
+    const html = await readBoundedText(res, RESPONSE_MAX_BYTES)
+    if (html === null) return null
     return sha256(normalizeHtml(html))
   } catch {
     return null

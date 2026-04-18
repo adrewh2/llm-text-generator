@@ -28,6 +28,13 @@ export const crawler = {
   PREFIX_SEGMENT_DEPTH: 2,
   /** Cap on sitemap parsing — stops a 1M-URL sitemap from OOMing us. */
   MAX_SITEMAP_URLS: 500,
+  /**
+   * Max response body we'll accept for a single sitemap fetch. The spec
+   * allows up to 50 MB per file, but we cap lower — we only extract the
+   * first MAX_SITEMAP_URLS entries anyway, so anything past this is
+   * guaranteed-unused payload.
+   */
+  SITEMAP_MAX_BYTES: 10 * 1024 * 1024,
   /** Sitemap fetch timeout. */
   SITEMAP_TIMEOUT_MS: 10_000,
   /** Homepage fetch timeout for the monitor's signature computation. */
@@ -36,6 +43,16 @@ export const crawler = {
   RESPONSE_MAX_BYTES: 5 * 1024 * 1024,
   /** Max redirect hops safeFetch will walk before giving up. */
   MAX_REDIRECTS: 5,
+  /**
+   * Upper bound on the `Crawl-delay` directive we'll honor from a
+   * target's robots.txt. The directive itself is authoritative, but
+   * an adversarial site could set `Crawl-delay: 99999` and tie up the
+   * whole pipeline budget on sleeps — cap it so any value beyond
+   * saturates to this. 10 s × 25 pages = 250 s, just inside
+   * PIPELINE_BUDGET_MS; a site asking for more will produce a partial
+   * crawl by design.
+   */
+  MAX_CRAWL_DELAY_MS: 10_000,
   /** UTF-8 byte cap on the excerpt we store per crawled page. */
   EXCERPT_MAX_BYTES: 4_096,
   /**
@@ -118,6 +135,13 @@ export const monitor = {
   BATCH_SIZE: 200,
   /** Politeness delay between hits to the same host during a sweep. */
   SAME_HOST_DELAY_MS: 400,
+  /**
+   * Jobs sitting in a non-terminal status with no `updated_at` write
+   * for this long are force-failed by the sweeper. Sized well beyond
+   * PIPELINE_BUDGET_MS (270s) + QStash retry overhead (3 tries) so
+   * healthy retries never trip it. 15 minutes is comfortable headroom.
+   */
+  STUCK_JOB_AFTER_MS: 15 * 60 * 1000,
 }
 
 // ─── Client UI timing ───────────────────────────────────────────────────────

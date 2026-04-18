@@ -29,17 +29,11 @@ function cacheSetJob(id: string, job: ApiJob): void {
     jobCache.delete(oldest)
   }
 }
-// Shared browser client listens for auth state so the cached job
-// metadata is cleared when a user signs out — prevents a past user's
-// history from bleeding into a new session on a shared device. Auth
-// state for rendering purposes is tracked per-component below; this
-// listener only touches the module-level cache.
-if (typeof window !== "undefined") {
-  const supabase = createClient()
-  supabase.auth.onAuthStateChange((event) => {
-    if (event === "SIGNED_OUT") jobCache.clear()
-  })
-}
+// Auth listener is attached per-mount inside PageViewInner — previous
+// impl registered at module load, which left a listener leaked across
+// HMR reloads in dev and couldn't be unsubscribed. The cache-clear on
+// SIGNED_OUT still fires because PageViewInner mounts on any visit to
+// /p/[id], which is where the cache matters.
 
 function PageViewInner() {
   const params = useParams<{ id: string }>()
@@ -75,12 +69,17 @@ function PageViewInner() {
   // sign-in / sign-out / token-refresh events (including the
   // INITIAL_SESSION event Supabase fires on first subscribe when a
   // user is already authenticated — which the previous module-level
-  // cache was silently dropping).
+  // cache was silently dropping). The SIGNED_OUT branch clears the
+  // per-tab job cache so a prior user's in-flight data can't leak
+  // into the next session on a shared device.
   useEffect(() => {
     const supabase = createClient()
     supabase.auth.getUser().then(({ data }) => setIsSignedIn(!!data.user))
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => setIsSignedIn(!!session?.user),
+      (event, session) => {
+        setIsSignedIn(!!session?.user)
+        if (event === "SIGNED_OUT") jobCache.clear()
+      },
     )
     return () => subscription.unsubscribe()
   }, [])

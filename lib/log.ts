@@ -15,6 +15,22 @@ export function debugLog(context: string, data: unknown): void {
   method(`[${context}] ${message}`)
 }
 
+/**
+ * Always emits, in any environment — use for operational errors that
+ * need to be visible in production logs regardless of payload shape.
+ * `debugLog` silently drops non-Error payloads in prod, which is the
+ * right default for trace logging but hides genuine errors surfaced as
+ * composed strings (e.g. `${url}: ${message}`).
+ */
+export function errorLog(context: string, data: unknown): void {
+  const message = data instanceof Error
+    ? (data.stack ?? data.message)
+    : typeof data === "string"
+      ? data
+      : safeStringify(data)
+  console.error(`[${context}] ${message}`)
+}
+
 function safeStringify(value: unknown): string {
   try {
     return JSON.stringify(value)

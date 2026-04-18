@@ -193,6 +193,28 @@ export async function recordMonitorCheck(
 }
 
 /**
+ * Mark jobs wedged in a non-terminal status past the pipeline budget
+ * as failed. QStash retries up to 3×, then drops the message; a worker
+ * crash on the final attempt otherwise leaves the job row in
+ * `crawling` forever, which `getActiveJobForUrl` then keeps returning
+ * as a phantom "in-flight" job to every future submitter. Cheap
+ * cleanup — runs at the head of the monitor cron.
+ */
+export async function sweepStuckJobs(staleAfterMs: number): Promise<number> {
+  const supabase = getClient()
+  const cutoff = new Date(Date.now() - staleAfterMs).toISOString()
+  const { count } = await supabase
+    .from("jobs")
+    .update(
+      { status: "failed", error: "Worker did not complete in time", updated_at: new Date().toISOString() },
+      { count: "exact" },
+    )
+    .not("status", "in", '("failed","complete","partial")')
+    .lt("updated_at", cutoff)
+  return count ?? 0
+}
+
+/**
  * Turn off monitoring on pages not requested in the last N days.
  * Returns the number of rows affected so the cron can report it.
  */

@@ -91,12 +91,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ page_id: active.jobId, cached: false }, { status: 200 })
   }
 
-  // Stale or new — run a fresh crawl.
+  // Stale or new — run a fresh crawl. Bump `last_requested_at` AFTER
+  // the enqueue has been handed off so an enqueue that silently falls
+  // back to the in-process path (or fails entirely) doesn't mark the
+  // URL as "actively requested" for sweep purposes when nothing is
+  // actually running.
   const id = randomUUID()
   await createJob(id, canonicalUrl)
-  await bumpPageRequest(canonicalUrl)
   if (user) await upsertUserRequest(user.id, canonicalUrl)
   await enqueueCrawl(id, canonicalUrl)
+  await bumpPageRequest(canonicalUrl)
 
   return NextResponse.json({ page_id: id, cached: false }, { status: 201 })
 }

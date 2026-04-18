@@ -62,13 +62,23 @@ export function assembleFile(
 }
 
 function formatEntry(page: ScoredPage, label?: string): string {
-  const url = formatDisplayUrl(page.mdUrl || page.url)
+  const url = encodeMarkdownUrl(formatDisplayUrl(page.mdUrl || page.url))
   const title = (label ?? page.title ?? url).replace(/[\[\]]/g, "")
   if (page.description && page.descriptionProvenance !== "none") {
     const desc = page.description.replace(/\r?\n/g, " ").trim()
     return `- [${title}](${url}): ${desc}`
   }
   return `- [${title}](${url})`
+}
+
+/**
+ * An unescaped `)` inside the URL terminates a markdown link early
+ * (`[Foo](https://a/b(c))` parses the closing paren of `b(c)` as the
+ * link end). CommonMark permits balanced parens, but renderers vary —
+ * percent-encoding both parens is the portable fix.
+ */
+function encodeMarkdownUrl(url: string): string {
+  return url.replace(/\(/g, "%28").replace(/\)/g, "%29")
 }
 
 /**

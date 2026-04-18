@@ -16,7 +16,12 @@ export function validateLlmsTxt(content: string): ValidationResult {
   const firstContentIdx = lines.findIndex((l) => l.trim() !== "")
   const firstContent = firstContentIdx >= 0 ? lines[firstContentIdx] : ""
   if (!firstContent.startsWith("# ")) {
-    errors.push({ line: firstContentIdx + 1, message: "File must begin with an H1 heading (# Title)" })
+    // An empty / whitespace-only file has firstContentIdx=-1; without
+    // the guard the error would report "Line 0", which is confusing.
+    errors.push({
+      line: firstContentIdx >= 0 ? firstContentIdx + 1 : undefined,
+      message: "File must begin with an H1 heading (# Title)",
+    })
   }
 
   // Only one H1
