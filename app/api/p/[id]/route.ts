@@ -11,12 +11,10 @@ export async function GET(
   const job = await getJob(id)
   if (!job) return NextResponse.json({ error: "Not found" }, { status: 404 })
 
-  // Viewing a page counts as "active use" of the URL — bump the
-  // request timestamp so the monitor sweeper keeps it. Previously this
-  // only fired on terminal states, so a user polling a mid-flight job
-  // never refreshed the timestamp and the sweeper could disable
-  // monitoring on a page actively being watched. Skip only on `failed`
-  // — no point extending a page's monitored lifetime on failures.
+  // Viewing a page (including polling a mid-flight job) counts as
+  // "active use" of the URL — bump the request timestamp so the
+  // monitor sweeper keeps it. Skip only on `failed` — no point
+  // extending a page's monitored lifetime on failures.
   // NOTE: we deliberately do NOT attach the page to the viewer's
   // dashboard history here. History is owned by the user who submitted
   // the URL via the landing form (see POST /api/p). Otherwise a

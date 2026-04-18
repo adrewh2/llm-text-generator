@@ -29,11 +29,10 @@ function cacheSetJob(id: string, job: ApiJob): void {
     jobCache.delete(oldest)
   }
 }
-// Auth listener is attached per-mount inside PageViewInner — previous
-// impl registered at module load, which left a listener leaked across
-// HMR reloads in dev and couldn't be unsubscribed. The cache-clear on
-// SIGNED_OUT still fires because PageViewInner mounts on any visit to
-// /p/[id], which is where the cache matters.
+// Auth listener is attached per-mount inside PageViewInner so it's
+// properly cleaned up on unmount (and on HMR reloads in dev). The
+// cache-clear on SIGNED_OUT fires for any tab currently viewing
+// /p/[id], which is the only route that reads from `jobCache`.
 
 function PageViewInner() {
   const params = useParams<{ id: string }>()
@@ -68,8 +67,7 @@ function PageViewInner() {
   // the initial value; `onAuthStateChange` covers subsequent
   // sign-in / sign-out / token-refresh events (including the
   // INITIAL_SESSION event Supabase fires on first subscribe when a
-  // user is already authenticated — which the previous module-level
-  // cache was silently dropping). The SIGNED_OUT branch clears the
+  // user is already authenticated). The SIGNED_OUT branch clears the
   // per-tab job cache so a prior user's in-flight data can't leak
   // into the next session on a shared device.
   useEffect(() => {

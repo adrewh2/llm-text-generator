@@ -196,9 +196,9 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
     // MAX_CRAWL_DELAY_MS so a hostile `Crawl-delay: 99999` can't burn
     // the entire pipeline budget on sleep.
     //
-    // With no directive we keep the prior behaviour: a light per-worker
-    // sleep on the HTTP path, nothing on the browser path (browser
-    // renders pace themselves via page-load time).
+    // With no directive: a light per-worker sleep on the HTTP path,
+    // nothing on the browser path (browser renders pace themselves
+    // via page-load time).
     const crawlDelayMs = robots.crawlDelay != null
       ? Math.min(Math.max(0, Math.round(robots.crawlDelay * 1000)), MAX_CRAWL_DELAY_MS)
       : null

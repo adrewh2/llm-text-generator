@@ -117,7 +117,7 @@ with the Bearer token.
 source .env
 curl -s -H "Authorization: Bearer $CRON_SECRET" \
   http://localhost:3000/api/monitor | jq
-# expect: {"checked":N,"changed":0,"swept":0,"recrawls":[],"errors":[]}
+# expect: {"checked":N,"changed":0,"swept":0,"stuckFailed":0,"recrawls":[],"errors":[]}
 ```
 
 **CLI.** Force a change → expect re-crawls:
@@ -141,6 +141,20 @@ WHERE url = '<a URL you don't mind retiring>';
 curl -s -H "Authorization: Bearer $CRON_SECRET" \
   http://localhost:3000/api/monitor | jq
 # expect: "swept":1 (or more)
+```
+
+**CLI.** Stuck-job sweeper — force-fail a wedged job:
+```sql
+-- Simulate a worker crash: pin a job in 'crawling' with an ancient updated_at
+UPDATE jobs SET status = 'crawling',
+                updated_at = NOW() - INTERVAL '20 minutes'
+WHERE id = '<a recent job UUID>';
+```
+```bash
+curl -s -H "Authorization: Bearer $CRON_SECRET" \
+  http://localhost:3000/api/monitor | jq
+# expect: "stuckFailed":1 — the row is now status='failed' with
+# error='Worker did not complete in time'
 ```
 
 **CLI.** Auth negative check:

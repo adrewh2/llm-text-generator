@@ -30,9 +30,8 @@ export async function middleware(request: NextRequest) {
     url.pathname = "/login"
     const redirect = NextResponse.redirect(url)
     // Carry over any cookies Supabase queued on supabaseResponse during
-    // the getUser() session-refresh. Returning a fresh redirect without
-    // them would drop the refreshed session cookie on the floor — the
-    // documented Supabase SSR bug.
+    // the getUser() session-refresh so the refreshed session cookie
+    // survives the redirect (per Supabase's SSR guide).
     supabaseResponse.cookies.getAll().forEach((c) => redirect.cookies.set(c))
     return redirect
   }

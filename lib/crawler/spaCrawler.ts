@@ -53,11 +53,10 @@ export class SpaBrowser {
         })
       }
     } catch (err) {
-      // Swallowing this used to leave `this.browser = null` and the
-      // pipeline then cheerfully iterated a queue of URLs that all
-      // returned ok:false — burning the 270 s budget only to end with
-      // "0 successful pages" and a generic failure. Throw instead so
-      // the caller writes a clear, scrubbable error and exits fast.
+      // Surface launch failures to the caller so the pipeline fails
+      // fast with a clear, scrubbable error instead of iterating a
+      // queue of URLs that all return ok:false and burning the full
+      // 270 s budget on "0 successful pages".
       this.browser = null
       const message = err instanceof Error ? err.message : String(err)
       throw new Error(`browser render failed (launch): ${message}`)

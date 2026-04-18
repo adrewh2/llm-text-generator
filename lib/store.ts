@@ -7,8 +7,8 @@ const { PAGE_TTL_HOURS } = crawler
 
 // Server-only store: uses the service role key so writes bypass RLS.
 // This key must never be exposed to the client. One client is lazily
-// created and reused for the process lifetime — the previous impl
-// built a fresh Supabase client on every exported function call.
+// created and reused for the process lifetime so we don't pay
+// connection / auth setup on every exported function call.
 let cached: SupabaseClient | null = null
 function getClient(): SupabaseClient {
   if (cached) return cached
@@ -84,11 +84,11 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
   if (updates.error !== undefined) jobRow.error = updates.error
 
   // When the result is ready, write the canonical page FIRST — only if
-  // non-empty so a failed re-crawl never wipes out the previous good
+  // non-empty so a failed re-crawl never wipes out the last good
   // result. Writing pages before the job status flip means any polling
   // client that sees status=complete is guaranteed to also see the
-  // result; the previous order occasionally left the client with
-  // status=complete + result=null, tripping validation on empty text.
+  // result (avoids the status=complete + result=null window that would
+  // trip empty-text validation).
   if (updates.result !== undefined && updates.result.trim().length > 0) {
     const { data: job } = await supabase
       .from("jobs")
