@@ -214,7 +214,10 @@ function PageViewInner() {
   const [job, setJob] = useState<ApiJob | null>(() => (pageId ? jobCache.get(pageId) ?? null : null))
   const [notFound, setNotFound] = useState(false)
   const [isSignedIn, setIsSignedIn] = useState<boolean>(cachedSignedIn ?? false)
-  const [simulatedStep, setSimulatedStep] = useState<number | null>(null)
+  // Start simulated progress at step 0 when the URL asks for it — otherwise
+  // a cached job (already status=complete on first fetch) briefly paints the
+  // result pane before the simulation timers get a chance to kick in.
+  const [simulatedStep, setSimulatedStep] = useState<number | null>(shouldSimulate ? 0 : null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const simTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const simulationStarted = useRef(false)
@@ -237,7 +240,7 @@ function PageViewInner() {
         return
       }
       setSimulatedStep(step) // step === SIM_STEP_DURATIONS.length shows "Complete" as active
-      const delay = step < SIM_STEP_DURATIONS.length ? SIM_STEP_DURATIONS[step] : 4000
+      const delay = step < SIM_STEP_DURATIONS.length ? SIM_STEP_DURATIONS[step] : 3000
       simTimerRef.current = setTimeout(advance, delay)
     }
     simTimerRef.current = setTimeout(advance, SIM_STEP_DURATIONS[0])
@@ -263,6 +266,10 @@ function PageViewInner() {
           simulationStarted.current = true
           startSimulation()
         }
+      } else if (shouldSimulate && !simulationStarted.current) {
+        // Job still running but the URL asked us to simulate — fall back to
+        // real progress instead of freezing on step 0.
+        setSimulatedStep(null)
       }
     } catch {}
   }, [pageId, startSimulation])
