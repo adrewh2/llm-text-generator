@@ -1,5 +1,6 @@
 import { UnsafeUrlError } from "./ssrf"
 import { safeFetch } from "./safeFetch"
+import { readBoundedText } from "./readBounded"
 import { crawler } from "../config"
 
 const MAX_SIZE = crawler.RESPONSE_MAX_BYTES
@@ -47,9 +48,7 @@ export function isBlockedByChallenge(html: string): boolean {
 
 export async function fetchPage(url: string): Promise<FetchResult> {
   try {
-    // safeFetch does SSRF pre-flight on every hop, so an attacker-
-    // controlled public URL that 302-redirects to 169.254.169.254 is
-    // blocked instead of silently followed.
+    // safeFetch re-validates every redirect hop for SSRF.
     const res = await safeFetch(url, {
       signal: AbortSignal.timeout(8000),
       headers: {
@@ -76,12 +75,13 @@ export async function fetchPage(url: string): Promise<FetchResult> {
       return { ok: false, error: "Response too large" }
     }
 
-    const buffer = await res.arrayBuffer()
-    if (buffer.byteLength > MAX_SIZE) {
+    // Stream with a hard cap — the Content-Length header above may be
+    // missing or a lie. `readBoundedText` aborts the body as soon as
+    // the accumulated byte count crosses the cap.
+    const html = await readBoundedText(res, MAX_SIZE)
+    if (html === null) {
       return { ok: false, error: "Response too large" }
     }
-
-    const html = new TextDecoder().decode(buffer)
     if (isBlockedByChallenge(html)) {
       return { ok: false, status: res.status, error: "Bot challenge page" }
     }

@@ -1,14 +1,16 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
+import { revalidatePath } from "next/cache"
 import type { CrawlJob, ScoredPage } from "./crawler/types"
 import { crawler } from "./config"
 import { requireEnv } from "./env"
+import { errorLog } from "./log"
 
 const { PAGE_TTL_HOURS } = crawler
 
 // Server-only store: uses the service role key so writes bypass RLS.
 // This key must never be exposed to the client. One client is lazily
-// created and reused for the process lifetime — the previous impl
-// built a fresh Supabase client on every exported function call.
+// created and reused for the process lifetime so we don't pay
+// connection / auth setup on every exported function call.
 let cached: SupabaseClient | null = null
 function getClient(): SupabaseClient {
   if (cached) return cached
@@ -24,11 +26,9 @@ function getClient(): SupabaseClient {
 
 export async function createJob(id: string, url: string): Promise<void> {
   const supabase = getClient()
-  // Ensure the pages row exists before inserting the job (FK requires
-  // it). Always set monitored=true — a user kicking off a fresh crawl
-  // implies they care about this URL again, and the monitor sweeper
-  // may have turned it off recently. We leave last_requested_at alone
-  // here; the caller bumps it via bumpPageRequest.
+  // pages row must exist before the job (FK). monitored=true re-enables
+  // any URL the sweeper had retired; last_requested_at is bumped by
+  // the caller via bumpPageRequest.
   await supabase.from("pages").upsert(
     { url, monitored: true },
     { onConflict: "url" },
@@ -83,38 +83,58 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
   if (updates.siteName !== undefined) jobRow.site_name = updates.siteName
   if (updates.error !== undefined) jobRow.error = updates.error
 
-  // When the result is ready, write the canonical page FIRST — only if
-  // non-empty so a failed re-crawl never wipes out the previous good
-  // result. Writing pages before the job status flip means any polling
-  // client that sees status=complete is guaranteed to also see the
-  // result; the previous order occasionally left the client with
-  // status=complete + result=null, tripping validation on empty text.
+  // Write the pages row FIRST (before the job status flip) so polling
+  // clients never see status=complete with result=null. Skip if
+  // updates.result is empty so a failed re-crawl can't wipe the last
+  // good result.
   if (updates.result !== undefined && updates.result.trim().length > 0) {
-    const { data: job } = await supabase
+    const { data: job, error: lookupErr } = await supabase
       .from("jobs")
       .select("page_url, site_name, genre")
       .eq("id", id)
       .maybeSingle()
 
+    if (lookupErr) {
+      // Throw so the worker returns non-2xx and QStash retries.
+      errorLog("store.updateJob.lookup", new Error(`${id}: ${lookupErr.message}`))
+      throw new Error(lookupErr.message)
+    }
+
     if (job) {
-      await supabase.from("pages").upsert({
+      const { error: pagesErr } = await supabase.from("pages").upsert({
         url: job.page_url,
         result: updates.result,
         site_name: updates.siteName ?? job.site_name ?? null,
         genre: updates.genre ?? job.genre ?? null,
         crawled_pages: updates.pages ?? null,
-        // A successful crawl is the strongest possible "check" of a
-        // site's current state — we just fetched it end-to-end. Mark
-        // it as such so the dashboard shows "Checked just now" from
-        // the moment the page is generated, rather than dangling on
-        // "Awaiting check" until the next cron tick.
+        // A fresh crawl is itself the strongest check signal — set
+        // last_checked_at so the dashboard doesn't dangle on "Awaiting
+        // check" until the next cron tick.
         last_checked_at: now,
         updated_at: now,
       }, { onConflict: "url" })
+      if (pagesErr) {
+        errorLog("store.updateJob.pages", new Error(`${id}: ${pagesErr.message}`))
+        throw new Error(pagesErr.message)
+      }
+
+      // All job ids for this URL share pages.result, so re-crawls
+      // must invalidate every sibling's /api/p/:id cache entry.
+      const { data: siblings } = await supabase
+        .from("jobs")
+        .select("id")
+        .eq("page_url", job.page_url)
+      for (const s of siblings ?? []) {
+        revalidatePath(`/api/p/${s.id}`)
+      }
     }
   }
 
-  await supabase.from("jobs").update(jobRow).eq("id", id)
+  const { error: jobErr } = await supabase.from("jobs").update(jobRow).eq("id", id)
+  if (jobErr) {
+    errorLog("store.updateJob.jobs", new Error(`${id}: ${jobErr.message}`))
+    throw new Error(jobErr.message)
+  }
 }
 
 // ─── Pages ───────────────────────────────────────────────────────────────────
@@ -190,6 +210,28 @@ export async function recordMonitorCheck(
   // we can still diff next time.
   if (signature !== null) patch.content_signature = signature
   await supabase.from("pages").update(patch).eq("url", pageUrl)
+}
+
+/**
+ * Mark jobs wedged in a non-terminal status past the pipeline budget
+ * as failed. QStash retries up to 3×, then drops the message; a worker
+ * crash on the final attempt otherwise leaves the job row in
+ * `crawling` forever, which `getActiveJobForUrl` then keeps returning
+ * as a phantom "in-flight" job to every future submitter. Cheap
+ * cleanup — runs at the head of the monitor cron.
+ */
+export async function sweepStuckJobs(staleAfterMs: number): Promise<number> {
+  const supabase = getClient()
+  const cutoff = new Date(Date.now() - staleAfterMs).toISOString()
+  const { count } = await supabase
+    .from("jobs")
+    .update(
+      { status: "failed", error: "Worker did not complete in time", updated_at: new Date().toISOString() },
+      { count: "exact" },
+    )
+    .not("status", "in", '("failed","complete","partial")')
+    .lt("updated_at", cutoff)
+  return count ?? 0
 }
 
 /**

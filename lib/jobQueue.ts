@@ -1,25 +1,8 @@
-// Durable crawl-job queue.
-//
-// Two paths, selected at call time:
-//
-//   - QStash (preferred in production). When `QSTASH_TOKEN` is set
-//     and a worker URL is resolvable, `enqueueCrawl` publishes the
-//     job to QStash, which then POSTs to our
-//     `/api/worker/crawl` endpoint with a signed request. QStash
-//     owns retry / backoff — if the worker returns non-2xx (or
-//     times out) the delivery is re-attempted. The pipeline runs
-//     synchronously inside the worker so a mid-pipeline crash is an
-//     actual retry, not a stuck row.
-//
-//   - `waitUntil(runCrawlPipeline(...))` (fallback). Used when the
-//     QStash env vars aren't set — e.g. `npm run dev` without a
-//     public callback URL. Matches the pre-queue behaviour: crawl
-//     runs in the caller's own Fluid Compute instance, no retry on
-//     failure.
-//
-// Falls back to `waitUntil` whenever the publish step throws — a
-// QStash outage shouldn't drop the crawl entirely, better to try
-// the in-process path than silently discard the work.
+// Crawl-job queue. QStash in production (durable retry via signed
+// callback to /api/worker/crawl); `waitUntil(runCrawlPipeline)` as a
+// local-dev fallback when QSTASH_TOKEN isn't set. Publish errors
+// fall through to the in-process path so a flaky QStash doesn't
+// drop the crawl entirely.
 
 import { Client } from "@upstash/qstash"
 import { waitUntil } from "@vercel/functions"
@@ -29,12 +12,9 @@ import { debugLog } from "./log"
 
 const qstash: Client | null = (() => {
   if (!process.env.QSTASH_TOKEN) return null
-  // `baseUrl` is region-specific. The Upstash Vercel integration
-  // ships a `QSTASH_URL` env var pointing at the account's home
-  // region (e.g. `https://qstash-us-east-1.upstash.io`). If we
-  // don't pass it, the SDK defaults to the eu-central-1 endpoint,
-  // which silently returns 404 for accounts hosted elsewhere —
-  // no exception, no visible error, message never lands.
+  // QSTASH_URL is region-specific. SDK defaults to eu-central-1 and
+  // silently 404s for accounts hosted elsewhere (no exception, no
+  // visible error — message never lands).
   if (!process.env.QSTASH_URL) {
     console.warn(
       "[jobQueue] QSTASH_TOKEN is set but QSTASH_URL is not — " +
@@ -54,21 +34,12 @@ const qstash: Client | null = (() => {
 })()
 
 /**
- * Resolve the URL QStash should POST back to.
- *
- *   1. Explicit `QSTASH_WORKER_URL` wins — useful for ngrok-tunneled
- *      local testing or pointing one environment at another.
- *   2. On Vercel production, prefer `VERCEL_PROJECT_PRODUCTION_URL`
- *      (the stable public alias, e.g. `llm-text-generator.vercel.app`).
- *      The per-deployment `VERCEL_URL` is gated by Vercel Deployment
- *      Protection out of the box — QStash callbacks would land on a
- *      401 login page instead of our worker.
- *   3. Fall back to `VERCEL_URL` for Preview deploys and older
- *      projects that don't have the production alias env var.
- *   4. Otherwise — local `npm run dev`, or any non-Vercel env —
- *      return `null`. `enqueueCrawl` falls through to the in-process
- *      `waitUntil` path, so QStash env vars in a local `.env` are
- *      inert by design.
+ * Resolve the worker URL for QStash callbacks. `QSTASH_WORKER_URL`
+ * overrides (handy for ngrok tunnels). Otherwise prefer
+ * `VERCEL_PROJECT_PRODUCTION_URL` — the per-deployment `VERCEL_URL`
+ * is gated by Deployment Protection and would 401 the callback.
+ * Returns null off-Vercel so `enqueueCrawl` drops to the in-process
+ * `waitUntil` fallback.
  */
 function resolveWorkerUrl(): string | null {
   if (process.env.QSTASH_WORKER_URL) return process.env.QSTASH_WORKER_URL
@@ -86,11 +57,8 @@ export async function enqueueCrawl(jobId: string, url: string): Promise<void> {
     qstash && workerUrl ? "qstash" :
     !qstash ? "fallback:no-token" :
     "fallback:no-worker-url"
-  // Unconditional one-liner so Vercel runtime logs show which path
-  // fired for every enqueue. Removable once the queue path is
-  // validated end-to-end, but useful as a long-term operational
-  // signal — a sudden jump in `fallback:*` events in prod means
-  // QStash state has drifted.
+  // Operational signal: a spike of `fallback:*` in prod means QStash
+  // state has drifted.
   console.info(`[enqueueCrawl] branch=${branch} jobId=${jobId}`)
 
   if (qstash && workerUrl) {
@@ -99,11 +67,8 @@ export async function enqueueCrawl(jobId: string, url: string): Promise<void> {
         url: workerUrl,
         body: { jobId, url },
         retries: 3,
-        // Wait the full pipeline budget before declaring the delivery
-        // a failure. Matches `crawler.PIPELINE_BUDGET_MS` — the
-        // pipeline self-terminates at that point and writes a
-        // "failed" state; QStash treats our 200 response as success
-        // either way.
+        // Match the pipeline budget; the pipeline self-terminates at
+        // that point and writes a "failed" state.
         timeout: Math.ceil(crawler.PIPELINE_BUDGET_MS / 1000),
       })
       return

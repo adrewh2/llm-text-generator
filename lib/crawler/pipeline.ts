@@ -19,7 +19,7 @@ import { assertSafeUrl, UnsafeUrlError } from "./ssrf"
 const {
   MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS,
   PIPELINE_BUDGET_MS, URLS_PER_PREFIX_CAP, PREFIX_SEGMENT_DEPTH,
-  EXTERNAL_REFS_MAX_KEEP,
+  EXTERNAL_REFS_MAX_KEEP, MAX_CRAWL_DELAY_MS,
 } = crawler
 
 class PipelineTimeoutError extends Error {
@@ -188,8 +188,26 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
       progress: { discovered: discoveredUrls.size, crawled, failed },
     })
 
-    // Worker pool: each worker grabs the next URL as soon as it finishes,
-    // no waiting for batch siblings. Safe in JS because sync code is atomic.
+    // robots.txt Crawl-delay: gated through a shared `nextSlot`
+    // across workers because per-worker sleeps don't space requests
+    // when CONCURRENCY > 1. Capped at MAX_CRAWL_DELAY_MS so a hostile
+    // `Crawl-delay: 99999` can't eat the pipeline budget. Without a
+    // directive we fall back to per-worker politeness (HTTP only;
+    // browser renders pace themselves).
+    const crawlDelayMs = robots.crawlDelay != null
+      ? Math.min(Math.max(0, Math.round(robots.crawlDelay * 1000)), MAX_CRAWL_DELAY_MS)
+      : null
+    let nextSlot = Date.now()
+    const waitForRobotsSlot = async (): Promise<void> => {
+      if (crawlDelayMs === null) return
+      const now = Date.now()
+      const start = Math.max(now, nextSlot)
+      nextSlot = start + crawlDelayMs
+      const wait = start - now
+      if (wait > 0) await delay(wait)
+    }
+
+    // Worker pool: pull-based, no batch sync (JS sync code is atomic).
     let queueIdx = 0
     const worker = async (): Promise<void> => {
       while (crawled < MAX_PAGES) {
@@ -202,7 +220,11 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
         visited.add(item.url)
 
         const { url, depth } = item
-        if (!needsBrowser) await delay(POLITENESS_DELAY_MS + Math.random() * 100)
+        if (crawlDelayMs !== null) {
+          await waitForRobotsSlot()
+        } else if (!needsBrowser) {
+          await delay(POLITENESS_DELAY_MS + Math.random() * 100)
+        }
 
         let html: string | null = null
         let links: string[] = []
@@ -271,11 +293,8 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
         return p
       })
 
-    // External references: homepage outbound anchors the LLM judges
-    // worth keeping (spec links, upstream docs, related projects).
-    // These flow through enrichment/scoring alongside internal pages
-    // and are fetched exactly once for metadata — we never follow
-    // links from them.
+    // External references: homepage outbound anchors, LLM-ranked,
+    // each fetched once for metadata only — never followed further.
     const externalRefs = await resolveExternalReferences(
       homepageHtml, baseUrl, siteName, homepageMeta.bodyExcerpt || "",
     )

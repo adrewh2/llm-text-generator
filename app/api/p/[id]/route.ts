@@ -11,23 +11,39 @@ export async function GET(
   const job = await getJob(id)
   if (!job) return NextResponse.json({ error: "Not found" }, { status: 404 })
 
-  // Viewing a completed result counts as "active use" of the URL —
-  // bump the request timestamp so the monitor sweeper keeps it.
+  // Viewing a page (including polling a mid-flight job) counts as
+  // "active use" of the URL — bump the request timestamp so the
+  // monitor sweeper keeps it. Skip only on `failed` — no point
+  // extending a page's monitored lifetime on failures.
   // NOTE: we deliberately do NOT attach the page to the viewer's
   // dashboard history here. History is owned by the user who submitted
   // the URL via the landing form (see POST /api/p). Otherwise a
   // stranger's UUID, once shared, would quietly land in any viewer's
   // dashboard.
-  if (job.status === "complete" || job.status === "partial") {
+  if (job.status !== "failed") {
     await bumpPageRequest(job.url)
   }
 
-  return NextResponse.json({
-    ...job,
-    error: job.error ? scrubError(job.error) : undefined,
-    createdAt: job.createdAt.toISOString(),
-    updatedAt: job.updatedAt.toISOString(),
-  })
+  // Terminal job shape is immutable until the monitor cron re-crawls
+  // this URL; at that point updateJob() calls revalidatePath() for
+  // every job id mapping to the URL, so a cached copy is correct
+  // until the next write. stale-while-revalidate is a safety net in
+  // case a revalidation signal is delayed or dropped.
+  const isTerminal =
+    job.status === "complete" || job.status === "partial" || job.status === "failed"
+  const cacheControl = isTerminal
+    ? "public, s-maxage=3600, stale-while-revalidate=86400"
+    : "no-store"
+
+  return NextResponse.json(
+    {
+      ...job,
+      error: job.error ? scrubError(job.error) : undefined,
+      createdAt: job.createdAt.toISOString(),
+      updatedAt: job.updatedAt.toISOString(),
+    },
+    { headers: { "Cache-Control": cacheControl } },
+  )
 }
 
 /**

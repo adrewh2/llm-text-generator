@@ -51,13 +51,10 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Resolve canonical URL. The HEAD probe runs through safeFetch so
-  // SSRF is enforced per-hop — otherwise an attacker could submit a
-  // URL that 302-redirects to an internal IP and we'd happily probe
-  // it. The redirect target often carries per-request session/OAuth
-  // tokens (e.g. Google's dsh/ifkv/osid); those expire and must not
-  // be stored as part of the cache key — strip them via our
-  // normalizer so the canonical URL is stable across re-submissions.
+  // Resolve canonical URL. safeFetch enforces SSRF per-hop on the
+  // redirect chain; normalizeUrl strips per-request session/OAuth
+  // tokens (e.g. Google's dsh/ifkv/osid) so the cache key is stable
+  // across resubmissions.
   let canonicalUrl = url.trim()
   try {
     const probe = await safeFetch(canonicalUrl, {
@@ -91,12 +88,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ page_id: active.jobId, cached: false }, { status: 200 })
   }
 
-  // Stale or new — run a fresh crawl.
+  // Stale or new — run a fresh crawl. Bump `last_requested_at` AFTER
+  // the enqueue has been handed off so an enqueue that silently falls
+  // back to the in-process path (or fails entirely) doesn't mark the
+  // URL as "actively requested" for sweep purposes when nothing is
+  // actually running.
   const id = randomUUID()
   await createJob(id, canonicalUrl)
-  await bumpPageRequest(canonicalUrl)
   if (user) await upsertUserRequest(user.id, canonicalUrl)
   await enqueueCrawl(id, canonicalUrl)
+  await bumpPageRequest(canonicalUrl)
 
   return NextResponse.json({ page_id: id, cached: false }, { status: 201 })
 }

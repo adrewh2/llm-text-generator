@@ -162,8 +162,9 @@ Every new-crawl request lands here. The route:
 Client polls every `ui.POLL_INTERVAL_MS` (1.5s) until the job is terminal. The route:
 
 - Fetches the `jobs` row and, for terminal statuses, joins on `pages` for `result` and `crawled_pages`.
-- Calls `bumpPageRequest(pageUrl)` when the job is terminal so `pages.last_requested_at` advances. This is how active pages stay monitored.
+- Calls `bumpPageRequest(pageUrl)` on every non-failed status so `pages.last_requested_at` advances even while a user is watching a mid-flight job. This is how active pages stay monitored. Terminal responses are CDN-cached (below), so the bump fires once per `s-maxage` window rather than on every poll — still well under the 5-day sweeper threshold.
 - Scrubs the `error` field (removes resolved IPs and SSRF-specific detail from user-facing text).
+- Sets `Cache-Control: public, s-maxage=3600, stale-while-revalidate=86400` on terminal responses so Vercel's edge CDN serves repeat polls without touching Supabase. In-flight responses return `no-store` to keep progress live. Invalidation happens from the write side: when `updateJob` writes a new terminal result, it calls `revalidatePath('/api/p/:id')` for every job id that maps to that URL — required because `getJob` resolves `job.result` through `pages.result` by `page_url`, so a monitor re-crawl changes the JSON for every historical job id sharing the URL.
 
 ### `GET /api/monitor` — daily sweep
 
@@ -191,9 +192,12 @@ capByPathPrefix: max 5 URLs per 2-segment path prefix
 LLM rank: Claude reorders candidate URLs by likely value
   ↓
 Worker pool (5 non-SPA, 1 SPA): fetch + extract metadata for each URL
-   - per-page: HTML fetch + cheerio parse → ExtractedPage
+   - per-page: streaming HTML fetch (capped at RESPONSE_MAX_BYTES = 5 MB) + cheerio parse → ExtractedPage
    - probe for a .md sibling (HEAD, then lightweight GET)
    - discover more links if depth < MAX_DEPTH (2)
+   - politeness: robots.txt Crawl-delay enforced as a shared clock across
+     workers (capped at MAX_CRAWL_DELAY_MS = 10 s); when no directive is
+     set, a per-worker POLITENESS_DELAY_MS = 300 ms baseline applies
    - hard caps: crawler.MAX_PAGES = 25, crawler.PIPELINE_BUDGET_MS = 270s
   ↓
 genre detection (developer_docs, ecommerce, personal_site, institutional,
@@ -297,15 +301,16 @@ On the output side, returned JSON is parsed and each field is re-validated befor
 
 ## 8. Monitoring
 
-`GET /api/monitor` runs daily (`"0 0 * * *"` in `vercel.json`), authenticated by a timing-safe compare against `CRON_SECRET`. There is no monitor state machine — monitoring is just a cron job that compares signatures and triggers re-crawls.
+`GET /api/monitor` runs daily (`"0 0 * * *"` in `vercel.json`, the Vercel Hobby-plan cron ceiling), authenticated by a timing-safe compare against `CRON_SECRET`. There is no monitor state machine — monitoring is just a cron job that compares signatures and triggers re-crawls.
 
 On each invocation:
 
-1. **Sweep stale.** `sweepStaleMonitoredPages(monitor.STALE_DAYS)` sets `monitored = false` on any page whose `last_requested_at` is older than 5 days. This keeps the working set bounded to URLs people are actually using.
-2. **Fetch a batch.** `getMonitoredPages({ limit: monitor.BATCH_SIZE })` pulls up to 200 monitored pages, oldest-checked first. Pages are processed sequentially, with a `monitor.SAME_HOST_DELAY_MS` (400 ms) politeness delay when two in a row share the same host.
-3. **Compute signature.** `computeSignature(pageUrl)` in `monitor.ts` fetches the sitemap (via `fetchSitemapUrls`, which honors `crawler.SITEMAP_TIMEOUT_MS` = 10 s and `MAX_SITEMAP_URLS` = 500) and the homepage (8 s via `crawler.HOMEPAGE_FETCH_TIMEOUT_MS`) in parallel. It hashes each separately — `sha256(sortedSitemapUrls.join("\n"))` and `sha256(normalizedHtml)` — then combines them as `sha256("${sitemapHash}|${homepageHash}")`. If both fetches fail, it returns `null` (caller treats that as "skip this cycle"). Homepage normalization strips `<script>`, `<style>`, and comments and collapses whitespace so per-request build ids don't trigger false positives.
-4. **Compare.** `detectChange` treats the first-ever check (no stored signature) as `changed: false` — it just records the baseline. On every subsequent check, a mismatch triggers `dispatchRecrawl()`, which creates a new `jobs` row and hands it to `enqueueCrawl` (same queue path as user submissions). A match is a no-op beyond updating the timestamp.
-5. **Record.** `recordMonitorCheck(pageUrl, signature)` always updates `last_checked_at`; it only overwrites `content_signature` if the sig was computed successfully, so a transient fetch failure doesn't wipe the baseline.
+1. **Force-fail stuck jobs.** `sweepStuckJobs(monitor.STUCK_JOB_AFTER_MS)` flips any job wedged in a non-terminal status with an `updated_at` older than 15 minutes to `failed`. This runs first so phantom in-flight rows (worker crash past QStash's retry window) don't keep blocking future submissions for the same URL.
+2. **Sweep stale.** `sweepStaleMonitoredPages(monitor.STALE_DAYS)` sets `monitored = false` on any page whose `last_requested_at` is older than 5 days. This keeps the working set bounded to URLs people are actually using.
+3. **Fetch a batch.** `getMonitoredPages({ limit: monitor.BATCH_SIZE })` pulls up to 200 monitored pages, oldest-checked first. Pages are processed sequentially, with a `monitor.SAME_HOST_DELAY_MS` (400 ms) politeness delay when two in a row share the same host.
+4. **Compute signature.** `computeSignature(pageUrl)` in `monitor.ts` fetches the sitemap (via `fetchSitemapUrls`, which honors `crawler.SITEMAP_TIMEOUT_MS` = 10 s and `MAX_SITEMAP_URLS` = 500) and the homepage (8 s via `crawler.HOMEPAGE_FETCH_TIMEOUT_MS`) in parallel. Both go through `readBoundedText` so a server omitting or lying about `Content-Length` can't OOM the batch. Each is hashed separately — `sha256(sortedSitemapUrls.join("\n"))` and `sha256(normalizedHtml)` — then combined as `sha256("${sitemapHash}|${homepageHash}")`. If both fetches fail, it returns `null` (caller treats that as "skip this cycle"). Homepage normalization strips `<script>`, `<style>`, and comments and collapses whitespace so per-request build ids don't trigger false positives.
+5. **Compare.** `detectChange` treats the first-ever check (no stored signature) as `changed: false` — it just records the baseline. On every subsequent check, a mismatch triggers `dispatchRecrawl()`, which creates a new `jobs` row and hands it to `enqueueCrawl` (same queue path as user submissions). A match is a no-op beyond updating the timestamp.
+6. **Record.** `recordMonitorCheck(pageUrl, signature)` always updates `last_checked_at`; it only overwrites `content_signature` if the sig was computed successfully, so a transient fetch failure doesn't wipe the baseline.
 
 A successful crawl also sets `last_checked_at = now()` in `updateJob()` (see `lib/store.ts:104`). So the moment a page is generated for the first time, the dashboard shows "Refreshed just now" — it doesn't dangle on "Awaiting check" until the next cron tick.
 
@@ -392,11 +397,11 @@ No API key or token ever reaches the log stream. Error messages embedded in job 
 
 All tunable constants are in `/lib/config.ts`, grouped by domain. This is the single place to change anything that might plausibly be adjusted for business or UX reasons. Values below are current as of this document:
 
-- **`crawler`** — `MAX_PAGES: 25`, `MAX_DEPTH: 2`, `CONCURRENCY: 5`, `POLITENESS_DELAY_MS: 300`, `PAGE_TTL_HOURS: 24`, `URLS_PER_PREFIX_CAP: 5`, `PREFIX_SEGMENT_DEPTH: 2`, `MAX_SITEMAP_URLS: 500`, `SITEMAP_TIMEOUT_MS: 10_000`, `HOMEPAGE_FETCH_TIMEOUT_MS: 8_000`, `RESPONSE_MAX_BYTES: 5 MB`, `MAX_REDIRECTS: 5`, `EXCERPT_MAX_BYTES: 4 KB`, `PIPELINE_BUDGET_MS: 270_000`.
+- **`crawler`** — `MAX_PAGES: 25`, `MAX_DEPTH: 2`, `CONCURRENCY: 5`, `POLITENESS_DELAY_MS: 300`, `PAGE_TTL_HOURS: 24`, `URLS_PER_PREFIX_CAP: 5`, `PREFIX_SEGMENT_DEPTH: 2`, `MAX_SITEMAP_URLS: 500`, `SITEMAP_MAX_BYTES: 10 MB`, `SITEMAP_TIMEOUT_MS: 10_000`, `HOMEPAGE_FETCH_TIMEOUT_MS: 8_000`, `RESPONSE_MAX_BYTES: 5 MB`, `MAX_REDIRECTS: 5`, `MAX_CRAWL_DELAY_MS: 10_000`, `EXCERPT_MAX_BYTES: 4 KB`, `PIPELINE_BUDGET_MS: 270_000`, `EXTERNAL_REFS_MAX_KEEP: 8`.
 - **`llm`** — `MODEL: claude-haiku-4-5-20251001`, `ENRICH_BATCH_SIZE: 20`, `RANK_MAX_KEEP: 120`, `RANK_SKIP_BELOW: 10`, `DESCRIPTION_MAX_CHARS: 240`, `SECTION_MAX_CHARS: 30`.
 - **`api`** — `MAX_URL_LENGTH: 2048`, `PAGES_DEFAULT_LIMIT: 20`, `PAGES_MAX_LIMIT: 50`, `DOWNLOAD_MAX_ENTRIES: 500`.
 - **`rateLimit`** — `ANON: { capacity: 3, refillPerSec: 3/3600 }`, `AUTH: { capacity: 10, refillPerSec: 10/3600 }`.
-- **`monitor`** — `STALE_DAYS: 5`, `BATCH_SIZE: 200`, `SAME_HOST_DELAY_MS: 400`.
+- **`monitor`** — `STALE_DAYS: 5`, `BATCH_SIZE: 200`, `SAME_HOST_DELAY_MS: 400`, `STUCK_JOB_AFTER_MS: 900_000`.
 - **`ui`** — `POLL_INTERVAL_MS: 1_500`, `MAX_POLL_FAILURES: 5`, `LIVE_MIN_STEP_DWELL_MS: 1_200`, `SIM_STEP_DURATIONS_MS: [1800, 1600, 1400, 1200]`, `MONITOR_STATUS_TICK_MS: 10_000`, `JOB_CACHE_MAX: 30`.
 
 Secrets come from environment variables: `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_URL`, and `SUPABASE_ANON_KEY` are loaded via `lib/env.ts`'s `requireEnv()` so a missing value fails fast; `ANTHROPIC_API_KEY` and `CRON_SECRET` are read directly with `process.env` because their call sites already handle absence (LLM features degrade to deterministic fallbacks, and the cron endpoint fails closed).
@@ -446,8 +451,7 @@ The following are out of scope for the current implementation. Each is plausible
 - **User-editable overrides.** No override versioning, no persistent per-user edits to the generated file, no merge policy on re-crawl. Users who want custom output copy the result and edit it locally.
 - **Update delivery.** No webhook HMAC, no email notifications, no hosted-file endpoint at `/files/:id/llms.txt`. Users are expected to host their own `/llms.txt`.
 - **Locale policy controls.** The crawler treats alternate-locale URLs like any other URL; the LLM tends to filter them naturally via the ranking step. Surface controls (prefer x-default, target one locale) would go in the `crawler` section of `lib/config.ts`.
-- **Crawl-delay enforcement.** `robots.txt` disallows are honored; `Crawl-delay` values are read but not enforced beyond the global `POLITENESS_DELAY_MS`.
-- **Per-domain global throttle.** No cross-job coordination, so a popular URL burst could send 5 concurrent workers at the same target. Mitigated in practice by the 24-hour cache hit on repeat requests.
+- **Per-domain global throttle across jobs.** Within a single pipeline the crawler honors `robots.txt` `Crawl-delay` via a shared cross-worker clock (capped at `MAX_CRAWL_DELAY_MS` = 10 s). Between concurrent jobs against the same target, there is no cross-job coordination, so a popular URL burst could send workers from multiple pipelines at the same host. Mitigated in practice by the 24-hour cache hit on repeat requests.
 - **Test suite.** No unit, integration, or snapshot tests are wired up. This is the first thing to add if the project moves beyond a take-home demo.
 
 ---
@@ -499,6 +503,7 @@ The following are out of scope for the current implementation. Each is plausible
     ssrf.ts                          assertSafeUrl + forbidden ranges
     safeFetch.ts                     per-hop redirect validation
     fetchPage.ts                     main page fetcher
+    readBounded.ts                   streaming body read with hard byte cap
     robots.ts                        robots.txt parse
     sitemap.ts                       sitemap fetch + parse
     spaCrawler.ts                    Puppeteer + SPA detection

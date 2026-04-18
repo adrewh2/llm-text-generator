@@ -1,6 +1,5 @@
 // Shared URL → human-readable-label / filesystem-safe-name helpers.
-// Previously duplicated across assemble.ts, pipeline.ts, and the
-// download route.
+// Used by assemble.ts, pipeline.ts, and the download route.
 
 /** Path segments, excluding blanks and any /index.(html|php|aspx) file. */
 export function urlPathSegments(url: string): string[] {

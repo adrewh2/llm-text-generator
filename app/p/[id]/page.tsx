@@ -29,17 +29,8 @@ function cacheSetJob(id: string, job: ApiJob): void {
     jobCache.delete(oldest)
   }
 }
-// Shared browser client listens for auth state so the cached job
-// metadata is cleared when a user signs out — prevents a past user's
-// history from bleeding into a new session on a shared device. Auth
-// state for rendering purposes is tracked per-component below; this
-// listener only touches the module-level cache.
-if (typeof window !== "undefined") {
-  const supabase = createClient()
-  supabase.auth.onAuthStateChange((event) => {
-    if (event === "SIGNED_OUT") jobCache.clear()
-  })
-}
+// Auth listener lives inside PageViewInner so HMR and unmount clean
+// it up. SIGNED_OUT clears jobCache to prevent cross-session bleed.
 
 function PageViewInner() {
   const params = useParams<{ id: string }>()
@@ -50,23 +41,19 @@ function PageViewInner() {
   const [job, setJob] = useState<ApiJob | null>(() => (pageId ? cacheGetJob(pageId) ?? null : null))
   const [notFound, setNotFound] = useState(false)
   const [isSignedIn, setIsSignedIn] = useState(false)
-  // Start simulated progress at step 0 when the URL asks for it — otherwise
-  // a cached job (already status=complete on first fetch) briefly paints
-  // the result pane before the simulation timers get a chance to kick in.
+  // Seed at step 0 so a cached (already-complete) job doesn't flash the
+  // result pane before the simulation timers kick in.
   const [simulatedStep, setSimulatedStep] = useState<number | null>(shouldSimulate ? 0 : null)
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const simTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const simulationStarted = useRef(false)
-  // Track shouldSimulate via a ref so fetchJob's useCallback identity
-  // doesn't change when we strip ?simulate=1 from the URL. If fetchJob
-  // re-created, the parent useEffect would clean up simTimerRef and
-  // the simulation would freeze mid-flight.
+  // Ref, not state — otherwise fetchJob's useCallback identity would
+  // churn when we strip ?simulate=1 from the URL and the parent effect
+  // would clean up simTimerRef mid-simulation.
   const shouldSimulateRef = useRef(shouldSimulate)
   useEffect(() => { shouldSimulateRef.current = shouldSimulate }, [shouldSimulate])
-  // Circuit breaker: after MAX_POLL_FAILURES consecutive polling
-  // failures, stop polling and show an error. Prevents grinding a
-  // dead endpoint forever if the server starts consistently 5xx-ing.
+  // Circuit breaker: stop polling after MAX_POLL_FAILURES in a row.
   const pollFailuresRef = useRef(0)
   const [pollDead, setPollDead] = useState(false)
 
@@ -74,13 +61,17 @@ function PageViewInner() {
   // the initial value; `onAuthStateChange` covers subsequent
   // sign-in / sign-out / token-refresh events (including the
   // INITIAL_SESSION event Supabase fires on first subscribe when a
-  // user is already authenticated — which the previous module-level
-  // cache was silently dropping).
+  // user is already authenticated). The SIGNED_OUT branch clears the
+  // per-tab job cache so a prior user's in-flight data can't leak
+  // into the next session on a shared device.
   useEffect(() => {
     const supabase = createClient()
     supabase.auth.getUser().then(({ data }) => setIsSignedIn(!!data.user))
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => setIsSignedIn(!!session?.user),
+      (event, session) => {
+        setIsSignedIn(!!session?.user)
+        if (event === "SIGNED_OUT") jobCache.clear()
+      },
     )
     return () => subscription.unsubscribe()
   }, [])
@@ -169,9 +160,8 @@ function PageViewInner() {
     )
   }
 
-  // When a simulation is running, visibleStatus is irrelevant — the
-  // simulated-step UI controls the view. Otherwise, clamp the job's
-  // status to visibleStatus so fast live-crawl transitions are paced.
+  // Simulating → pass the raw status; live → clamp to visibleStatus
+  // so fast transitions stay paced.
   const displayJob: ApiJob | null = job
     ? simulatedStep !== null
       ? job

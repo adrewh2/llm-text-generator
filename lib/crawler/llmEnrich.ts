@@ -4,7 +4,7 @@ import { SECTION_HINTS, llm } from "../config"
 import { debugLog } from "../log"
 import { cleanSiteName } from "./siteName"
 
-const { MODEL, ENRICH_BATCH_SIZE, RANK_MAX_KEEP, RANK_SKIP_BELOW, DESCRIPTION_MAX_CHARS, SECTION_MAX_CHARS } = llm
+const { MODEL, ENRICH_BATCH_SIZE, RANK_MAX_KEEP, RANK_SKIP_BELOW, DESCRIPTION_MAX_CHARS, SECTION_MAX_CHARS, MAX_RETRIES, CALL_TIMEOUT_MS } = llm
 
 interface EnrichedData {
   pageType: PageType
@@ -26,13 +26,18 @@ const MAX_SECTION_LEN = SECTION_MAX_CHARS
 const MAX_DESCRIPTION_LEN = DESCRIPTION_MAX_CHARS
 
 // Remove characters that can be used to close our prompt delimiters
-// and re-open an injected instruction block. Keeps the content readable
-// but prevents `</untrusted_pages>` or control tokens from bleeding out.
+// or re-open an injected instruction block. Keeps the content readable
+// but prevents `</untrusted_pages>`, markdown-link syntax, template
+// markers, or code fences from bleeding out of the fenced section the
+// model is told to treat as data.
 function neuter(s: string): string {
   return s
-    .replace(/<\/?[a-z_]+>/gi, "")     // strip tag-like constructs
-    .replace(/\[\[[\s\S]*?\]\]/g, "")  // prompt-template guards
-    .replace(/\r?\n/g, " ")             // collapse newlines
+    .replace(/<\/?[a-z_]+>/gi, "")                 // strip tag-like constructs
+    .replace(/\[\[[\s\S]*?\]\]/g, "")              // [[prompt-template guards]]
+    .replace(/\{\{[\s\S]*?\}\}/g, "")              // {{template markers}}
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")       // [text](url) → text (keeps readable content, drops the URL payload)
+    .replace(/`+/g, "")                             // backticks — no inline code / code fences
+    .replace(/\r?\n/g, " ")                         // collapse newlines
     .trim()
 }
 
@@ -56,7 +61,18 @@ function sanitizeDescription(raw: unknown, original: string | undefined): string
 
 function getClient(): Anthropic | null {
   const apiKey = process.env.ANTHROPIC_API_KEY
-  return apiKey ? new Anthropic({ apiKey }) : null
+  if (!apiKey) return null
+  // The Anthropic SDK has a built-in retry wrapper: it retries 408 /
+  // 429 / 5xx with exponential backoff and honours the `retry-after`
+  // + `x-should-retry` response headers. We just bump the defaults
+  // — 2 retries isn't enough to ride out a bursty minute, 5 gives
+  // us ~30 s of total backoff. The per-call timeout stops a hung
+  // request from eating the pipeline budget.
+  return new Anthropic({
+    apiKey,
+    maxRetries: MAX_RETRIES,
+    timeout: CALL_TIMEOUT_MS,
+  })
 }
 
 export async function llmEnrichPages(
@@ -130,7 +146,7 @@ Respond ONLY with a JSON array, one object per page, same order as input. No pro
       messages: [{ role: "user", content: prompt }],
     })
 
-    const text = message.content[0].type === "text" ? message.content[0].text : ""
+    const text = message.content[0]?.type === "text" ? message.content[0].text : ""
     const jsonMatch = text.match(/\[[\s\S]*\]/)
     if (!jsonMatch) return results
 
@@ -215,7 +231,7 @@ Return only the description text, nothing else.`
       messages: [{ role: "user", content: prompt }],
     })
 
-    const text = message.content[0].type === "text" ? message.content[0].text.trim() : ""
+    const text = message.content[0]?.type === "text" ? message.content[0].text.trim() : ""
     return text.length > 20 ? text : undefined
   } catch (err) {
     debugLog("llmEnrich.generateSitePreamble", err)
@@ -277,7 +293,7 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7, 12]`
       messages: [{ role: "user", content: prompt }],
     })
 
-    const text = message.content[0].type === "text" ? message.content[0].text : ""
+    const text = message.content[0]?.type === "text" ? message.content[0].text : ""
     const match = text.match(/\[[\d,\s]+\]/)
     if (!match) return candidates.slice(0, maxKeep)
 
@@ -348,7 +364,7 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7]`
       messages: [{ role: "user", content: prompt }],
     })
 
-    const text = message.content[0].type === "text" ? message.content[0].text : ""
+    const text = message.content[0]?.type === "text" ? message.content[0].text : ""
     const match = text.match(/\[[\d,\s]+\]/)
     if (!match) return []
 
@@ -423,7 +439,7 @@ Respond with JUST the brand name on a single line. No quotes, no prose, no expla
       max_tokens: 30,
       messages: [{ role: "user", content: prompt }],
     })
-    const text = message.content[0].type === "text" ? message.content[0].text.trim() : ""
+    const text = message.content[0]?.type === "text" ? message.content[0].text.trim() : ""
     // Strip surrounding quotes the LLM sometimes adds despite the
     // instruction, take only the first line (defence against a
     // two-paragraph response), then re-run the deterministic cleaner

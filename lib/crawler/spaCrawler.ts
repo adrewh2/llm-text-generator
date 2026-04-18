@@ -52,8 +52,14 @@ export class SpaBrowser {
           args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
         })
       }
-    } catch {
+    } catch (err) {
+      // Surface launch failures to the caller so the pipeline fails
+      // fast with a clear, scrubbable error instead of iterating a
+      // queue of URLs that all return ok:false and burning the full
+      // 270 s budget on "0 successful pages".
       this.browser = null
+      const message = err instanceof Error ? err.message : String(err)
+      throw new Error(`browser render failed (launch): ${message}`)
     }
   }
 
@@ -134,8 +140,12 @@ export class SpaBrowser {
 
       const html = await page.content()
       if (isBlockedByChallenge(html)) return { html: "", ok: false, links: [] }
+      // Cap raw anchor count — a hostile or over-enthusiastic page
+      // (infinite-scroll archive, 100k-anchor sitemap-as-HTML) would
+      // otherwise balloon memory in the normalize loop below.
       const rawLinks: string[] = await page.evaluate(() =>
         Array.from(document.querySelectorAll("a[href]"))
+          .slice(0, 2000)
           .map((el) => (el as HTMLAnchorElement).href)
           .filter((h) => h.startsWith("http"))
       )

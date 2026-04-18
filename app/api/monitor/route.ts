@@ -1,16 +1,7 @@
-// Monitoring cron entrypoint.
-//
-// Invoked on a schedule (see vercel.json). For each monitored page, we:
-//   1. Compute a fresh signature over sitemap + homepage.
-//   2. Compare to the stored signature.
-//   3. On mismatch, create a new job row and dispatch a full re-crawl.
-//
-// The detection phase is I/O-light and runs inline. The re-crawl phase
-// is isolated behind dispatchRecrawl() — that is the seam a future
-// queue (Vercel Queues, Inngest) would replace so individual re-crawls
-// become their own durable invocations. For now we fan out via
-// waitUntil within this same function, which is fine up to a few dozen
-// concurrent changed pages.
+// Monitor cron. For each monitored page: re-compute a signature over
+// sitemap + homepage, compare to the stored one, and enqueue a
+// re-crawl if it drifted. Also sweeps stuck non-terminal jobs and
+// retires URLs nobody has touched in the last N days.
 
 import { NextRequest, NextResponse } from "next/server"
 import { randomUUID, timingSafeEqual } from "crypto"
@@ -20,21 +11,23 @@ import {
   getMonitoredPages,
   recordMonitorCheck,
   sweepStaleMonitoredPages,
+  sweepStuckJobs,
 } from "@/lib/store"
 import { detectChange } from "@/lib/crawler/monitor"
 import { enqueueCrawl } from "@/lib/jobQueue"
-import { debugLog } from "@/lib/log"
+import { errorLog } from "@/lib/log"
 import { monitor } from "@/lib/config"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
 
-const { STALE_DAYS: STALE_MONITOR_DAYS, BATCH_SIZE: MONITOR_BATCH_SIZE, SAME_HOST_DELAY_MS } = monitor
+const { STALE_DAYS: STALE_MONITOR_DAYS, BATCH_SIZE: MONITOR_BATCH_SIZE, SAME_HOST_DELAY_MS, STUCK_JOB_AFTER_MS } = monitor
 
 interface Summary {
   checked: number
   changed: number
   swept: number
+  stuckFailed: number
   recrawls: string[]
   errors: Array<{ url: string; error: string }>
 }
@@ -42,12 +35,17 @@ interface Summary {
 export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) return new NextResponse("Unauthorized", { status: 401 })
 
-  // First, retire pages nobody has requested recently so we don't burn
+  // Force-fail jobs stuck in a non-terminal status beyond the pipeline
+  // budget + QStash retry window. Must run before getActiveJobForUrl
+  // elsewhere starts treating these as legit in-flight work.
+  const stuckFailed = await sweepStuckJobs(STUCK_JOB_AFTER_MS)
+
+  // Then retire pages nobody has requested recently so we don't burn
   // cycles detecting changes on dormant URLs.
   const swept = await sweepStaleMonitoredPages(STALE_MONITOR_DAYS)
 
   const pages = await getMonitoredPages({ limit: MONITOR_BATCH_SIZE })
-  const summary: Summary = { checked: 0, changed: 0, swept, recrawls: [], errors: [] }
+  const summary: Summary = { checked: 0, changed: 0, swept, stuckFailed, recrawls: [], errors: [] }
 
   // Sequential detection keeps memory flat and is polite to target
   // domains. The bottleneck is target-site response time, not CPU.
@@ -76,7 +74,7 @@ export async function GET(req: NextRequest) {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "unknown error"
       summary.errors.push({ url: page.url, error: message })
-      debugLog("monitor", `${page.url}: ${message}`)
+      errorLog("monitor", `${page.url}: ${message}`)
     }
   }
 
@@ -84,14 +82,9 @@ export async function GET(req: NextRequest) {
 }
 
 /**
- * Queue-boundary: create a job row and hand the crawl off via the
- * shared `enqueueCrawl` helper — QStash in production, in-process
- * `waitUntil` as a local-dev fallback.
- *
- * Attaches to an in-flight job when one already exists for the URL
- * (prior cron tick still running, or a user submission in the same
- * window) — otherwise the cron would cheerfully kick off a duplicate
- * crawl and both workers would fight over `pages.result`.
+ * Attach to an in-flight job if one exists — avoids a duplicate
+ * crawl when a prior cron tick or a user submission is still
+ * running. Otherwise create a new job and enqueue it.
  */
 async function dispatchRecrawl(pageUrl: string): Promise<string> {
   const active = await getActiveJobForUrl(pageUrl)

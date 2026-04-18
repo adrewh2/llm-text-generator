@@ -28,17 +28,19 @@ export async function middleware(request: NextRequest) {
   if (!user && request.nextUrl.pathname.startsWith("/dashboard")) {
     const url = request.nextUrl.clone()
     url.pathname = "/login"
-    return NextResponse.redirect(url)
+    const redirect = NextResponse.redirect(url)
+    // Carry queued Supabase cookies onto the redirect so the refreshed
+    // session survives (per Supabase SSR guide).
+    supabaseResponse.cookies.getAll().forEach((c) => redirect.cookies.set(c))
+    return redirect
   }
 
   return supabaseResponse
 }
 
 export const config = {
-  // Run on every non-static request so the Supabase session cookie is
-  // refreshed on API routes too (per Supabase's SSR guidance). Without
-  // this, supabase.auth.getUser() may return null inside POST /api/p
-  // even when the user is signed in.
+  // Runs on every non-static request; API routes need the session
+  // refresh too, otherwise getUser() may return null mid-session.
   matcher: [
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js)$).*)",
   ],

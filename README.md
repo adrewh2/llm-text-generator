@@ -10,8 +10,9 @@ Paste a URL, the app discovers pages (sitemap → robots → link-following, wit
 - Discovery via `sitemap.xml`, `robots.txt`, and BFS link traversal (respects `Disallow` rules)
 - Markdown-variant probing (prefers `.md` links per the spec)
 - SPA detection + headless-Chrome fallback via `puppeteer` (local) / `@sparticuz/chromium` (Vercel)
-- Worker-pool concurrency with politeness delay
+- Worker-pool concurrency with a default politeness delay; honors `robots.txt` `Crawl-delay` as a shared cross-worker clock, capped at 10 s
 - SSRF-hardened: every outbound fetch resolves DNS and rejects RFC1918 / loopback / link-local / metadata IPs (`lib/crawler/ssrf.ts`)
+- Streaming body reads with hard byte caps so a server that omits or lies about `Content-Length` can't OOM us (`lib/crawler/readBounded.ts`)
 
 **LLM enrichment**
 - Per-page classification (`doc`, `api`, `example`, `blog`, `changelog`, `about`, …) via Claude
@@ -34,10 +35,10 @@ Paste a URL, the app discovers pages (sitemap → robots → link-following, wit
 **Monitoring**
 - Every generated page is monitored by default — the dashboard shows a passive "Checked X ago" status
 - Two refresh paths:
-  - **Daily cron** — Vercel Cron (midnight UTC) computes a signature over each monitored site's sitemap + homepage; on mismatch, a full re-crawl is dispatched and `pages.result` is refreshed. The daily cadence is the Hobby-plan ceiling; the cron-schedule string in `vercel.json` can be tightened to hourly (`0 * * * *`) on a Pro plan.
-  - **Request-driven TTL** — when anyone requests a URL whose cached result is older than 24h (`PAGE_TTL_HOURS` in `lib/crawler/config.ts`), a fresh crawl is triggered on the spot. The old `pages.result` is preserved until the new one completes, so no request is ever served an empty result.
-- Cron also sweeps: pages not requested in the last 5 days are quietly un-monitored
-- Detection (inline) and re-crawl fan-out (`waitUntil` today) are separated so a durable queue (Vercel Queues / Inngest) can drop in at the fan-out boundary later — see `app/api/monitor/route.ts`
+  - **Daily cron** — Vercel Cron (midnight UTC) computes a signature over each monitored site's sitemap + homepage; on mismatch, a full re-crawl is dispatched and `pages.result` is refreshed. Daily is the Vercel Hobby-plan ceiling; the schedule string in `vercel.json` can be tightened to hourly (`0 * * * *`) on a Pro plan.
+  - **Request-driven TTL** — when anyone requests a URL whose cached result is older than 24h (`PAGE_TTL_HOURS` in `lib/config.ts`), a fresh crawl is triggered on the spot. The old `pages.result` is preserved until the new one completes, so no request is ever served an empty result.
+- Cron also sweeps: jobs wedged in a non-terminal status past the pipeline budget (see `STUCK_JOB_AFTER_MS`) are force-failed so they don't block future submissions; pages not requested in the last 5 days are quietly un-monitored
+- Re-crawl fan-out runs through the QStash queue (`waitUntil` fallback in dev) — see `app/api/monitor/route.ts`
 
 ## Prerequisites
 
@@ -107,10 +108,10 @@ npm run typecheck   # tsc --noEmit
 ```bash
 source .env.local
 curl -s -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/monitor | jq
-# { "checked": N, "changed": M, "swept": K, "recrawls": [...], "errors": [] }
+# { "checked": N, "changed": M, "swept": K, "stuckFailed": J, "recrawls": [...], "errors": [] }
 ```
 
-Each manual call does the full cron cycle: sweep stale pages → compute signatures → dispatch re-crawls on change. The auth header is the same `CRON_SECRET` Vercel injects in production, so this is an exact equivalent.
+Each manual call does the full cron cycle: force-fail stuck jobs → sweep stale pages → compute signatures → dispatch re-crawls on change. The auth header is the same `CRON_SECRET` Vercel injects in production, so this is an exact equivalent.
 
 ## Deploying to Vercel
 
@@ -144,7 +145,7 @@ Also update each OAuth provider's allowed callback to the Supabase callback URL 
 
 ### 4. Cron + function limits
 
-- `vercel.json` schedules `/api/monitor` at `0 0 * * *` (daily midnight UTC). On **Hobby** this is the most frequent allowed cadence; on **Pro** you can change it to `0 * * * *` for hourly.
+- `vercel.json` schedules `/api/monitor` at `0 0 * * *` (daily, midnight UTC). On **Hobby** this is the most frequent allowed cadence; on **Pro** you can change it to `0 * * * *` for hourly.
 - `/api/p` and `/api/monitor` are set to `maxDuration: 300` — Fluid Compute default, available on all plans as of the 2025 timeout bump.
 - Vercel automatically injects `CRON_SECRET` as the `Authorization: Bearer …` header on cron invocations. If the env var is unset the route fails closed (`401`).
 
@@ -189,8 +190,9 @@ lib/
     monitor.ts                    Signature + change detection for cron
     discover.ts, sitemap.ts,      URL discovery
       robots.ts
-    fetchPage.ts, safeFetch.ts,   HTTP fetch with SSRF guard + .md variant probe
-      markdownProbe.ts, ssrf.ts
+    fetchPage.ts, safeFetch.ts,   HTTP fetch with SSRF guard + size-capped streaming read + .md variant probe
+      markdownProbe.ts, ssrf.ts,
+      readBounded.ts
     spaCrawler.ts                 Puppeteer fallback for JS-rendered sites
     extract.ts                    Cheerio-based metadata extraction
     classify.ts, llmEnrich.ts     Claude-powered classification + descriptions

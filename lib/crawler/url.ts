@@ -62,8 +62,13 @@ export function isSameDomain(url: string, base: string): boolean {
   try {
     const u = new URL(url)
     const b = new URL(base)
-    const uHost = u.hostname.replace(/^www\./, "")
-    const bHost = b.hostname.replace(/^www\./, "")
+    // Lowercase both sides — `normalizeUrl` lowercases hostnames on
+    // its way into the queue, but this helper is also called from
+    // places that hand in raw, mixed-case input (link extraction,
+    // sitemap entries). Without this, `Example.com` vs `example.com`
+    // would falsely classify as cross-origin.
+    const uHost = u.hostname.toLowerCase().replace(/^www\./, "")
+    const bHost = b.hostname.toLowerCase().replace(/^www\./, "")
     return uHost === bHost
   } catch {
     return false

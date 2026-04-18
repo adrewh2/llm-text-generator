@@ -1,10 +1,11 @@
 import { load } from "cheerio"
 import { normalizeUrl } from "./url"
 import { safeFetch } from "./safeFetch"
+import { readBoundedText } from "./readBounded"
 import { USER_AGENT } from "./fetchPage"
 import { crawler } from "../config"
 
-const { MAX_SITEMAP_URLS, SITEMAP_TIMEOUT_MS } = crawler
+const { MAX_SITEMAP_URLS, SITEMAP_TIMEOUT_MS, SITEMAP_MAX_BYTES } = crawler
 
 export async function fetchSitemapUrls(sitemapUrl: string, baseUrl: string): Promise<string[]> {
   const urls: string[] = []
@@ -32,7 +33,11 @@ async function processSitemap(
     const contentType = res.headers.get("content-type") || ""
     if (!contentType.includes("xml") && !contentType.includes("text")) return
 
-    const text = await res.text()
+    // Stream with a cap — a multi-GB sitemap (or a misbehaving server
+    // sending chunked content forever) would otherwise OOM us before
+    // the XML parser is reached.
+    const text = await readBoundedText(res, SITEMAP_MAX_BYTES)
+    if (text === null) return
     const $ = load(text, { xmlMode: true })
 
     // Sitemap index
