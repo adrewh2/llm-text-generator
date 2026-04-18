@@ -177,7 +177,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
         if (!html) {
           failed++
           pages.push({ url, title: urlToLabel(url), headings: [], fetchStatus: "error", descriptionProvenance: "none" })
-        } else {
+        } else if (crawled < MAX_PAGES) {
           const meta = extractMetadata(url, html)
           const mdUrl = isSpa ? await probeMarkdown(url) : mdUrlResolved
           pages.push({ ...meta, mdUrl: mdUrl || undefined, fetchStatus: "ok" })

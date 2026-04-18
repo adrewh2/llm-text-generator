@@ -1,8 +1,9 @@
 "use client"
 
 import { useState } from "react"
-import { ArrowRight, Globe, Zap, CheckCircle, RefreshCw, Loader2 } from "lucide-react"
+import { ArrowRight, Globe, Zap, CheckCircle, RefreshCw, Loader2, BookMarked } from "lucide-react"
 import { useRouter } from "next/navigation"
+import NavAuth from "./NavAuth"
 
 const EXAMPLE_OUTPUT = `# FastHTML
 
@@ -44,7 +45,7 @@ export default function LandingPage() {
     setLoading(true)
 
     try {
-      const res = await fetch("/api/jobs", {
+      const res = await fetch("/api/p", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: normalized }),
@@ -57,7 +58,7 @@ export default function LandingPage() {
         return
       }
 
-      router.push(`/jobs/${data.job_id}`)
+      router.push(`/p/${data.page_id}${data.cached ? "?simulate=1" : ""}`)
       // leave loading=true — component unmounts on redirect
     } catch {
       setError("Network error — please try again")
@@ -80,6 +81,7 @@ export default function LandingPage() {
             <a href="#how-it-works" className="text-sm text-zinc-500 hover:text-zinc-900 transition-colors hidden sm:block">
               How it works
             </a>
+            <NavAuth />
           </div>
         </nav>
       </header>
@@ -202,8 +204,8 @@ export default function LandingPage() {
           </p>
           <div className="grid md:grid-cols-3 gap-10">
             {[
-              { icon: Globe, step: "01", title: "Crawl", desc: "We traverse your site via sitemap.xml, robots.txt, and link discovery — respecting robots.txt rules and prioritizing high-value pages like docs and API references." },
-              { icon: Zap, step: "02", title: "Enrich", desc: "An LLM classifies each page, assigns it to a meaningful section, scores its importance, and writes a concise description — all tuned to your site's domain." },
+              { icon: Globe, step: "01", title: "Crawl", desc: "We traverse the site via sitemap.xml, robots.txt, and link discovery — respecting robots.txt rules and prioritizing high-value pages like docs and API references." },
+              { icon: Zap, step: "02", title: "Enrich", desc: "An LLM classifies each page, assigns it to a meaningful section, scores its importance, and writes a concise description — all tuned to the site's domain." },
               { icon: CheckCircle, step: "03", title: "Generate", desc: "A spec-compliant llms.txt is assembled with a generated preamble, importance-ordered sections, and an Optional section for supplementary pages. Edit, validate, and download." },
             ].map(({ icon: Icon, step, title, desc }) => (
               <div key={step} className="group">
@@ -223,9 +225,45 @@ export default function LandingPage() {
             <div>
               <h4 className="font-semibold text-zinc-900 text-sm mb-1">Works for any website</h4>
               <p className="text-sm text-zinc-500 leading-relaxed">
-                Not just developer docs — the LLM adapts section names and descriptions to your site's domain, whether it's a recipe blog, a law firm, or a SaaS product.
+                The LLM adapts section names and descriptions to the site's domain, whether it's a recipe blog, a law firm, or a SaaS product.
               </p>
             </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Sign-in Features */}
+      <section className="border-t border-zinc-200 bg-zinc-100">
+        <div className="max-w-4xl mx-auto px-6 py-20">
+          <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-[0.12em] text-center mb-14">
+            Sign in for more features
+          </p>
+          <div className="grid md:grid-cols-2 gap-6">
+            {[
+              {
+                icon: BookMarked,
+                title: "Page history",
+                desc: "Every page you generate is saved to your dashboard — browse and revisit any past result in one place.",
+              },
+            ].map(({ icon: Icon, title, desc }) => (
+              <div key={title} className="flex items-start gap-4 p-5 rounded-xl border border-zinc-200 bg-white">
+                <div className="w-8 h-8 rounded-lg bg-zinc-100 flex items-center justify-center shrink-0">
+                  <Icon size={15} className="text-zinc-600" />
+                </div>
+                <div>
+                  <h4 className="font-semibold text-zinc-900 text-sm mb-1">{title}</h4>
+                  <p className="text-sm text-zinc-500 leading-relaxed">{desc}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-8 text-center">
+            <a
+              href="/login"
+              className="inline-flex items-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-zinc-800 transition-colors"
+            >
+              Sign in to get started
+            </a>
           </div>
         </div>
       </section>

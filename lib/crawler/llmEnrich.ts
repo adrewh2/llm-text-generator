@@ -150,19 +150,16 @@ export async function generateSitePreamble(
 
   const genreLabel = genre.replace(/_/g, " ")
 
-  const prompt = `You are writing the preamble of an llms.txt file for "${siteName}" (a ${genreLabel} site).
+  const prompt = `Write a 2–3 sentence description of "${siteName}" (a ${genreLabel} site) for an LLM that has never heard of it.
 
-The preamble appears after the site title and optional tagline, before the file-list sections. It helps an LLM quickly understand:
-- What the site/product is
-- What topics or capabilities this file covers
-- Any important context for navigating the content
+Cover: what the product or service is, what it does, and who uses it. Be specific and factual. No marketing language. No headings or bullet points.
 
-Write 2–3 concise, factual sentences. No marketing language. No headings or bullet points. Be specific to this site.
+Do NOT reference the llms.txt file, do NOT say "this file covers" or "this index contains" or "this document" — write about the actual website and product only.
 
-Pages included:
+Context (pages on this site):
 ${pageLines}
 
-Return only the preamble text, nothing else.`
+Return only the description text, nothing else.`
 
   try {
     const message = await client.messages.create({

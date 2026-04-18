@@ -2,6 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
+html {
+  scroll-behavior: smooth;
+}
+
 /* Smooth fade-in for live feed items */
 @keyframes fade-in {
   from {
