@@ -1,1201 +1,508 @@
-# llms.txt Generator — Final System Design
+# llms.txt Generator — System Design
 
 ## 1. Overview
 
-A web application that crawls any public website, structures its content into a spec-compliant `llms.txt` file, and keeps that file current as the site evolves. Users can generate a file instantly in preview mode, then sign in to save it, customize it, and enable automated monitoring.
+A web app that generates a spec-compliant [`llms.txt`](https://llmstxt.org/) file for any public website. A user pastes a URL; the backend crawls the site, classifies and scores the discovered pages with a deterministic pipeline plus a small amount of LLM refinement, and assembles the output. Signed-in users get a dashboard of everything they've ever requested and can export it all as a zip.
 
-### Product goals
+The design is tight on purpose. Every URL produces one shared, globally-visible result, which is cheap to serve and trivial to share by link. A daily cron re-crawls pages that users have touched recently, so the canonical result doesn't drift.
 
-- Generate a useful, spec-compliant `llms.txt`, not a sitemap dump
-- Work across a wide variety of sites: developer docs, e-commerce, personal, institutional, and publication/blog sites
-- Keep structural decisions deterministic and explainable
-- Preserve user edits across re-runs
-- Provide a real path to serving the updated file at the user's own `/llms.txt`
-- Treat arbitrary URL crawling as a security-sensitive operation from day one
+### Design principles
 
-### Core design principles
+1. **LLM does the judgment calls; deterministic code does the plumbing.** Every decision that requires taste is the LLM's: which of the discovered URLs are worth spending the 25-page budget on (`rankCandidateUrls`), how important each crawled page is on a 1–10 scale (`enrichBatch`), what section to put it in, what its description should say if the page didn't provide one, and the site's intro paragraph (`generateSitePreamble`). The deterministic layer handles the mechanics around those calls: robots/sitemap discovery, per-URL fetch + metadata extraction, SSRF validation, a base numeric score from structural signals (description present, `.md` sibling, JSON-LD, body length, URL-shape penalties), deduplication, and final markdown assembly.
 
-1. **Deterministic first, LLM as refinement.** Discovery, normalization, page scoring, section grouping, inclusion, and optionality are all deterministic. The LLM writes the short intro summary and fills description gaps only.
-2. **Markdown preference.** The crawler probes for `.md` variants and prefers them in generated links when they exist, in line with the `llms.txt` proposal.
-3. **Curated, not exhaustive.** The output is a ranked subset of the site, tuned by detected site genre.
-4. **User customization survives regeneration.** Saved edits are re-applied after every monitor-triggered re-run.
-5. **Preview before signup.** Users can see real output before authenticating. Saved jobs, monitoring, and durable customization require auth.
-6. **Security is part of the architecture.** SSRF protection, rate limiting, redirect validation, and request signing are core design elements.
+   Where the two layers meet — selection and section assignment — the LLM's output is the dominant input. The importance rating folds into the score as `(importance − 5.5) × 5`, contributing roughly ±23 on top of base signals that cap around +75; that's large enough to flip pages across the primary (≥ 50) and optional (15–49) thresholds. Section names come from the LLM's suggestion first, with path-regex inference only as a fallback when the LLM didn't supply one. So calling inclusion or grouping "deterministic" would be wrong — the thresholds and grouping rules are deterministic, but the numbers and hints they operate on are not.
+2. **Globally-shared result per URL.** One `llms.txt` per site, reused across all users. No per-user copies; no per-user mutations. Users get their own *history* (what they've asked for), but the *result* is shared.
+3. **Crawl one URL once, keep it fresh passively.** A cached result under 24 hours old is returned immediately. A daily cron checks for upstream change on URLs that users are still actively using.
+4. **Security is a pipeline concern, not a wrapper.** SSRF validation runs at every fetch hop; rate limiting runs on every `POST /api/p`; prompt injection defenses run on every LLM call.
+5. **Single function, single region, single Postgres.** No Redis, no queue service, no edge runtime. Vercel Fluid Compute + Supabase Postgres. Anything more would be premature.
 
----
+### Scope
 
-## 2. Scope and Non-Goals
+**In:** public HTTP(S) sites, a spec-compliant `llms.txt` output, sign-in for history + zip export, passive re-crawl on change.
 
-### In scope
-
-- Public websites reachable over HTTP(S)
-- Spec-compliant `llms.txt` generation
-- Preview mode and full authenticated mode
-- Monitoring with incremental checks and periodic full reconciliation
-- User overrides and rollback
-- Hosted stable file URL plus deployment/update paths
-
-### Out of scope for MVP
-
-- Authenticated crawling behind login walls
-- JavaScript-heavy sites that require complex user interaction before content appears
-- Full repository write-back automation such as GitHub PR creation
-- Multi-tenant organization workspaces
+**Out (and intentionally so):** authenticated crawling, user-editable overrides, webhook delivery of updates, hosted-file serving at the user's own `/llms.txt`, multi-tenant workspaces, GitHub PR write-back.
 
 ---
 
-## 3. Spec Alignment
+## 2. Tech Stack
 
-The output follows the structure defined at [llmstxt.org](https://llmstxt.org/):
-
-- A required H1 with the project or site name (the only required element per spec)
-- A blockquote with a short summary containing key information for understanding the rest of the file
-- Zero or more preamble paragraphs or lists, with no headings of any level permitted in this section
-- Zero or more H2-delimited sections containing file lists
-- Each file list entry is a markdown hyperlink `[name](url)`, optionally followed by `: ` and a short description
-- An `## Optional` section only when secondary entries exist that can be skipped in shorter contexts
-
-Links prefer `.md` variants when available. Empty sections are never rendered. The `## Optional` section is semantically meaningful per the spec and is included only when there is genuinely secondary material worth deferring.
-
-### Graceful degradation
-
-If the LLM call fails or is unavailable, the generator still produces a valid file. The H1, which is always deterministic, is the only required element. The blockquote summary is omitted rather than fabricated, and pages without extractable descriptions are listed without the optional `: description` suffix. Both are spec-valid outputs.
-
-### Example generated output
-
-For a developer documentation site:
-
-```markdown
-# FastHTML
-
-> FastHTML is a Python library that combines Starlette, Uvicorn, HTMX, and fastcore's FastTags into a framework for building server-rendered hypermedia applications.
-
-FastHTML is not compatible with FastAPI syntax and does not target API services. It works with JS-native web components and vanilla JS libraries, but not with React, Vue, or Svelte.
-
-## Docs
-
-- [Quick start for web devs](https://fastht.ml/docs/tutorials/quickstart_for_web_devs.html.md): A brief overview of many FastHTML features covering routing, templates, and HTMX integration
-- [HTMX reference](https://github.com/bigskysoftware/htmx/blob/master/www/content/reference.md): All HTMX attributes, CSS classes, headers, events, extensions, and config options
-
-## Examples
-
-- [Todo list application](https://github.com/AnswerDotAI/fasthtml/blob/main/examples/adv_app.py): Complete CRUD app walkthrough showing idiomatic FastHTML and HTMX patterns
-
-## Optional
-
-- [Starlette documentation](https://gist.githubusercontent.com/jph00/809e4a4808d4510be0e3dc9565e9cbd3/raw/starlette-sml.md): Subset of Starlette docs relevant to FastHTML development
-```
-
-For an e-commerce site:
-
-```markdown
-# Acme Store
-
-> Acme Store sells outdoor camping and hiking gear with free shipping on orders over $50 and a 30-day return policy.
-
-## Products
-
-- [Tents & Shelters](https://acme.example.com/collections/tents): Full range of 1-person to 6-person tents for backpacking and car camping
-- [Hiking Footwear](https://acme.example.com/collections/footwear): Trail runners, hiking boots, and approach shoes
-
-## Support
-
-- [Shipping & Returns](https://acme.example.com/policies/shipping-returns): Shipping rates, delivery times, and return instructions
-- [Size Guide](https://acme.example.com/pages/size-guide): Measurement charts for apparel and footwear
-
-## Optional
-
-- [The Trail Journal](https://acme.example.com/blog): Gear reviews, trip reports, and seasonal buying guides
-```
-
----
-
-## 4. User Modes
-
-### 4.1 Preview mode (unauthenticated)
-
-Preview mode is designed to remove signup friction while still supporting async crawling and progress polling.
-
-#### Behavior
-
-- No sign-in required
-- Limited crawl budget: max 25 pages, max depth 2
-- Result can be viewed, copied, and downloaded
-- No monitoring
-- No durable dashboard entry
-- No saved override history
-- Preview data expires automatically after 24 hours
-
-#### Important clarification
-
-Preview jobs are **ephemerally persisted**, not durably saved. This supports async job execution, progress polling, and download, but preview jobs are not attached to a user account and are automatically deleted after TTL expiry. Cleanup runs via a scheduled Inngest function every hour that deletes `preview_jobs` rows, and cascaded `preview_pages` rows, where `expires_at < now()`.
-
-### 4.2 Full mode (authenticated)
-
-Full mode unlocks persistent product features.
-
-#### Behavior
-
-- Sign in with Google or GitHub via Supabase Auth
-- Configurable crawl budget and depth
-- Saved jobs in dashboard
-- Persistent overrides and version history
-- Monitoring and deployment update paths
-- Access control enforced by JWT and RLS
-
-### 4.3 Preview-to-full conversion
-
-When an unauthenticated user signs in after generating a preview, the system re-runs the crawl as a full job with the expanded budget rather than attempting to migrate preview data. This avoids ownership migration complexity, ensures the full job has complete crawl coverage, and gives the user an immediately better result. The UI pre-fills the same URL and offers a one-click `Run full crawl` action.
-
----
-
-## 5. Tech Stack
-
-| Layer | Choice | Rationale |
-|---|---|---|
-| Framework | Next.js 15 (App Router) | Single repo for UI + API routes |
-| Language | TypeScript | Type safety across crawler, API, and UI |
-| Auth | Supabase Auth | OAuth + JWT issuance + simple integration |
-| Database | Supabase Postgres | Durable storage for full jobs, pages, monitors, override versions |
-| Ephemeral preview store | Supabase Postgres `preview_jobs` with TTL cleanup | Reuses existing infra while keeping preview isolated from user-owned data |
-| Background jobs | Inngest | Durable step functions, retries, fan-out, cron |
-| Static crawling | `fetch` + `cheerio` | Fast path for most sites |
-| JS rendering fallback | Browserless.io API | SPA fallback without bundling Chromium |
-| AI refinement | Anthropic Claude | Intro summary + description gap-filling only |
-| Styling | Tailwind CSS + shadcn/ui | Fast, consistent UI primitives |
-| Deployment | Vercel | Straightforward Next.js deployment |
-
-### Why Inngest
-
-Crawling and monitoring are long-running, retry-heavy workflows with fan-out. Inngest gives durable steps, partial retry, and cron without adding Redis plus a worker fleet. It also provides the scheduled function primitive used for preview TTL cleanup and monitor scheduling.
-
----
-
-## 6. High-Level Architecture
-
-```text
-Browser
-  │
-  │ POST /api/jobs { url, options, preview?: true }
-  ▼
-Next.js API Routes
-  │
-  │ validate URL + SSRF checks
-  │ preview? create preview token + TTL-backed preview job
-  │ full? require JWT and create durable job
-  │ enqueue Inngest event
-  ▼
-Inngest Workflow
-  ├── fetchRobotsTxt
-  ├── fetchSitemaps
-  ├── detectSiteGenre
-  ├── normalizeAndSeedQueue
-  ├── crawlPages (fan-out, per-domain throttling)
-  │     ├── metadata HEAD
-  │     ├── .md probe (HEAD, then lightweight GET fallback)
-  │     ├── static fetch + extraction
-  │     └── Browserless fallback when needed
-  ├── scorePages
-  ├── groupSections
-  ├── refineWithLLM (summary + missing descriptions only)
-  ├── applyOverrides (full mode only)
-  └── assembleFile + validate
-  │
-  ├── write to preview_jobs OR jobs/pages tables
-  ▼
-Browser polls GET /api/jobs/:id
-  │
-  ├── preview: requires preview token
-  └── full: requires owner JWT
-  ▼
-Result view
-  ├── copy/download
-  ├── full mode: save overrides, enable monitor
-  ▼
-Monitoring workflow
-  ├── Phase 1: HEAD / lightweight probe
-  ├── Phase 2: targeted re-crawl on change
-  ├── periodic full reconciliation
-  ├── LLM refinement for changed gaps / changed homepage summary
-  ├── apply current override version
-  └── deliver update via stable URL, webhook, or email
-```
-
----
-
-## 7. Security Model
-
-Arbitrary URL fetching is a core attack surface. The design assumes hostile input.
-
-### 7.1 SSRF protection
-
-Every URL is validated before any network request. Candidate page fetches, markdown probes, sitemap fetches, and `robots.txt` fetches are all subject to IP and redirect validation. Content-type rules vary by fetch purpose.
-
-1. Only `http://` and `https://`
-2. DNS resolution before request
-3. Block IPv4 private, loopback, link-local, multicast, unspecified, and metadata ranges
-4. Block IPv6 loopback, unique-local, link-local, and unspecified ranges
-5. Re-resolve and re-validate on every redirect hop to mitigate DNS rebinding
-6. Max 5 redirects
-7. 10 second hard timeout per request
-8. Content-type policy by fetch purpose:
-   - Candidate page fetches: `text/html`, `application/xhtml+xml`
-   - Markdown probes: `text/markdown`, `text/x-markdown`, or `text/plain` with markdown signals
-   - Sitemaps and discovery documents: `application/xml`, `text/xml`, and other sitemap-compatible XML responses
-   - `robots.txt`: `text/plain`
-9. Response size enforcement: check `Content-Length` header first and reject if over 5 MB; if `Content-Length` is absent, stream with a byte counter and abort at 5 MB
-10. Never forward internal credentials or cookies to target sites
-11. Global target-domain protection: use a configurable token bucket or queue per target domain across all users to prevent the service from being used as a crawl amplifier
-
-### 7.2 Rate limiting
-
-Rate limiting applies at two levels: protecting our own infrastructure and being polite to target sites.
-
-#### Our API
-
-- Preview: 3 crawl jobs per IP per hour
-- Authenticated: 5 concurrent jobs, 20 jobs per day, 3 active monitors per account
-
-#### Target site politeness
-
-- Per-domain concurrency limit: max 2 concurrent requests to any single domain
-- Base delay between requests to the same domain: 500ms with +/-200ms random jitter
-- Honor `Crawl-delay` from `robots.txt` when present, capped at 30 seconds; if the declared delay exceeds 30 seconds, preview mode fails the job with a clear message explaining the site requests slower crawling than preview supports, and full mode proceeds at the 30 second cap with a warning shown in results
-- Adaptive backoff: on HTTP 429 or 503 with `Retry-After`, respect the header up to 60 seconds, then resume; after 3 consecutive throttle responses, pause crawl of that domain for 5 minutes
-- Per job: max 8 concurrent page fetches total across all domains
-
-### 7.3 Crawler identity
-
-All requests include:
-
-- `User-Agent: LlmsTxtGenerator/1.0 (+https://app.domain.com/about/crawler)` with a URL explaining the bot's purpose
-- The crawler obeys directives matching its own user-agent string first, then falls back to `*` directives in `robots.txt`
-
-### 7.4 Webhook security
-
-Webhook delivery is signed.
-
-#### Secret ownership model
-
-If a user enables webhook delivery, the system generates a random webhook signing secret, shows it exactly once at monitor creation time, and stores it encrypted at rest. The system uses that secret to sign future outbound webhook deliveries. The secret is never returned again by read APIs.
-
-#### Storage model
-
-- Raw secret: generated by the application at monitor creation
-- Stored value: encrypted at rest using application-level envelope encryption with a server-side master key from environment configuration
-- Read behavior: never returned by monitor read APIs
-- Rotation: generate a new secret, surface it once, switch future deliveries to the new secret, then invalidate the old one after a short propagation window
-
-#### Headers
-
-- `X-LLMS-Signature`: HMAC-SHA256 signature
-- `X-LLMS-Timestamp`: Unix timestamp
-- `X-LLMS-Delivery-Id`: unique idempotency key
-
-#### Behavior
-
-- Recipients verify timestamp freshness and HMAC
-- Up to 3 retries with exponential backoff on 5xx and timeouts
-- No retries on 2xx or explicit 4xx
-
-### 7.5 Token and secret redaction
-
-- `X-Preview-Token` values are never written to logs, analytics, or error reporting
-- JWTs, webhook secrets, and signature material are redacted from structured logs
-- Delivery payload logs store metadata only, not secret-bearing headers
-
----
-
-## 8. API Design
-
-| Method | Path | Access | Description |
-|---|---|---|---|
-| POST | `/api/jobs` | Optional auth | Start preview or full crawl. Returns `{ job_id, preview_token? }`. |
-| GET | `/api/jobs/:id` | Owner JWT or preview token | Poll status and fetch result. |
-| PATCH | `/api/jobs/:id/overrides` | Owner JWT | Save overrides and re-assemble from stored crawl data only. |
-| POST | `/api/monitors` | Owner JWT | Create monitor. |
-| GET | `/api/monitors/:id` | Owner JWT | Get monitor config and recent runs. |
-| GET | `/api/monitors/:id/history` | Owner JWT | Paginated monitor run history. |
-| DELETE | `/api/monitors/:id` | Owner JWT | Disable or delete monitor. |
-| GET | `/files/:monitor_id/llms.txt` | Public | Stable hosted file URL. |
-
-### Preview access semantics
-
-Preview jobs are not readable by bare job id alone. `POST /api/jobs` returns an opaque `preview_token`. The client sends that token via an `X-Preview-Token` header on subsequent `GET /api/jobs/:id` requests. This avoids collision with the `Authorization` header used for JWT-authenticated requests. The server stores only a SHA-256 hash of the token.
-
-### Public file endpoint behavior
-
-`GET /files/:monitor_id/llms.txt` returns:
-
-- `Content-Type: text/plain; charset=utf-8`
-- `Cache-Control: no-cache, must-revalidate`
-- optional `ETag` for downstream cache validation
-
-### Override endpoint clarification
-
-`PATCH /api/jobs/:id/overrides` does **not** crawl again and does **not** call the LLM. It re-assembles the file from persisted crawl artifacts and the new override snapshot.
-
----
-
-## 9. Data Model
-
-### 9.1 Full job tables
-
-#### `jobs`
-
-| Column | Description |
+| Layer | Choice |
 |---|---|
-| `result` | The final assembled `llms.txt` output with overrides applied, if any. This is what the user sees and downloads. |
-| `result_raw` | The pre-override output from the deterministic pipeline plus LLM refinement. Preserved so that overrides can be re-applied against the original crawl output without re-running the pipeline. |
+| Framework | Next.js 15 (App Router), React 19 |
+| Language | TypeScript 5, strict mode |
+| Hosting | Vercel (Fluid Compute, Node 20+) |
+| Auth + DB | Supabase (Postgres + Auth, SSR cookie handling) |
+| HTML parse | `cheerio` |
+| SPA fallback | `puppeteer-core` + `@sparticuz/chromium` |
+| LLM | Anthropic Claude, pinned to `claude-haiku-4-5-20251001` |
+| Archive export | `jszip` |
+| Styling | Tailwind CSS 3, `lucide-react` icons |
+| Cron | Vercel Cron (`vercel.json`) |
+
+Two long-running routes (`app/api/p/route.ts`, `app/api/monitor/route.ts`) are given `maxDuration: 300s` in `vercel.json`; everything else uses the default. Crawl work itself is capped to `270s` (`crawler.PIPELINE_BUDGET_MS`) so there is time to write a clean `failed` state if the budget is exhausted.
+
+---
+
+## 3. Data Model
+
+Three tables, all in `supabase/migration.sql`. RLS is enabled on all of them; the server uses the service-role key and bypasses RLS for writes, but the policies are the last line of defense if the anon key is ever misused.
+
+### `pages` — canonical per-URL cache
 
 ```sql
-id                    uuid primary key
-user_id               uuid references auth.users not null
-url                   text not null
-status                text not null  -- pending | crawling | scoring | refining | complete | failed | partial
-genre                 text not null
-result                text           -- final output with overrides applied
-result_raw            text           -- pre-override pipeline output
-crawl_options         jsonb
-current_override_version_id uuid null
-error_summary         text null      -- human-readable summary when status = failed or partial
-created_at            timestamptz
-updated_at            timestamptz
+url                TEXT PRIMARY KEY
+result             TEXT                        -- final llms.txt, nullable until complete
+site_name          TEXT
+genre              TEXT
+crawled_pages      JSONB                       -- ScoredPage[] used by the page explorer UI
+monitored          BOOLEAN NOT NULL DEFAULT true
+last_checked_at    TIMESTAMPTZ
+last_requested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+content_signature  TEXT                        -- sha256 of sitemap + homepage, used by cron
+created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 ```
 
-#### `pages`
+Every page is **monitored by default**. The monitor cron unsets that flag on pages nobody has touched in the last 5 days, to keep the daily sweep bounded.
+
+Policy: `pages_public_read` — `SELECT USING (true)`. Any client can read any completed `llms.txt`; this is intentional (share-by-link).
+
+### `jobs` — one row per crawl execution
 
 ```sql
-id                    uuid primary key
-job_id                uuid references jobs not null
-url                   text not null
-md_url                text null
-title                 text null
-description           text null
-body_excerpt          text null
-headings              jsonb
-json_ld               jsonb
-lang                  text null
-etag                  text null
-last_modified         text null
-content_hash          text null   -- SHA-256 of normalized extracted text after full extraction
-probe_hash            text null   -- SHA-256 of lightweight probe content for monitor phase 1 fallback
-page_type             text not null
-score                 int not null
-section               text null
-is_optional           boolean default false
-description_provenance text not null  -- json_ld | og | meta | excerpt | heading | llm | none
-fetch_status          text not null default 'ok'  -- ok | timeout | error | skipped
-crawled_at            timestamptz
+id          UUID PRIMARY KEY
+page_url    TEXT NOT NULL REFERENCES pages(url) ON DELETE CASCADE
+status      TEXT NOT NULL DEFAULT 'pending'    -- CHECK constraint enforces enum
+progress    JSONB NOT NULL                     -- {discovered, crawled, failed}
+site_name   TEXT
+genre       TEXT
+error       TEXT
+created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 ```
 
-#### `monitors`
+Status transitions: `pending → crawling → enriching → scoring → assembling → {complete | partial | failed}`. The enum is enforced by a `CHECK` constraint so a typo in client code can't corrupt the state machine.
 
-The `url` column is denormalized from the parent job for query convenience and avoids joining `jobs` on every monitor scheduling query.
+`jobs` is a history, not a cache. Every crawl — first request, user-triggered re-crawl, monitor-triggered re-crawl — creates a new row. The *result* lives on the matching `pages` row.
+
+Policy: `jobs_public_read` — `SELECT USING (true)`. A bare job id is a bearer token (UUID v4, not enumerable).
+
+Index `idx_jobs_page_status_created(page_url, status, created_at DESC)` backs the dashboard's "latest terminal job per page" lookup.
+
+### `user_requests` — per-user history
 
 ```sql
-id                    uuid primary key
-job_id                uuid references jobs not null
-user_id               uuid references auth.users not null
-url                   text not null    -- denormalized from jobs.url
-frequency             text not null    -- daily | weekly | monthly
-notification_email    text null
-webhook_url           text null
-webhook_secret_encrypted text null     -- encrypted webhook signing secret, never returned by read APIs
-last_checked_at       timestamptz null
-next_check_at         timestamptz null
-last_full_reconcile   timestamptz null
-reconcile_cycle_count int default 0
-enabled               boolean default true
-created_at            timestamptz
+id          UUID PRIMARY KEY DEFAULT gen_random_uuid()
+user_id     UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE
+page_url    TEXT NOT NULL REFERENCES pages(url) ON DELETE CASCADE
+created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+UNIQUE(user_id, page_url)
 ```
 
-#### `monitor_runs`
+This is the *only* user-scoped data in the system. One row per (user, URL) pair records that a signed-in user asked for that URL. It's what the dashboard lists and what feeds the zip download.
 
-`monitor_runs.status` describes the crawl and regeneration outcome only. Delivery success or failure is tracked separately in `delivery_attempts`, so a run may be `updated` even if webhook or email delivery later fails.
+Policy: `user_requests_own` — `auth.uid() = user_id` for both USING and WITH CHECK. This is the critical policy — it's what stops one user from reading another user's history.
 
-```sql
-id                    uuid primary key
-monitor_id            uuid references monitors not null
-status                text not null     -- no_change | updated | error
-check_method          text not null     -- lightweight | targeted_recrawl | full_reconciliation
-changes               jsonb
-new_result            text null
-ran_at                timestamptz
-duration_ms           int
-```
+Index `idx_user_requests_user_created(user_id, created_at DESC)` backs the paginated dashboard query.
 
-#### `delivery_attempts`
+### Why this shape
 
-Tracks per-channel delivery outcomes for webhook and email. Kept separate from `monitor_runs` to support per-channel retry without duplicating run data.
-
-```sql
-id                    uuid primary key
-monitor_run_id        uuid references monitor_runs not null
-channel               text not null     -- webhook | email
-status                text not null     -- success | failure
-attempt_number        int not null
-response_code         int null          -- HTTP status for webhooks
-error_message         text null
-delivery_id           text null         -- matches X-LLMS-Delivery-Id for webhooks
-attempted_at          timestamptz
-```
-
-### 9.2 Preview job tables
-
-#### `preview_jobs`
-
-```sql
-id                    uuid primary key
-url                   text not null
-status                text not null  -- pending | crawling | scoring | refining | complete | failed | partial
-preview_token_hash    text not null  -- SHA-256 of opaque preview token
-result                text null      -- final assembled output, no overrides in preview
-result_raw            text null      -- same as result in preview mode, no override layer
-expires_at            timestamptz not null
-created_at            timestamptz
-updated_at            timestamptz
-```
-
-#### `preview_pages`
-
-Same shape as `pages`, but keyed to `preview_jobs` and cascade-deleted with the preview job.
-
-### 9.3 Override versioning
-
-#### `override_versions`
-
-Each save is an immutable full snapshot.
-
-```sql
-id                    uuid primary key
-job_id                uuid references jobs not null
-user_id               uuid references auth.users not null
-version               int not null
-snapshot              jsonb not null  -- full override payload
-created_at            timestamptz
-```
-
-#### `override_stale_refs`
-
-```sql
-id                    uuid primary key
-override_version_id   uuid references override_versions not null
-reason                text not null   -- page_moved | page_removed
-stale_url             text not null
-replacement_url       text null
-detected_at           timestamptz
-```
-
-#### Override snapshot structure
-
-```json
-{
-  "excluded_urls": [],
-  "custom_descriptions": {"url": "description"},
-  "section_renames": {"Docs": "Documentation"},
-  "section_order": ["Docs", "API", "Examples"],
-  "pinned_urls": {"https://example.com/x": "API"},
-  "custom_intro": "...",
-  "custom_notes": ["..."]
-}
-```
-
-Rollback is implemented by marking an older override version as current on the job.
+- No per-user result copies means a popular URL produces a single `pages` row and a single crawl, regardless of how many users have asked for it.
+- `user_requests` carries no data beyond the join; overrides, notes, tags — nothing. Deleting a request removes it from your dashboard without affecting anyone else.
+- The `ON DELETE CASCADE` from `pages(url)` is wired through both `jobs` and `user_requests` so a future cleanup job could drop a page cleanly.
 
 ---
 
-## 10. Crawl Workflow
+## 4. Auth & User Model
 
-### 10.1 Discovery order
+Supabase Auth handles everything: GitHub and Google OAuth providers, SSR session cookies, server-side user lookup from the cookie.
 
-1. `robots.txt` — parsed for the `LlmsTxtGenerator` user-agent first, then `*` as fallback
-2. `sitemap.xml` and sitemap indexes
-3. Homepage and navigation links
-4. BFS crawl fallback
+- `/lib/supabase/server.ts` — server-side client; used by API routes and server components.
+- `/lib/supabase/client.ts` — browser-side client; used for OAuth redirects and for `onAuthStateChange` wiring in the header nav.
+- `/middleware.ts` — refreshes the session cookie on every request and redirects `/dashboard` to `/login` if there is no session. Only `/dashboard` is gated.
 
-Disallowed URLs are never fetched. `Crawl-delay` is honored as described in section 7.2.
+The app is **optionally-authenticated** on the main flow. Anyone can generate an `llms.txt` without signing in. Sign-in unlocks:
 
-### 10.2 Site genre detection
+- `/dashboard` (history list)
+- Higher rate limit (10/hr vs 3/hr)
+- `GET /api/pages` + `GET /api/pages/download` (history API + zip export)
+- Remembering what you've asked for across devices
 
-Genre is detected once from homepage and site-wide signals.
-
-#### Signals
-
-- Homepage metadata
-- JSON-LD types
-- Nav labels
-- Sitemap and path patterns
-- Common commerce, docs, and publication keywords
-
-#### Supported genres
-
-- `developer_docs`
-- `ecommerce`
-- `personal_site`
-- `institutional`
-- `blog_publication`
-- `generic`
-
-If confidence is low, fallback is `generic`.
-
-### 10.3 URL normalization
-
-- Lowercase scheme and hostname
-- Strip tracking params such as `utm_*`, `fbclid`, and `gclid`
-- Strip known session params
-- Strip fragments
-- Normalize trailing slash policy per observed site convention
-- Collapse duplicate slashes
-- Safe percent-decoding
-- Drop print and export views
-- Drop archive and tag listing pages, while keeping individual posts
-- Deduplicate by canonical URL when present
-- Locale handling governed by explicit locale policy in section 10.4
-
-### 10.4 Locale policy
-
-Locale handling is not hardcoded to English.
-
-#### Default behavior
-
-- Prefer `x-default` when declared
-- Else prefer canonical locale
-- Else keep variants separate
-
-#### User options
-
-- Crawl all locales
-- Target specific locale
-
-Dropped locale variants are logged in the UI.
-
-### 10.5 Markdown probing
-
-For every candidate URL:
-
-1. Probe `.md` equivalent with HEAD, trying `{url}.md` and, for URLs ending in `/`, `{url}index.html.md` per the spec
-2. If HEAD is unsupported or inconclusive, do lightweight GET fallback using the first 4 KB
-3. Validate content type (`text/markdown`, `text/x-markdown`, or `text/plain` with markdown signals) and check for basic markdown structure
-4. Prefer `md_url` in generated file when found
-
-### 10.6 Per-page extraction
-
-Extraction uses a combination of sources, not URL patterns alone.
-
-#### Sources
-
-- URL path
-- Nav label or anchor text where discovered
-- Page title
-- meta description and og description
-- Headings
-- JSON-LD
-- Cleaned body excerpt, first ~2000 chars of main content with boilerplate stripped
-- Canonical URL
-- `lang`
-- Response headers
-
-#### SPA fallback
-
-Use Browserless only when:
-
-- Static extraction is sparse (title-only or empty body), and
-- The document shows strong SPA signals such as React, Vue, or Angular bundles, or empty app shells
-
-### 10.7 Error handling and partial completion
-
-Individual page fetches can fail without failing the entire job.
-
-#### Per-page failures
-
-- Timeouts, 4xx, 5xx, or connection errors are recorded in `pages.fetch_status`
-- Failed pages are excluded from scoring and output
-- The page is still stored so monitoring can retry it later
-
-#### Job-level failure policy
-
-- If the homepage fails, the job is `failed`, since genre detection and site name extraction depend on it
-- If the homepage succeeds but no additional usable pages are discovered, the job may still complete if the homepage alone yields enough information to assemble a meaningful file
-- If more than 50% of candidate pages fail but the homepage succeeded, the job status is `partial` and the result is assembled from successful pages with a warning shown in the UI
-- If fewer than 50% of pages fail, the job is `complete` and failed pages are noted in the page explorer
-
-#### Inngest retry behavior
-
-- Each Inngest step has its own retry policy, max 3 retries with backoff
-- The `crawlPages` fan-out retries individual page fetches, not the entire fan-out
-- If `refineWithLLM` fails after retries, the job completes without LLM refinement, per graceful degradation in section 3
+There is no preview/full mode distinction. Every crawl uses the same budget: 25 pages, depth 2. The only difference an account makes is how many crawls you can request per hour and whether the result shows up in your history.
 
 ---
 
-## 11. Classification, Scoring, and Grouping
+## 5. API Surface
 
-### 11.1 Page type classification
+All routes live under `/app/api`.
 
-Page type is inferred from a weighted mix of path patterns, title and headings, nav text, and schema signals.
+| Method & path | Auth | Purpose |
+|---|---|---|
+| `POST /api/p` | Optional | Kick off a crawl, or return an existing job id if one is already running / cached. |
+| `GET /api/p/[id]` | Public | Poll a job's status and fetch its result. |
+| `DELETE /api/p/request?pageUrl=…` | Required | Remove a page from the signed-in user's history. |
+| `GET /api/pages?offset&limit` | Required | Paginated dashboard list. |
+| `GET /api/pages/download` | Required | Zip of every completed page in the user's history. |
+| `GET /api/monitor` | Bearer `CRON_SECRET` | Vercel Cron target; runs the daily monitor sweep. |
+| `GET /auth/callback` | — | OAuth return path, exchanges code for session. |
 
-#### Common page types
+### `POST /api/p` — the hot path
 
-- `doc`
-- `api`
-- `example`
-- `blog`
-- `changelog`
-- `about`
-- `product`
-- `pricing`
-- `support`
-- `policy`
-- `program`
-- `news`
-- `project`
-- `other`
+Every new-crawl request lands here. The route:
 
-### 11.2 Base scoring
+1. Parses and validates the URL (`≤ 2048` chars, http(s), canonicalized via a HEAD probe that is itself SSRF-validated).
+2. Looks up the rate-limit key: `user.id` if signed in, else the client IP. Runs a token bucket against `rateLimit.AUTH` (10/hr) or `rateLimit.ANON` (3/hr). On miss, returns `429` with `Retry-After` and, for anon users, a `signInPrompt: true` hint the landing page uses to nudge sign-in.
+3. Checks for an existing `pages.result` under 24 hours old (`crawler.PAGE_TTL_HOURS`). If fresh, returns the most recent terminal job id with `cached: true` — no new crawl.
+4. Checks for an in-flight job on the same URL. If one exists, returns its id with `cached: false`. This is what makes two users hitting the same URL simultaneously share one crawl.
+5. Otherwise, creates a new `jobs` row and dispatches `runCrawlPipeline()` via `waitUntil(...)` so the HTTP response returns immediately while the crawl continues in the same Fluid Compute instance.
+6. On all three branches (cache-hit, in-flight attach, new crawl), if the user is signed in, `upsertUserRequest` adds the URL to their dashboard history. The row is an upsert against `UNIQUE(user_id, page_url)` so re-submissions don't duplicate.
 
-```text
-+25 meaningful meta or og description
-+20 markdown variant exists
-+15 structured JSON-LD
-+10 meaningful h1 distinct from site name
-+10 substantial excerpt
--15 paginated URL
--20 print or export view
--25 archive or tag page
+### `GET /api/p/[id]` — the poll target
+
+Client polls every `ui.POLL_INTERVAL_MS` (1.5s) until the job is terminal. The route:
+
+- Fetches the `jobs` row and, for terminal statuses, joins on `pages` for `result` and `crawled_pages`.
+- Calls `bumpPageRequest(pageUrl)` when the job is terminal so `pages.last_requested_at` advances. This is how active pages stay monitored.
+- Scrubs the `error` field (removes resolved IPs and SSRF-specific detail from user-facing text).
+
+### `GET /api/monitor` — daily sweep
+
+See §8.
+
+---
+
+## 6. Crawl Pipeline
+
+All of this lives in `/lib/crawler/`. The entry point is `runCrawlPipeline(jobId, targetUrl)` in `pipeline.ts`.
+
+```
+normalize + SSRF-check
+  ↓
+robots.txt (disallows + sitemap references)
+  ↓
+sitemap(s) — up to 3 sources, capped at 500 URLs total
+  ↓
+homepage fetch (plain HTTP first, Puppeteer fallback if SPA / blocked)
+  ↓
+if sitemap was sparse: extract nav links from homepage
+  ↓
+capByPathPrefix: max 5 URLs per 2-segment path prefix
+  ↓
+LLM rank: Claude reorders candidate URLs by likely value
+  ↓
+Worker pool (5 non-SPA, 1 SPA): fetch + extract metadata for each URL
+   - per-page: HTML fetch + cheerio parse → ExtractedPage
+   - probe for a .md sibling (HEAD, then lightweight GET)
+   - discover more links if depth < MAX_DEPTH (2)
+   - hard caps: MAX_PAGES = 25, PIPELINE_BUDGET_MS = 270s
+  ↓
+genre detection (developer_docs, ecommerce, personal_site, institutional,
+                 blog_publication, generic) from homepage + URL patterns
+  ↓
+LLM enrich (enrichBatch, batches of 20): returns pageType, importance 1–10,
+  section hint, and a description where missing
+  ↓
+scorePages: structural signal weights (description presence, .md availability,
+  JSON-LD, body length, URL-shape penalties) plus (importance − 5.5) × 5 from the LLM
+  (genre is passed in but not currently used inside scorePages)
+  ↓
+assignSections: score ≥ 50 → primary (LLM-hinted or path-inferred section)
+                15–49   → Optional
+                < 15    → excluded
+  ↓
+filterAndSelectPages: dedupe by hostname+path, homepage excluded,
+  cap primary at 50 and optional at 10 (60 total, sorted by score desc)
+  ↓
+generateSitePreamble: Claude writes a 1–3 sentence intro given genre + selected pages
+  ↓
+assembleFile: H1 + blockquote summary + preamble + H2 sections + Optional
+  ↓
+terminal status:
+   crawled = 0                 → failed
+   attempted ≥ 5 & rate < 50%  → partial
+   otherwise                   → complete
 ```
 
-### 11.3 Genre modifiers
+The pipeline raced against a 270-second timeout by `Promise.race`. If the timeout wins, the job is flipped to `failed` with a clean error; otherwise the inner function has already written its own success/failure state.
 
-#### developer_docs
+### SPA handling
 
-```text
-+20 doc/api/example
--15 blog
--25 about
+`isSpaHtml(html, bodyExcerpt)` in `spaCrawler.ts` flags a response as SPA if the HTML is large but visible text is tiny, or if framework markers (`data-reactroot`, `ng-app`, unexpanded `{{ … }}`) are present, or if the plain fetch was blocked entirely. When triggered, the pipeline launches headless Chromium (`@sparticuz/chromium` on Vercel, bundled `puppeteer` locally), navigates with resource-blocking on for images/fonts/media, and uses the rendered DOM for both extraction and link discovery. Puppeteer is single-threaded within a job, so `CONCURRENCY` is forced to 1 when the browser path is active.
+
+### Per-page extraction
+
+`extractMetadata(url, html)` in `extract.ts` derives, in priority order:
+
+- **Title:** `og:title` → `<title>` → first `<h1>`.
+- **Description:** JSON-LD → `og:description` → `<meta name=description>` → first sentence of cleaned body → heading fallback → `none`. The winning source is stored as `descriptionProvenance` and used by the scorer to prefer structured sources over derived ones.
+- **Body excerpt:** up to `crawler.EXCERPT_MAX_BYTES` (4 KB UTF-8) of cleaned text from the main content area, with nav/footer/aside stripped.
+- **Canonical URL + lang** from standard tags.
+- **`.md` sibling:** `probeMarkdown(url)` tries `{url}.md` and, for trailing-slash URLs, `{path}index.html.md` per the spec; HEAD first, falling back to a 4 KB GET if HEAD is unreliable; validated by content-type plus lightweight markdown signals.
+
+### Scoring
+
+`scorePages` in `score.ts` produces a numeric score per page from:
+
+- structural signals (description presence +25, `.md` sibling +20, JSON-LD +10, headings +10, body ≥ 200 chars +10);
+- URL-shape penalties (pagination −15, print/export −20, tag/category/archive/author −25);
+- the LLM's importance rating, folded in as `Math.round((importance − 5.5) × 5)` — so `importance=10` contributes +23, `importance=1` contributes −23.
+
+Thresholds: primary ≥ 50, optional 15–49, excluded < 15. These are starting points and can be tuned without touching structure. Note: `scorePages` takes a `genre` argument but does not currently use it — the old design spec'd genre-specific weight modifiers; those were never implemented. Genre is still computed and used elsewhere (LLM prompts, preamble context).
+
+---
+
+## 7. LLM Usage
+
+Three call sites, all pinned to `claude-haiku-4-5-20251001`:
+
+1. **`rankCandidateUrls`** — given up to `llm.RANK_MAX_KEEP` (120) URLs plus the site name and homepage excerpt, return the list re-ordered by likely value. Skipped entirely for candidate lists below `llm.RANK_SKIP_BELOW` (10).
+2. **`enrichBatch`** (called from `llmEnrichPages`) — batches of `llm.ENRICH_BATCH_SIZE` (20) pages, run in parallel. Per page, returns `pageType`, `importance` (1–10), a `section` label, and a `description` (the LLM rewrites even when the page had one — replacement is kept only if it differs; provenance is then flipped to `llm`). The `section` value is the *primary* signal for primary pages (score ≥ 50); the path-regex inference runs only when the LLM didn't return a usable section. Pages with score < 50 are always placed into `Optional` regardless of what the LLM suggested.
+3. **`generateSitePreamble`** — given site name, genre, and the selected pages, returns a 1–3 sentence intro paragraph for the assembled file. If this call fails, the file is assembled without a preamble rather than faking one.
+
+### What the LLM does *not* decide
+
+- **Site name.** Extracted from `og:site_name`, `<h1>`, or hostname.
+- **Page type enum.** The LLM returns one, but anything outside the allowed set (doc/api/example/blog/changelog/about/product/pricing/support/policy/program/news/project/other) falls back to the deterministic `classifyPage()` regex in `classify.ts`.
+- **Final link ordering inside a section.** Deterministic sort by score descending.
+- **File assembly.** `assembleFile()` is pure text construction given its inputs.
+- **Whether a page ends up in Optional.** Pages with a final score < 50 are always Optional (or excluded if < 15), regardless of what section the LLM suggested.
+
+Everything else — which URLs get crawled under the 25-page cap, how each page's importance shifts its score, the section name for primary pages, descriptions where the extractor found none, the site preamble — is LLM-driven. Two runs on the same site can produce different outputs.
+
+### Prompt injection defenses
+
+Every chunk of crawled content embedded in an LLM prompt is passed through `neuter()` before being inserted into the prompt. It strips tag-like constructs (`</?tag>`), strips `[[…]]` prompt-template guards, and collapses all newlines to single spaces (so an attacker can't break out of the `<untrusted_pages>` fence with line-start tricks). Prompts also wrap untrusted content in an explicit `<untrusted_pages>` block with a preamble telling the model to treat everything inside as data.
+
+On the output side, returned JSON is parsed and each field is re-validated before use: `pageType` must be in the whitelist (else `other`), `section` must match `[\p{L}\p{N} \-&/]+` and fit within `llm.SECTION_MAX_CHARS` (30), `description` is `neuter()`'d again and truncated to `llm.DESCRIPTION_MAX_CHARS` (240). Anything that doesn't match the expected shape is silently dropped so the deterministic fallback kicks in.
+
+---
+
+## 8. Monitoring
+
+`GET /api/monitor` runs daily (`"0 0 * * *"` in `vercel.json`), authenticated by a timing-safe compare against `CRON_SECRET`. There is no monitor state machine — monitoring is just a cron job that compares signatures and triggers re-crawls.
+
+On each invocation:
+
+1. **Sweep stale.** `sweepStaleMonitoredPages(monitor.STALE_DAYS)` sets `monitored = false` on any page whose `last_requested_at` is older than 5 days. This keeps the working set bounded to URLs people are actually using.
+2. **Fetch a batch.** `getMonitoredPages({ limit: monitor.BATCH_SIZE })` pulls up to 200 monitored pages, oldest-checked first. Pages are processed sequentially, with a `monitor.SAME_HOST_DELAY_MS` (400 ms) politeness delay when two in a row share the same host.
+3. **Compute signature.** `computeSignature(pageUrl)` in `monitor.ts` fetches the sitemap (via `fetchSitemapUrls`, which honors `crawler.SITEMAP_TIMEOUT_MS` = 10 s and `MAX_SITEMAP_URLS` = 500) and the homepage (8 s via `crawler.HOMEPAGE_FETCH_TIMEOUT_MS`) in parallel. It hashes each separately — `sha256(sortedSitemapUrls.join("\n"))` and `sha256(normalizedHtml)` — then combines them as `sha256("${sitemapHash}|${homepageHash}")`. If both fetches fail, it returns `null` (caller treats that as "skip this cycle"). Homepage normalization strips `<script>`, `<style>`, and comments and collapses whitespace so per-request build ids don't trigger false positives.
+4. **Compare.** `detectChange` treats the first-ever check (no stored signature) as `changed: false` — it just records the baseline. On every subsequent check, a mismatch triggers `dispatchRecrawl()`, which creates a new `jobs` row and kicks off `runCrawlPipeline()` via `waitUntil`. A match is a no-op beyond updating the timestamp.
+5. **Record.** `recordMonitorCheck(pageUrl, signature)` always updates `last_checked_at`; it only overwrites `content_signature` if the sig was computed successfully, so a transient fetch failure doesn't wipe the baseline.
+
+A successful crawl also sets `last_checked_at = now()` in `updateJob()` (see `lib/store.ts:104`). So the moment a page is generated for the first time, the dashboard shows "Refreshed just now" — it doesn't dangle on "Awaiting check" until the next cron tick.
+
+### Why stateless
+
+An earlier draft had `monitors` and `monitor_runs` tables and a proper state machine (daily/weekly/monthly frequency, notification email, webhook delivery with HMAC, delivery-attempt tracking). All of that was cut. The product is: the cached result should not drift. A single daily sweep with a content signature hits that goal for a fraction of the complexity, and an update-delivery story (webhooks, email, reverse proxy) only makes sense once users ask for it.
+
+---
+
+## 9. Frontend
+
+All pages live under `/app`. Highlights:
+
+- **`/` (`app/page.tsx`)** — Landing page. URL input (auto-focused on mount), example output, "how it works" cards, sign-in upsell. Submitting the form `POST`s to `/api/p` and navigates to `/p/[id]`.
+- **`/dashboard` (`app/dashboard/page.tsx`)** — Signed-in only. Server-rendered initial page (20 items) with `force-dynamic` so the RSC cache doesn't serve stale history after navigating back from `/p/[id]`. `PageList` is a client component that does infinite-scroll via an IntersectionObserver sentinel, calling `GET /api/pages` for subsequent pages. Each row shows site name, genre, requested-at, monitor status ("Refreshed X ago"), and a delete button that calls `DELETE /api/p/request`.
+- **`/p/[id]` (`app/p/[id]/page.tsx`)** — Result viewer. Polls `GET /api/p/[id]` every 1.5 s until the job is terminal. Two panes swap in based on job state: `ProgressPane` for live crawls (animated step list with counts), `ResultPane` for complete/partial (read-only markdown block + copy + download). On terminal results, the page calls `validateLlmsTxt(result)` and renders the outcome as a "Spec valid" / "N issues" badge in the header, with an inline error list for invalid output. Cached results trigger a short simulated-progress animation (`SIM_STEP_DURATIONS_MS`) before revealing the result so the UI doesn't snap. After `MAX_POLL_FAILURES` (5) consecutive poll errors, the page shows a "Lost connection" banner with a reload button and stops polling (circuit breaker).
+- **`/login` (`app/login/page.tsx`)** — OAuth picker (GitHub, Google).
+- **`NavAuth` (`app/NavAuth.tsx`)** — Header component, present on `/` and `/p/[id]`. Renders "Sign in" for anon users, or a Dashboard link plus an account menu (email + sign out) for signed-in users. Subscribes to `onAuthStateChange` so the UI updates without a page refresh.
+- **`ConfirmDialog` (`app/components/ConfirmDialog.tsx`)** — Generic modal, portaled to `document.body` to escape containing-block traps (an earlier embed inside a `-translate-y-1/2` wrapper broke `position: fixed`).
+
+### Client-side caching
+
+The result page keeps a per-tab LRU (`JOB_CACHE_MAX = 30`) of recently-seen jobs so tabbing between dashboard and result doesn't re-fetch. The cache is cleared on `SIGNED_OUT` to avoid a stale-view flash after logout.
+
+---
+
+## 10. Security Model
+
+Full discussion in `SECURITY.md`. Summary:
+
+### SSRF
+
+`lib/crawler/ssrf.ts` exports `assertSafeUrl(url)`, which:
+
+1. Accepts only `http:` and `https:`.
+2. Resolves DNS and validates *every* answer, not just the first.
+3. Blocks IPv4 RFC1918, loopback, link-local (including AWS metadata 169.254.169.254), multicast, unspecified, and benchmark ranges.
+4. Blocks IPv6 loopback, link-local, unique-local, multicast, unspecified, and validates the IPv4 tail of `::ffff:x.x.x.x`-mapped addresses.
+
+`lib/crawler/safeFetch.ts` is a manual-redirect fetch wrapper that re-runs `assertSafeUrl` on every hop (max `crawler.MAX_REDIRECTS = 5`). This is important: a redirect from `https://example.com` to `http://127.0.0.1` would pass an initial check but not a per-hop check.
+
+Both the crawl pipeline entry and the Puppeteer path call `assertSafeUrl` before any network I/O.
+
+Known limitation: TOCTOU between `assertSafeUrl` and the actual fetch (DNS rebinding could, in principle, swap the answer between the two lookups). Accepted because closing the gap requires pinning the socket to a specific IP at connect time, which Node's `fetch` doesn't expose. The window is narrow and the blast radius is a single GET.
+
+### Rate limiting
+
+`lib/rateLimit.ts` — token bucket, keyed per process. Anon: capacity 3, refill `3/3600` per second. Auth: capacity 10, refill `10/3600`. Applied on `POST /api/p` only — reads and cached-hit responses are free.
+
+Known limitation: in-memory per-instance, so a cold start resets the bucket. Acceptable at current traffic; the upgrade path is Upstash Redis with the same token-bucket semantics.
+
+### Prompt injection
+
+See §7. Neutering before injection + schema-validated output + hard length caps. A malicious page can make the LLM return garbage for its own description; it cannot escape the shape or poison a different page's output.
+
+### RLS
+
+Service-role key stays server-side (`lib/store.ts:17`). Client never sees it. RLS policies are the last line of defense: even if the anon key is exfiltrated, a direct Supabase query cannot read another user's `user_requests` rows. `pages` and `jobs` are deliberately world-readable — a job id is a non-enumerable UUID v4, and the point of the product is that the `llms.txt` output is shareable.
+
+### Headers
+
+`next.config.ts` sets on every response:
+
+- **Content-Security-Policy** — `default-src 'self'`, `script-src 'self' 'unsafe-inline' 'unsafe-eval'` (required for Next.js's RSC bootstrap and HMR — documented trade-off in the file's comment), `style-src 'self' 'unsafe-inline'`, `img-src 'self' data: blob: https:`, `font-src 'self' data: https://fonts.gstatic.com`, `connect-src 'self' https://*.supabase.co wss://*.supabase.co`, `frame-ancestors 'self'`, `form-action 'self'`, `base-uri 'self'`, `object-src 'none'`.
+- `X-Frame-Options: SAMEORIGIN`
+- `X-Content-Type-Options: nosniff`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()`
+
+### Cron authentication
+
+`GET /api/monitor` checks the `Authorization: Bearer <token>` header against `CRON_SECRET` with a timing-safe compare. Vercel Cron sets this header automatically.
+
+### Secret handling
+
+No API key or token ever reaches the log stream. Error messages embedded in job rows are scrubbed before being returned to `/api/p/[id]` — resolved IPs and SSRF-specific detail are stripped so an attacker can't use our error text as a port scanner.
+
+---
+
+## 11. Config Surface
+
+All tunable constants are in `/lib/config.ts`, grouped by domain. This is the single place to change anything that might plausibly be adjusted for business or UX reasons. Values below are current as of this document:
+
+- **`crawler`** — `MAX_PAGES: 25`, `MAX_DEPTH: 2`, `CONCURRENCY: 5`, `POLITENESS_DELAY_MS: 300`, `PAGE_TTL_HOURS: 24`, `URLS_PER_PREFIX_CAP: 5`, `PREFIX_SEGMENT_DEPTH: 2`, `MAX_SITEMAP_URLS: 500`, `SITEMAP_TIMEOUT_MS: 10_000`, `HOMEPAGE_FETCH_TIMEOUT_MS: 8_000`, `RESPONSE_MAX_BYTES: 5 MB`, `MAX_REDIRECTS: 5`, `EXCERPT_MAX_BYTES: 4 KB`, `PIPELINE_BUDGET_MS: 270_000`.
+- **`llm`** — `MODEL: claude-haiku-4-5-20251001`, `ENRICH_BATCH_SIZE: 20`, `RANK_MAX_KEEP: 120`, `RANK_SKIP_BELOW: 10`, `DESCRIPTION_MAX_CHARS: 240`, `SECTION_MAX_CHARS: 30`.
+- **`api`** — `MAX_URL_LENGTH: 2048`, `PAGES_DEFAULT_LIMIT: 20`, `PAGES_MAX_LIMIT: 50`, `DOWNLOAD_MAX_ENTRIES: 500`.
+- **`rateLimit`** — `ANON: { capacity: 3, refillPerSec: 3/3600 }`, `AUTH: { capacity: 10, refillPerSec: 10/3600 }`.
+- **`monitor`** — `STALE_DAYS: 5`, `BATCH_SIZE: 200`, `SAME_HOST_DELAY_MS: 400`.
+- **`ui`** — `POLL_INTERVAL_MS: 1_500`, `MAX_POLL_FAILURES: 5`, `LIVE_MIN_STEP_DWELL_MS: 1_200`, `SIM_STEP_DURATIONS_MS: [1800, 1600, 1400, 1200]`, `MONITOR_STATUS_TICK_MS: 10_000`, `JOB_CACHE_MAX: 30`.
+
+Secrets (Anthropic API key, Supabase service-role key, CRON_SECRET) come from environment variables via `lib/env.ts`'s `requireEnv()` — absent keys fail fast at first use rather than producing misleading runtime errors.
+
+---
+
+## 12. Key Design Decisions & Trade-offs
+
+### Globally-shared `pages` row
+
+*Trade-off:* No per-user customization, no user-scoped exclusions, no private results. *Why:* the product is "generate a valid `llms.txt` for a public website"; there's no meaningful notion of a user-private version. Sharing the row means the same URL crawls once no matter how many users ask for it, and the dashboard is effectively free to render.
+
+### Stateless monitoring
+
+*Trade-off:* No per-user frequency preferences, no webhook delivery, no per-run diff storage. *Why:* the product promise is "your cached result won't drift", not "you'll be notified of every change". A daily sweep with a signature compare is ~30 lines; a full monitor system is a separate product.
+
+### Single pinned LLM model
+
+*Trade-off:* No per-call model selection, no fallback tier. *Why:* Haiku is fast and cheap enough for description writing; a swap is one line in `lib/config.ts`. Anything fancier (Sonnet for the preamble, Haiku for pages) adds complexity without a proven quality delta on this task.
+
+### `waitUntil` for background crawl
+
+*Trade-off:* Crawls share the request's Fluid Compute instance; no durable retry on platform-level failure. *Why:* avoids a queue service (Inngest, Vercel Queues, SQS) for MVP. Vercel's graceful shutdown gives the crawl several seconds to checkpoint if the instance is recycled, and the 270 s pipeline budget stays comfortably under the 300 s function cap. Moving to a durable queue is an isolated refactor when it's needed.
+
+### In-memory rate limiter
+
+*Trade-off:* Per-instance state; a cold start resets the bucket. *Why:* acceptable at current traffic and trivially upgradeable to Redis later. The bucket key (user id or IP) doesn't change with the backend, so the migration is dropping in a different store.
+
+### Public `jobs` reads
+
+*Trade-off:* Anyone with a job id can see a job's status and, if terminal, its result. *Why:* a job id is a non-enumerable UUID, and shareable result URLs are a feature, not a leak. The *history* — which URLs a user has asked for — is still private via RLS on `user_requests`.
+
+### LLM ranks + deterministic thresholds
+
+*Trade-off:* Two systems to tune (LLM importance + hand-weighted signals). *Why:* the LLM has full site context and is much better at "is this the right page to show"; the deterministic signals are much better at "is this page actually parseable and link-worthy". Combining them is more robust than either alone.
+
+### No Puppeteer for non-SPA sites
+
+*Trade-off:* Can't run any JS. *Why:* Puppeteer is 5–20× slower and requires a heavier runtime bundle. The SPA detector (`isSpaHtml`) is conservative: fall through to Puppeteer only if the plain fetch is blocked, the HTML is an empty shell, or framework markers are present.
+
+---
+
+## 13. What's Intentionally Deferred
+
+The following are out of scope for the current implementation. Each is plausible for a V2, but none are required for the MVP promise.
+
+- **User-editable overrides.** No override versioning, no persistent per-user edits to the generated file, no merge policy on re-crawl. Users who want custom output copy the result and edit it locally.
+- **Update delivery.** No webhook HMAC, no email notifications, no hosted-file endpoint at `/files/:id/llms.txt`. Users are expected to host their own `/llms.txt`.
+- **Locale policy controls.** The crawler treats alternate-locale URLs like any other URL; the LLM tends to filter them naturally via the ranking step. Surface controls (prefer x-default, target one locale) would go in `crawler.ts` config.
+- **Crawl-delay enforcement.** `robots.txt` disallows are honored; `Crawl-delay` values are read but not enforced beyond the global `POLITENESS_DELAY_MS`.
+- **Per-domain global throttle.** No cross-job coordination, so a popular URL burst could send 5 concurrent workers at the same target. Mitigated in practice by the 24-hour cache hit on repeat requests.
+- **Test suite.** No unit, integration, or snapshot tests are wired up. This is the first thing to add if the project moves beyond a take-home demo.
+
+---
+
+## 14. Repository Layout
+
+```
+/app
+  page.tsx                           landing
+  layout.tsx                         root RSC shell
+  NavAuth.tsx                        header auth component
+  /api
+    /p/route.ts                      POST: kick off / return-cached
+    /p/[id]/route.ts                 GET:  poll job
+    /p/request/route.ts              DELETE: remove from history
+    /pages/route.ts                  GET:  paginated history
+    /pages/download/route.ts         GET:  zip export
+    /monitor/route.ts                GET:  cron handler
+  /auth/callback/route.ts            OAuth return
+  /login/page.tsx                    OAuth picker
+  /dashboard
+    page.tsx                         server-rendered initial list
+    PageList.tsx                     infinite-scroll client
+    JobActions.tsx                   delete + confirm
+    MonitorStatus.tsx                "Refreshed X ago"
+    SignOutButton.tsx
+  /p/[id]
+    page.tsx                         result viewer (polling)
+    ProgressPane.tsx                 live crawl animation
+    ResultPane.tsx                   markdown render + copy/download
+    types.ts                         ApiJob
+    useVisibleStatus.ts              status display state machine
+  /components/ConfirmDialog.tsx
+
+/lib
+  config.ts                          all tunable constants
+  env.ts                             requireEnv()
+  log.ts                             debugLog()
+  rateLimit.ts                       token bucket + client IP
+  store.ts                           Supabase queries (service-role)
+  /supabase
+    client.ts                        browser client (anon)
+    server.ts                        server client (service-role)
+  /crawler
+    pipeline.ts                      orchestration
+    types.ts                         ExtractedPage, ScoredPage, CrawlJob, JobStatus
+    ssrf.ts                          assertSafeUrl + forbidden ranges
+    safeFetch.ts                     per-hop redirect validation
+    fetchPage.ts                     main page fetcher
+    robots.ts                        robots.txt parse
+    sitemap.ts                       sitemap fetch + parse
+    spaCrawler.ts                    Puppeteer + SPA detection
+    discover.ts                      link extraction from HTML
+    extract.ts                       metadata extraction + site name
+    markdownProbe.ts                 .md variant probing
+    url.ts                           normalize, capByPathPrefix, skip heuristics
+    urlLabel.ts                      URL → human-ish filename for zip export
+    classify.ts                      page-type classification
+    genre.ts                         site genre detection
+    score.ts                         scoring with LLM importance
+    group.ts                         section assignment + selection
+    llmEnrich.ts                     rankCandidateUrls + enrichBatch + preamble
+    assemble.ts                      final markdown assembly
+    validate.ts                      spec compliance check (run in /p/[id])
+    monitor.ts                       computeSignature + detectChange
+
+/supabase/migration.sql              full schema (pages, jobs, user_requests, RLS)
+
+/middleware.ts                       Supabase SSR session + /dashboard gate
+/next.config.ts                      CSP + security headers
+/vercel.json                         function duration + cron schedule
+/SECURITY.md                         threat model + defenses
 ```
 
-#### ecommerce
-
-```text
-+25 product/pricing
-+15 support/policy
--20 changelog
-```
-
-#### personal_site
-
-```text
-+20 about/project/blog
-+10 other
-```
-
-#### institutional
-
-```text
-+20 program/about
-+15 support/policy
--15 changelog
-```
-
-#### blog_publication
-
-```text
-+20 blog
-+10 about
-+10 support/policy if prominent
-```
-
-#### generic
-
-```text
-no genre-specific adjustment
-```
-
-#### Calibration note
-
-Score thresholds (30 for exclusion, 50 for primary inclusion) and point values above are starting points chosen based on manual testing against a set of reference sites. They will be tuned through broader testing during implementation. The scoring system is designed so that adjusting weights and thresholds is a configuration change, not a structural one.
-
-### 11.4 Inclusion policy
-
-- Max crawl pages configurable, default 150 in full mode
-- Max output entries 60
-- Score `< 30`: excluded
-- Score `30-49`: candidate for `Optional`
-- Score `>= 50`: candidate for primary sections
-- User exclusions always win
-
-#### Blog and publication volume handling
-
-For `blog_publication` and `generic` sites with large numbers of blog posts, inclusion is further filtered. Blog-type pages that pass the score threshold are ranked by a composite of recency (publish date from JSON-LD, meta tags, or URL date patterns), navigation prominence (linked from homepage or main nav vs deep archive), and score. The top N posts are included (default 10, configurable), with the rest excluded. This prevents a 500-post blog from dominating the output.
-
-### 11.5 Deterministic section grouping
-
-#### developer_docs
-
-- `doc` -> `Docs`
-- `api` -> `API`
-- `example` -> `Examples`
-- `changelog` -> `Changelog`
-- `blog` -> `Optional` if included
-- `about` -> `Optional` if included
-
-#### ecommerce
-
-- `product` -> `Products`
-- `pricing` -> `Pricing`
-- `support` -> `Support`
-- `policy` -> `Policies` when high-signal, else `Optional`
-- `blog` -> `Optional` when included
-
-#### personal_site
-
-- `about` -> `About`
-- `project` -> `Projects`
-- `blog` -> `Writing`
-- `other` -> nearest meaningful section by path or topic, or `Optional`
-
-#### institutional
-
-- `program` -> `Programs`
-- `about` -> `About`
-- `support` -> `Contact & Support`
-- `policy` -> `Policies`
-- `news` -> `Optional` when included
-
-#### blog_publication
-
-- `blog` -> `Articles`
-- `about` -> `About`
-- `support` -> `Resources`
-- `policy` -> `Optional`
-
-#### generic
-
-- Group by strongest inferred page family
-- Otherwise group by nearest path or topic cluster
-- Fall back to `Resources`
-
-#### Collapse rules
-
-- Do not emit empty sections
-- Do not emit one-link sections if they can be absorbed cleanly into an adjacent section
-- Render `## Optional` only when optional entries exist
-
 ---
 
-## 12. Deterministic Extraction Rules
+## 15. Callouts and Future Work
 
-### 12.1 Site name extraction
-
-Priority order:
-
-1. `og:site_name`
-2. `application-name`
-3. JSON-LD `Organization` or `WebSite.name`
-4. Normalized homepage title, stripping trailing ` - Home`, ` | Homepage`, and similar suffixes
-5. Homepage h1
-6. Hostname heuristic: capitalize and strip `www.`
-
-### 12.2 Description resolution
-
-Priority order per page:
-
-1. JSON-LD description
-2. og:description
-3. meta description
-4. First sentence of cleaned excerpt
-5. Heading-derived fallback (first meaningful h2)
-6. `none`: no description emitted, page listed as `[title](url)` without `: description`
-
-`description_provenance` stores which source won.
-
----
-
-## 13. LLM Refinement
-
-The model is used narrowly and only after deterministic steps complete.
-
-### 13.1 Inputs
-
-- Site URL
-- Detected genre
-- Site name
-- Homepage excerpt, first ~2000 chars with boilerplate stripped
-- Pages with `description_provenance = none`
-
-For each page needing a description:
-
-- URL
-- Title
-- Headings (first 10)
-- Body excerpt (first ~1000 chars)
-- Assigned section
-
-### 13.2 Tasks
-
-1. Write a 1-2 sentence blockquote summary for the site
-2. Write one-sentence descriptions only for pages missing descriptions
-3. Return structured JSON
-
-### 13.3 What the LLM does not decide
-
-- Site name
-- Scoring
-- Inclusion
-- Optionality
-- Section assignment
-
-### 13.4 Token budget and batching
-
-A single refinement call includes the site context (about 500 tokens) plus per-page context (about 150 tokens each). If the number of description-less pages exceeds 30, pages are batched into groups of 30 with the site context repeated in each batch. Total token budget per job is capped at about 20K input tokens. Pages beyond this cap are listed without descriptions rather than queued for additional LLM calls.
-
-### 13.5 Monitoring interaction
-
-LLM refinement also runs during monitoring **only when needed**:
-
-- If changed or new pages have no extractable description
-- If the homepage content or site-level summary signals materially changed, detected via `content_hash` change on the homepage
-
-Otherwise monitoring re-uses prior deterministic content and skips the LLM call.
-
----
-
-## 14. User Overrides
-
-### 14.1 Override application order
-
-Overrides are applied to the deterministic plus LLM output in this order:
-
-1. Remove excluded URLs
-2. Replace descriptions
-3. Rename sections
-4. Reorder sections
-5. Pin or move pages to sections
-6. Replace intro summary if custom intro exists
-7. Append custom notes
-
-### 14.2 Merge policy on re-runs
-
-#### Page moved
-
-- Detect via canonical change or redirect
-- Mark old override reference stale
-- Do not silently map it to the new URL
-- Surface replacement candidate in UI
-
-#### Page removed
-
-- Mark stale and show warning
-- Keep old override in history
-
-#### New page added
-
-- Include via normal scoring and grouping
-- Show `new since last edit` badge
-
-#### Rollback
-
-- Users can restore any of the last 5 override versions
-- Restoring creates a new current version referencing the chosen snapshot
-
----
-
-## 15. Monitoring System
-
-### 15.1 Setup
-
-Users can enable monitoring for a full-mode job with:
-
-- Frequency: daily, weekly, or monthly
-- Notification email
-- Optional webhook URL
-- Optional generated webhook signing secret, shown once at creation and stored encrypted at rest
-
-A stable hosted file is always provisioned at `/files/{monitor_id}/llms.txt`.
-
-### 15.2 Phase 1: lightweight checks
-
-For each tracked page:
-
-1. HEAD request
-2. Compare ETag when available
-3. Compare Last-Modified when available
-4. Compare sitemap `lastmod` when available
-5. If HEAD is unreliable (no ETag or Last-Modified, or server returns 200 for everything), do lightweight GET and compare **probe hash** to stored `probe_hash`
-
-If nothing changed, record `no_change` and stop.
-
-### 15.3 Phase 2: targeted re-crawl
-
-If any page changed, was added, or disappeared:
-
-- Fully re-fetch only impacted pages
-- Recompute `content_hash` and `probe_hash`
-- Re-score and re-group affected inclusion set
-- Run LLM refinement only if needed (see section 13.5)
-- Apply current override version
-- Assemble new file
-- Compute diff and store monitor run
-
-### 15.4 Periodic full reconciliation
-
-Every 7 monitor cycles:
-
-- Re-fetch `robots.txt`
-- Re-fetch sitemaps and sitemap indexes
-- Rediscover candidate URLs via homepage and navigation crawl
-- Detect removed and newly eligible pages
-- Rebuild inclusion set from scratch
-- Re-run grouping and refinement as needed
-
-This catches structural drift that page-level checks miss.
-
----
-
-## 16. Real Update Delivery Paths
-
-### 16.1 Option A: reverse proxy or rewrite (preferred)
-
-Preferred because the file is served from the user's own `/llms.txt` path with a 200 response.
-
-#### Nginx example
-
-```nginx
-location = /llms.txt {
-    proxy_pass https://app.domain.com/files/{monitor_id}/llms.txt;
-    proxy_set_header Host app.domain.com;
-    add_header Content-Type text/plain;
-}
-```
-
-#### Next.js rewrite example
-
-```js
-rewrites: async () => [{
-  source: '/llms.txt',
-  destination: 'https://app.domain.com/files/{monitor_id}/llms.txt',
-}]
-```
-
-### 16.2 Option B: webhook push
-
-On change, send signed JSON payload:
-
-```json
-{
-  "url": "https://their-site.com",
-  "updated_at": "2026-04-17T03:02:00Z",
-  "content": "# Site Name\n\n> ...",
-  "changes": {
-    "added": [],
-    "removed": [],
-    "modified": []
-  },
-  "delivery_id": "uuid"
-}
-```
-
-### 16.3 Option C: email notification
-
-Diff summary plus download link. Manual redeployment fallback.
-
-### 16.4 Future option
-
-GitHub PR creation can be added later for review-before-publish flows.
-
----
-
-## 17. Frontend Design
-
-### 17.1 Routes
-
-- `/` — landing + preview generation
-- `/dashboard` — saved jobs + monitors
-- `/jobs/[id]` — full job detail
-- `/preview/[id]` — preview result page, backed by preview token
-- `/monitors/[id]` — monitor detail
-- `/files/[id]/llms.txt` — public hosted file
-
-### 17.2 Landing page
-
-- URL input with prominent CTA
-- Immediate preview mode on submit
-- Example output showing a real generated file
-- Lightweight explanation of monitoring and deploy paths
-
-### 17.3 Result view
-
-#### Left panel
-
-- Editable text area or code editor with markdown syntax highlighting
-- Copy and download buttons
-- Spec validation badge (pass or fail with expandable details)
-
-#### Right panel
-
-- Page explorer grouped by detected section
-- Inclusion toggles per page
-- Score badges with breakdown tooltip
-- Provenance badges (source of each description)
-- `.md` badges (indicates markdown variant was found)
-- `Update file from current selection` button
-
-#### Preview mode UI differences
-
-- No monitor panel
-- No saved override history
-- CTA to sign in and re-run as a full job with expanded crawl budget
-
-### 17.4 Monitor detail
-
-- Run history with status and duration
-- Diff summaries per run
-- Stale override warnings
-- Last full reconciliation timestamp
-- Delivery status for webhook and email, backed by `delivery_attempts`
-
----
-
-## 18. Validation
-
-Validation runs on every assembled file before it is stored.
-
-### Checks
-
-- Exactly one H1 at the top of the file
-- Blockquote summary immediately follows H1 when present (not required for spec validity; see section 3 graceful degradation)
-- No headings of any level (H2-H6) in the preamble section between the blockquote and the first file-list H2
-- All section delimiters are H2; no H3+ headings anywhere in the generated output
-- Every H2 section contains at least one markdown list entry in the format `- [name](url)` or `- [name](url): description`
-- `## Optional` section present only when it contains entries
-- No empty sections
-- All links are valid absolute URLs with `http://` or `https://` scheme
-- No duplicate URLs across sections
-
-Validation errors are shown inline in the UI with line numbers and descriptions.
-
----
-
-## 19. Observability
-
-### MVP metrics
-
-The system tracks a small set of operational metrics from day one to support debugging crawl quality and monitoring health:
-
-- Jobs by status (complete, partial, failed) and by mode (preview vs full)
-- Average crawl duration by genre
-- Pages discovered vs pages successfully crawled per job
-- LLM refinement rate and average token usage
-- Monitor no-change rate vs update rate
-- Delivery success rate by channel, tracked via `delivery_attempts`
-
-### Structured logs
-
-Every job and monitor run logs: job or monitor id, mode, target domain, detected genre, page counts (discovered, crawled, skipped, failed), whether LLM refinement ran, whether Browserless was used, and delivery outcomes. Logs redact all token and secret material.
-
-### Post-launch additions
-
-Detailed per-genre scoring distribution analysis, Browserless fallback rate trends, and per-domain crawl success rates can be added once there is enough usage data to make them actionable.
-
----
-
-## 20. Testing Strategy
-
-### Unit tests
-
-- URL normalization: tracking param stripping, slash normalization, canonical dedup
-- Scoring logic: base scoring, genre modifiers, threshold application
-- Section grouping: page type to section mapping, collapse rules, Optional placement
-- File assembly: spec-compliant markdown output, edge cases like no blockquote or single section
-- Override application: each override type in isolation and combined
-- Validation: positive and negative cases for every check
-- SSRF validation: private IP ranges, redirect chains, DNS rebinding scenarios
-- `robots.txt` parsing: user-agent precedence and crawl-delay behavior
-- Webhook signing: signature generation, verification, replay-window rejection
-
-### Integration tests
-
-- End-to-end crawl against a set of local fixture sites (static HTML served by a test server) covering each genre
-- Preview flow: create, poll, complete, download
-- Override flow: generate, apply overrides, re-assemble, verify merge
-- Monitor flow: initial crawl, simulate page change, verify targeted re-crawl and diff
-- Crawl-delay handling: site declares high crawl delay, verify preview refusal and full-mode cap behavior
-
-### Snapshot tests
-
-- Golden-file tests comparing generated `llms.txt` output against expected output for each fixture site
-- Catch unintended regressions in scoring, grouping, or formatting changes
-
-### Manual QA reference sites
-
-- Developer docs: a Next.js or Python library docs site
-- E-commerce: a Shopify storefront
-- Blog: a WordPress or Ghost blog with 50+ posts
-- Personal: a simple portfolio site
-- Institutional: a university department or nonprofit
-
----
-
-## 21. Phased Scope
-
-### MVP
-
-- Preview mode and full mode
-- Deterministic crawl, score, and group pipeline
-- `.md` probing
-- Limited LLM refinement
-- Override snapshots and rollback
-- Incremental monitoring plus full reconciliation
-- Stable URL, webhook, and email delivery paths
-- Security hardening and validation
-- Core test suite: unit, integration, and snapshots
-- Basic observability and delivery tracking
-
-### V2
-
-- GitHub PR delivery option
-- Field-level diffs
-- Public opt-in gallery
-- Per-job advanced scoring customization
-
-### V3
-
-- Organization and team accounts
-- API keys
-- Advanced delivery logs and retry controls
-
----
-
-## 22. Key Trade-offs
-
-### Deterministic structure vs LLM structure
-
-Deterministic structure is less flexible but more explainable, cheaper, and safer against hallucination. An LLM-driven pipeline could produce more creative section names or smarter grouping, but would be harder to debug, more expensive per run, and vulnerable to inconsistent output across runs.
-
-### Preview persistence
-
-Ephemeral preview storage adds complexity (separate tables, TTL cleanup), but it resolves the async polling problem without forcing signup. The alternative, synchronous generation, does not work for sites that take 30+ seconds to crawl.
-
-### Probe hash + content hash
-
-Maintaining two hashes adds schema complexity, but it makes incremental monitoring correct. `probe_hash` covers the lightweight check representation while `content_hash` covers the fully extracted text. Without both, monitoring would either miss changes (if comparing only lightweight data) or require full re-extraction on every check (expensive).
-
-### Genre detection
-
-Genre-aware scoring adds one more step, but improves quality across non-docs sites significantly. Without it, an e-commerce site's product pages would be scored the same as a developer docs site's product pages.
-
-### Stable URL vs direct repo writes
-
-Reverse proxy or rewrite is lower-friction than asking for repo access, while still allowing the user to serve a current file at `/llms.txt`. Repo write-back is deferred to V2 because it requires OAuth scopes, branch management, and conflict resolution.
-
-### Re-run on preview-to-full conversion
-
-Re-running the crawl rather than migrating preview data wastes the preview crawl results, but gives the user a strictly better result (more pages, higher budget) and avoids complex data migration between tables with different ownership semantics.
-
----
-
-## 23. Open Questions
-
-1. Is Sonnet needed for both summary and gap-filling, or should a cheaper model (such as Haiku) handle one-sentence page descriptions while Sonnet handles the site summary?
-2. Should the product expose genre override controls in MVP, or only surface the detected genre and keep it automatic?
-3. At what usage level does self-hosted Playwright become preferable to the Browserless.io API for cost and latency?
+- **Concurrent cache-miss race.** `POST /api/p` checks `getActiveJobForUrl` (route.ts:88) and attaches to an in-progress job if one exists, which handles sequential duplicates. But there's no DB-level lock or unique constraint between that check and `createJob` on line 100 — two truly simultaneous requests for the same uncached URL can both pass the check and both fire `runCrawlPipeline`, duplicating LLM/crawl spend. The failure mode is benign (the second pipeline's `pages` upsert harmlessly overwrites the first; user sees one result) so it's deferred for the MVP. Fix: partial unique index on `(url)` for active jobs with `ON CONFLICT DO NOTHING`, or a `SELECT ... FOR UPDATE` around the check/insert.

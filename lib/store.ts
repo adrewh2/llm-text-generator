@@ -301,15 +301,15 @@ export async function getUserPages(
     .select("url, site_name, genre, monitored, last_checked_at")
     .in("url", pageUrls)
 
-  // Fetch latest job per page_url. Only consider terminal jobs —
-  // user_requests rows are only created on completion, so every URL in
-  // the dashboard has at least one. A re-crawl in progress (monitor
-  // tick) still links to the last completed result.
+  // Fetch the latest job per page_url regardless of status. A row can
+  // land on the dashboard before any of its jobs is terminal (POST
+  // /api/p upserts user_requests on every branch), and a monitor-
+  // triggered re-crawl should surface as "Refreshing…" against the
+  // running job — both need the non-terminal status to reach the UI.
   const { data: jobs } = await supabase
     .from("jobs")
     .select("id, page_url, status, created_at")
     .in("page_url", pageUrls)
-    .in("status", ["complete", "partial"])
     .order("created_at", { ascending: false })
 
   const pageMap = new Map((pages ?? []).map((p) => [p.url, p]))

@@ -64,15 +64,15 @@ An unauthenticated HTTP client can POST any URL to `/api/p` and trigger up to 25
 
 On denial the endpoint returns `429 Too Many Requests` with a `Retry-After` header.
 
-Upper-bound inputs are also limited independently:
+Upper-bound inputs are also limited independently. All constants live in `lib/config.ts`:
 
-- `MAX_URL_LENGTH = 2048` in `POST /api/p` (rejects a pathological 10 KB URL before any parsing / probing).
-- `MAX_PAGES = 25`, `MAX_DEPTH = 2`, `CONCURRENCY = 5` in `lib/crawler/config.ts` (caps the crawler itself).
-- `MAX_SITEMAP_URLS = 500` in `lib/crawler/sitemap.ts` (cap on sitemap parsing).
-- `MAX_SIZE = 5 MB` per individual page fetch in `lib/crawler/fetchPage.ts`.
-- `PIPELINE_TIME_BUDGET_MS = 270_000` in `lib/crawler/pipeline.ts` — `Promise.race` against a 270-second timer, then fail the job cleanly.
-- `MAX_DOWNLOAD_ENTRIES = 500` on the zip endpoint in `app/api/pages/download/route.ts` — prevents `getUserPageResults` from loading a user's entire history into function memory.
-- `MONITOR_BATCH_SIZE = 200` in `app/api/monitor/route.ts` — the cron pages through monitored URLs oldest-first instead of loading them all.
+- `api.MAX_URL_LENGTH = 2048` — rejected at the top of `POST /api/p` before any parsing / probing.
+- `crawler.MAX_PAGES = 25`, `crawler.MAX_DEPTH = 2`, `crawler.CONCURRENCY = 5` — cap the crawler itself.
+- `crawler.MAX_SITEMAP_URLS = 500` (enforced in `lib/crawler/sitemap.ts`) — cap on sitemap parsing.
+- `crawler.RESPONSE_MAX_BYTES = 5 MB` (enforced in `lib/crawler/fetchPage.ts`) — per individual page fetch.
+- `crawler.PIPELINE_BUDGET_MS = 270_000` (enforced in `lib/crawler/pipeline.ts`) — `Promise.race` against a 270-second timer, then fail the job cleanly.
+- `api.DOWNLOAD_MAX_ENTRIES = 500` on the zip endpoint in `app/api/pages/download/route.ts` — prevents `getUserPageResults` from loading a user's entire history into function memory.
+- `monitor.BATCH_SIZE = 200` in `app/api/monitor/route.ts` — the cron pages through monitored URLs oldest-first instead of loading them all.
 
 ### Known gap
 
@@ -222,8 +222,9 @@ Prompts + crawled content are sent to Anthropic under their default data retenti
 
 Listed in case a reviewer wonders:
 
-- **No webhook delivery** (mentioned in `DESIGN.md`). Outbound webhook signing, HMAC verification, retry/backoff — all out of scope.
-- **No per-domain politeness token bucket** across all users (`DESIGN.md` §7.2). We do have a per-host delay in the monitor cron and a per-job politeness delay, but not a global-across-all-users cap.
+- **No webhook delivery** (mentioned in `design.md` §13). Outbound webhook signing, HMAC verification, retry/backoff — all out of scope.
+- **No per-domain politeness token bucket** across all users (`design.md` §13). We do have a per-host delay in the monitor cron and a per-job politeness delay, but not a global-across-all-users cap.
+- **No concurrent cache-miss de-duplication** (`design.md` §15). `POST /api/p` attaches to any in-progress job for the same URL, but a TOCTOU race between the check and `createJob` means two truly simultaneous requests can each trigger a full crawl. Benign (second write harmlessly overwrites the first) — deferred.
 - **No structured audit log** of auth events or rate-limit denials.
 - **No CAPTCHA** on the landing page.
 - **No IP allowlist / blocklist** on our own API surface.

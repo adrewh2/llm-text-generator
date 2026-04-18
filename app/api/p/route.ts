@@ -88,17 +88,15 @@ export async function POST(req: NextRequest) {
   const active = await getActiveJobForUrl(canonicalUrl)
   if (active) {
     await bumpPageRequest(canonicalUrl)
+    if (user) await upsertUserRequest(user.id, canonicalUrl)
     return NextResponse.json({ page_id: active.jobId, cached: false }, { status: 200 })
   }
 
-  // Stale or new — run a fresh crawl. The user_request row is created
-  // by GET /api/p/[id] once the job completes and the user views it —
-  // this is intentional: forcing the user to wait on /p/[id] through
-  // to completion gates each submission against their own attention,
-  // which acts as a lightweight rate limit.
+  // Stale or new — run a fresh crawl.
   const id = randomUUID()
   await createJob(id, canonicalUrl)
   await bumpPageRequest(canonicalUrl)
+  if (user) await upsertUserRequest(user.id, canonicalUrl)
   waitUntil(runCrawlPipeline(id, canonicalUrl))
 
   return NextResponse.json({ page_id: id, cached: false }, { status: 201 })

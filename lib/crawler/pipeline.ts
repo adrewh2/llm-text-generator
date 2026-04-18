@@ -1,12 +1,12 @@
 import { fetchRobots, isAllowed, hasFullDisallow } from "./robots"
 import { fetchSitemapUrls } from "./sitemap"
 import { fetchPage } from "./fetchPage"
-import { extractMetadata, extractSiteName } from "./extract"
+import { extractMetadata, extractSiteName, extractSiteNameCandidates } from "./extract"
 import { probeMarkdown } from "./markdownProbe"
 import { extractLinksFromHtml } from "./discover"
 import { isSpaHtml, SpaBrowser } from "./spaCrawler"
 import { scorePages } from "./score"
-import { llmEnrichPages, generateSitePreamble, rankCandidateUrls } from "./llmEnrich"
+import { llmEnrichPages, generateSitePreamble, rankCandidateUrls, llmSiteName } from "./llmEnrich"
 import { assignSections, filterAndSelectPages } from "./group"
 import { assembleFile } from "./assemble"
 import { detectGenre } from "./genre"
@@ -238,9 +238,18 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
 
     await Promise.all(Array.from({ length: needsBrowser ? 1 : CONCURRENCY }, () => worker()))
 
-    // Detect genre + site name
+    // Detect genre + site name. The deterministic extractor gives us
+    // a cheap best-guess; the LLM then picks the actual brand out of
+    // all the raw candidates (og:site_name, title, h1, JSON-LD) —
+    // otherwise we end up storing things like
+    // "Uber Eats | Food & Grocery Delivery | Order Groceries…" or a
+    // cheerio-concatenated nav-icon mess as the dashboard label. If
+    // the LLM is unavailable the deterministic guess is returned as-is.
+    const hostname = new URL(baseUrl).hostname
     const genre = detectGenre(homepageHtml, [...discoveredUrls])
-    const siteName = extractSiteName(homepageHtml, new URL(baseUrl).hostname)
+    const deterministicName = extractSiteName(homepageHtml, hostname)
+    const nameCandidates = extractSiteNameCandidates(homepageHtml, hostname)
+    const siteName = await llmSiteName(nameCandidates, hostname, deterministicName)
 
     // Strip pages whose description exactly matches the generic homepage tagline
     const homepageDesc = homepageMeta.description?.trim()

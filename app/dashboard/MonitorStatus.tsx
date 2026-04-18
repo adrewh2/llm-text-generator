@@ -8,9 +8,11 @@ import { ui } from "@/lib/config"
 interface Props {
   monitored: boolean
   lastCheckedAt: Date | null
+  /** True when a job for this page is currently in a non-terminal state. */
+  running: boolean
 }
 
-export default function MonitorStatus({ monitored, lastCheckedAt }: Props) {
+export default function MonitorStatus({ monitored, lastCheckedAt, running }: Props) {
   // Re-render every 10s so formatDistanceToNowStrict re-evaluates
   // against the fresh clock — short enough that "5 seconds ago"
   // updates smoothly within the first minute, cheap enough that it's
@@ -23,7 +25,9 @@ export default function MonitorStatus({ monitored, lastCheckedAt }: Props) {
   }, [lastCheckedAt])
 
   if (!monitored) return null
-  const label = lastCheckedAt
+  const label = running
+    ? "Refreshing…"
+    : lastCheckedAt
     ? `Refreshed ${formatDistanceToNowStrict(lastCheckedAt, { addSuffix: true })}`
     : "Awaiting refresh"
   return (

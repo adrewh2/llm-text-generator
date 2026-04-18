@@ -84,6 +84,13 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
         {pages.map((page) => {
           const href = page.latestJobId ? `/p/${page.latestJobId}` : "/"
           const hostname = (() => { try { return new URL(page.pageUrl).hostname } catch { return page.pageUrl } })()
+          // A job is "running" when it exists but hasn't reached any
+          // terminal state. That drives both the "Refreshing…" label
+          // and the absence of a Failed badge (a re-crawl should clear
+          // the prior failure indicator while it's still in flight).
+          const running =
+            page.latestJobStatus !== null &&
+            !["complete", "partial", "failed"].includes(page.latestJobStatus)
           // The row is a positioned container so the Link covers the
           // entire clickable area (prefetch, right-click-open-new-tab,
           // middle-click all work) while the trash <button> sits as
@@ -113,6 +120,7 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
                   <MonitorStatus
                     monitored={page.monitored}
                     lastCheckedAt={page.lastCheckedAt ? new Date(page.lastCheckedAt) : null}
+                    running={running}
                   />
                   {/* Spacer reserves the width the trash button takes
                       so the chevron doesn't jump when it appears. */}
