@@ -31,7 +31,7 @@ Paste a URL, the app discovers pages (sitemap → robots → link-following, wit
 **Monitoring**
 - Every generated page is monitored by default — the dashboard shows a passive "Checked X ago" status
 - Two refresh paths:
-  - **Hourly cron** — Vercel Cron computes a signature over each monitored site's sitemap + homepage; on mismatch, a full re-crawl is dispatched and `pages.result` is refreshed
+  - **Daily cron** — Vercel Cron (midnight UTC) computes a signature over each monitored site's sitemap + homepage; on mismatch, a full re-crawl is dispatched and `pages.result` is refreshed. The daily cadence is the Hobby-plan ceiling; the cron-schedule string in `vercel.json` can be tightened to hourly (`0 * * * *`) on a Pro plan.
   - **Request-driven TTL** — when anyone requests a URL whose cached result is older than 24h (`PAGE_TTL_HOURS` in `lib/crawler/config.ts`), a fresh crawl is triggered on the spot. The old `pages.result` is preserved until the new one completes, so no request is ever served an empty result.
 - Cron also sweeps: pages not requested in the last 5 days are quietly un-monitored
 - Detection (inline) and re-crawl fan-out (`waitUntil` today) are separated so a durable queue (Vercel Queues / Inngest) can drop in at the fan-out boundary later — see `app/api/monitor/route.ts`
@@ -64,7 +64,7 @@ The full schema (tables, RLS, policies) is in [`supabase/migration.sql`](./supab
 
 ### Running the monitor cron locally
 
-[Vercel Cron](https://vercel.com/docs/cron-jobs) only fires on production deployments, so on `localhost` the scheduled hourly check never runs — `pages.last_checked_at` only advances when a crawl completes (which stamps it) or when you hit the endpoint manually:
+[Vercel Cron](https://vercel.com/docs/cron-jobs) only fires on production deployments, so on `localhost` the scheduled daily check never runs — `pages.last_checked_at` only advances when a crawl completes (which stamps it) or when you hit the endpoint manually:
 
 ```bash
 source .env
