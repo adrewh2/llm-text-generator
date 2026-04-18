@@ -266,7 +266,7 @@ export default function LandingPage() {
             {[
               { icon: Globe, step: "01", title: "Crawl", desc: "We traverse the site via sitemap.xml, robots.txt, and link discovery — respecting robots.txt rules and prioritizing high-value pages like docs and API references." },
               { icon: Zap, step: "02", title: "Enrich", desc: "An LLM classifies each page, assigns it to a meaningful section, scores its importance, and writes a concise description — all tuned to the site's domain." },
-              { icon: CheckCircle, step: "03", title: "Generate", desc: "A spec-compliant llms.txt is assembled with a generated preamble, importance-ordered sections, and an Optional section for supplementary pages. Edit, validate, and download." },
+              { icon: CheckCircle, step: "03", title: "Generate", desc: "A spec-compliant llms.txt is assembled with a generated preamble, importance-ordered sections, and an Optional section for supplementary pages." },
             ].map(({ icon: Icon, step, title, desc }) => (
               <div key={step} className="group">
                 <div className="text-[10px] font-mono text-zinc-300 mb-4 tracking-widest">{step}</div>
@@ -285,7 +285,7 @@ export default function LandingPage() {
             <div>
               <h4 className="font-semibold text-zinc-900 text-sm mb-1">Works for any website</h4>
               <p className="text-sm text-zinc-500 leading-relaxed">
-                Our LLM reads each site and adapts to its domain — section names, descriptions, and page selection all shift depending on whether it&apos;s a recipe blog, a law firm, or a SaaS product. The output is always a spec-compliant llms.txt. Learn more about the llms.txt spec{" "}
+                The output is always a spec-compliant llms.txt. Learn more about the llms.txt spec{" "}
                 <a
                   href="https://llmstxt.org"
                   target="_blank"

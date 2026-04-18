@@ -187,7 +187,6 @@ function PageViewInner() {
   // so this is belt-and-suspenders.
   const result = showResult ? job?.result : undefined
   const validation = result ? validateLlmsTxt(result) : null
-  const genre = showResult ? job?.genre : undefined
 
   return (
     <div className="h-screen font-sans bg-white flex flex-col">
@@ -208,7 +207,6 @@ function PageViewInner() {
             <>
               <span className="text-zinc-300 hidden sm:block">·</span>
               <span className="text-xs text-zinc-400 font-mono hidden sm:block shrink-0">{crawledCount} pages</span>
-              {genre && <span className="text-xs text-zinc-400 font-mono hidden md:block shrink-0">· {genre.replace(/_/g, " ")}</span>}
               {validation && (
                 <span className={`flex items-center gap-1.5 ml-1 text-xs font-medium px-2.5 py-1 rounded-full ring-1 shrink-0 ${
                   validation.valid
