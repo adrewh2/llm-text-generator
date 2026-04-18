@@ -78,6 +78,21 @@ export const crawler = {
 export const llm = {
   /** Single model pin — upgrade is a one-line swap. */
   MODEL: "claude-haiku-4-5-20251001" as const,
+  /**
+   * Retries per LLM call, passed through to the Anthropic SDK. The
+   * SDK retries 408 / 429 / 5xx with exponential backoff + honours
+   * `retry-after` / `x-should-retry` headers — exactly what we need
+   * for Claude's rate-limit behaviour. Default SDK value is 2; 5
+   * gives us ~30 s of total backoff across a bursty minute, still
+   * well within the pipeline budget.
+   */
+  MAX_RETRIES: 5,
+  /**
+   * Hard per-call timeout. A hung LLM request can otherwise eat the
+   * whole 270 s pipeline budget; 60 s plus retries still leaves ~4
+   * minutes for the rest of the crawl.
+   */
+  CALL_TIMEOUT_MS: 60_000,
   /** Pages per request to enrichBatch. */
   ENRICH_BATCH_SIZE: 20,
   /** Max URLs rankCandidateUrls returns. */

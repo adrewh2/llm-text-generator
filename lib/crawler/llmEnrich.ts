@@ -4,7 +4,7 @@ import { SECTION_HINTS, llm } from "../config"
 import { debugLog } from "../log"
 import { cleanSiteName } from "./siteName"
 
-const { MODEL, ENRICH_BATCH_SIZE, RANK_MAX_KEEP, RANK_SKIP_BELOW, DESCRIPTION_MAX_CHARS, SECTION_MAX_CHARS } = llm
+const { MODEL, ENRICH_BATCH_SIZE, RANK_MAX_KEEP, RANK_SKIP_BELOW, DESCRIPTION_MAX_CHARS, SECTION_MAX_CHARS, MAX_RETRIES, CALL_TIMEOUT_MS } = llm
 
 interface EnrichedData {
   pageType: PageType
@@ -61,7 +61,18 @@ function sanitizeDescription(raw: unknown, original: string | undefined): string
 
 function getClient(): Anthropic | null {
   const apiKey = process.env.ANTHROPIC_API_KEY
-  return apiKey ? new Anthropic({ apiKey }) : null
+  if (!apiKey) return null
+  // The Anthropic SDK has a built-in retry wrapper: it retries 408 /
+  // 429 / 5xx with exponential backoff and honours the `retry-after`
+  // + `x-should-retry` response headers. We just bump the defaults
+  // — 2 retries isn't enough to ride out a bursty minute, 5 gives
+  // us ~30 s of total backoff. The per-call timeout stops a hung
+  // request from eating the pipeline budget.
+  return new Anthropic({
+    apiKey,
+    maxRetries: MAX_RETRIES,
+    timeout: CALL_TIMEOUT_MS,
+  })
 }
 
 export async function llmEnrichPages(
