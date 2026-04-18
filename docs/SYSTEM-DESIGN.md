@@ -149,7 +149,8 @@ sequenceDiagram
 | Full narrative design (data model, pipeline steps, trade-offs) | [`DESIGN.md`](./DESIGN.md) |
 | Threat model + controls | [`SECURITY.md`](./SECURITY.md) |
 | Phase-2 scaling work (shipped + planned) | [`SCALING.md`](./SCALING.md) |
-| Theoretical throughput, ceiling math, observability | [`PERFORMANCE.md`](./PERFORMANCE.md) |
+| Theoretical throughput, ceiling math | [`PERFORMANCE.md`](./PERFORMANCE.md) |
+| Error tracking + log visibility (Sentry + Vercel logs) | [`OBSERVABILITY.md`](./OBSERVABILITY.md) |
 | Manual test playbook | [`TESTING.md`](./TESTING.md) |
 
 ---

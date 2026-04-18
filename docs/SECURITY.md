@@ -213,16 +213,18 @@ The only notable supply-chain surface is `puppeteer` + `@sparticuz/chromium` —
 
 ---
 
-## 12. Logging
+## 12. Logging and error tracking
 
 `lib/log.ts` exposes two helpers with different production behavior:
 
 - **`debugLog(context, data)`** — `Error` payloads always emit (via `console.error`); string / object payloads emit only in non-production. Used for the trace logging scattered through the crawler and LLM-enrichment paths where a non-Error fallback is routine.
 - **`errorLog(context, data)`** — always emits via `console.error`, regardless of environment. Used for operational errors that need to be visible in the Vercel logs feed (e.g. per-URL failures inside the monitor cron, where the error surfaces as a composed string).
 
-One call site bypasses `log.ts` deliberately: `lib/rateLimit.ts` writes a `[rateLimit] Upstash call failed, FAILING OPEN: …` line with `console.warn` directly so a Redis misconfig that *silently disables rate limiting* is visible in logs even without Error-level emission.
+Both helpers forward Error payloads to **Sentry** (`Sentry.captureException`) with a `context` tag for grouping. `errorLog` additionally promotes string payloads to `Sentry.captureMessage`. Expected failures (SSRF rejections, bot-challenge pages, `Response too large`, 4xx from target sites, timeouts, pipeline-budget exhaust) are filtered by `ignoreErrors` in `sentry.server.config.ts` so they don't flood the dashboard.
 
-Beyond logs, we do not ship structured telemetry. A production app would wire Sentry or a similar observability hook at every error surface.
+One call site bypasses both on purpose: `lib/rateLimit.ts` writes a `[rateLimit] Upstash call failed, FAILING OPEN: …` line with `console.warn` directly. A Redis misconfig silently disables rate limiting, which is worth seeing in Vercel logs but not worth paging on every transient blip.
+
+Full write-up — Sentry SDK layout, file-by-file role, what's filtered, where to look when something breaks — is in [`OBSERVABILITY.md`](./OBSERVABILITY.md).
 
 Prompts + crawled content are sent to Anthropic under their default data retention policy. We do not opt into Zero Data Retention. For a regulated deployment this would be toggled on via Anthropic's account settings.
 

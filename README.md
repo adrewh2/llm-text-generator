@@ -227,4 +227,5 @@ See [`docs/SECURITY.md`](./docs/SECURITY.md) for the full threat model — SSRF,
 
 - [`docs/DESIGN.md`](./docs/DESIGN.md) — pipeline rationale, crawl strategy, LLM prompt design, tradeoffs
 - [`docs/SECURITY.md`](./docs/SECURITY.md) — threat model and implemented controls
+- [`docs/OBSERVABILITY.md`](./docs/OBSERVABILITY.md) — Sentry wiring, what's filtered, where to look when something breaks
 - [`docs/TESTING.md`](./docs/TESTING.md) — manual test playbook covering golden paths and edge cases
