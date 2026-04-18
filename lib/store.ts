@@ -87,6 +87,12 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
         site_name: updates.siteName ?? job.site_name ?? null,
         genre: updates.genre ?? job.genre ?? null,
         crawled_pages: updates.pages ?? null,
+        // A successful crawl is the strongest possible "check" of a
+        // site's current state — we just fetched it end-to-end. Mark
+        // it as such so the dashboard shows "Checked just now" from
+        // the moment the page is generated, rather than dangling on
+        // "Awaiting check" until the next cron tick.
+        last_checked_at: now,
         updated_at: now,
       }, { onConflict: "url" })
     }

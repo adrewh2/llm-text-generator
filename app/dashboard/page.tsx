@@ -69,7 +69,7 @@ export default async function DashboardPage() {
                       <span className="font-medium text-zinc-900 text-sm truncate">
                         {page.siteName || hostname}
                       </span>
-                      {page.latestJobStatus && page.latestJobStatus !== "complete" && (
+                      {page.latestJobStatus === "failed" && (
                         <StatusBadge status={page.latestJobStatus} />
                       )}
                     </div>

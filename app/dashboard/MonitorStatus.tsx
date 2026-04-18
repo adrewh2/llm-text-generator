@@ -23,15 +23,19 @@ export default function MonitorStatus({ monitored, lastCheckedAt }: Props) {
 
   if (!monitored) return null
   const label = lastCheckedAt
-    ? `Checked ${formatDistanceToNow(lastCheckedAt, { addSuffix: true }).replace("less than a minute ago", "< 1 min ago")}`
+    ? `Checked ${formatDistanceToNow(lastCheckedAt, { addSuffix: true })}`
     : "Awaiting check"
   return (
     <span
       title="We re-check this site's sitemap and homepage every hour and regenerate llms.txt when it changes"
-      className="hidden md:inline-flex items-center gap-1.5 text-xs font-medium text-zinc-600"
+      // Fixed narrow width + justify-start so the Eye icon aligns
+      // vertically across rows but sits close to the trash/chevron on
+      // the right. Truncate so the longest label ("less than a minute
+      // ago") ellipsizes rather than spilling into the next element.
+      className="hidden md:inline-flex w-36 items-center gap-1.5 text-xs font-medium text-zinc-600 overflow-hidden"
     >
-      <Eye size={12} className="text-emerald-500" />
-      {label}
+      <Eye size={12} className="text-emerald-500 shrink-0" />
+      <span className="truncate">{label}</span>
     </span>
   )
 }

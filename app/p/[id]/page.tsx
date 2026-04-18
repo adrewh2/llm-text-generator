@@ -20,15 +20,14 @@ interface ApiJob extends Omit<CrawlJob, "createdAt" | "updatedAt"> {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const STEPS: Array<{ id: JobStatus | "done"; label: string }> = [
+const STEPS: Array<{ id: JobStatus; label: string }> = [
   { id: "crawling",   label: "Crawling pages" },
   { id: "enriching",  label: "Enriching with AI" },
   { id: "scoring",    label: "Scoring & classifying" },
   { id: "assembling", label: "Assembling file" },
-  { id: "complete",   label: "Finalizing" },
 ]
 
-// Simulated step durations (ms) for cached results
+// Simulated step durations (ms) for cached results — one per step.
 const SIM_STEP_DURATIONS = [1800, 1600, 1400, 1200]
 
 // Minimum time each step stays visible during a live crawl, so fast
@@ -49,7 +48,7 @@ function ProgressPane({ job, simulatedStep }: { job: ApiJob; simulatedStep?: num
 
   const getStepStatus = (stepId: string) => {
     if (isSimulated) {
-      const idx: Record<string, number> = { crawling: 0, enriching: 1, scoring: 2, assembling: 3, complete: 4 }
+      const idx: Record<string, number> = { crawling: 0, enriching: 1, scoring: 2, assembling: 3 }
       const si = idx[stepId] ?? 0
       if (simulatedStep > si) return "done"
       if (simulatedStep === si) return "active"
@@ -58,7 +57,7 @@ function ProgressPane({ job, simulatedStep }: { job: ApiJob; simulatedStep?: num
     if (job.status === "failed") return stepId === "crawling" ? "error" : "waiting"
     const order = ["pending", "crawling", "enriching", "scoring", "assembling", "complete", "partial"]
     const ji = order.indexOf(job.status)
-    const si = ({ crawling: 1, enriching: 2, scoring: 3, assembling: 4, complete: 5 } as Record<string, number>)[stepId] ?? 0
+    const si = ({ crawling: 1, enriching: 2, scoring: 3, assembling: 4 } as Record<string, number>)[stepId] ?? 0
     if (ji > si) return "done"
     if (ji === si) return "active"
     return "waiting"
@@ -250,13 +249,12 @@ function PageViewInner() {
     let step = 0
     const advance = () => {
       step++
-      if (step > SIM_STEP_DURATIONS.length) {
+      if (step >= SIM_STEP_DURATIONS.length) {
         setSimulatedStep(null)
         return
       }
-      setSimulatedStep(step) // step === SIM_STEP_DURATIONS.length shows "Complete" as active
-      const delay = step < SIM_STEP_DURATIONS.length ? SIM_STEP_DURATIONS[step] : 3000
-      simTimerRef.current = setTimeout(advance, delay)
+      setSimulatedStep(step)
+      simTimerRef.current = setTimeout(advance, SIM_STEP_DURATIONS[step])
     }
     simTimerRef.current = setTimeout(advance, SIM_STEP_DURATIONS[0])
   }, [])
@@ -380,11 +378,6 @@ function PageViewInner() {
               <span className="text-zinc-300 hidden sm:block">·</span>
               <span className="text-xs text-zinc-400 font-mono hidden sm:block shrink-0">{crawledCount} pages</span>
               {job!.genre && <span className="text-xs text-zinc-400 font-mono hidden md:block shrink-0">· {job!.genre.replace(/_/g, " ")}</span>}
-              {displayJob!.status === "partial" && (
-                <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 text-xs font-medium px-2 py-0.5 rounded-full ring-1 ring-amber-100 shrink-0">
-                  <AlertCircle size={10} /> Partial
-                </span>
-              )}
               {validation && (
                 <span className={`flex items-center gap-1.5 ml-1 text-xs font-medium px-2.5 py-1 rounded-full ring-1 shrink-0 ${
                   validation.valid

@@ -251,7 +251,17 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       : undefined
     const result = assembleFile(siteName, primary, optional, summary, preamble, robotsNotice)
 
-    const status = failed > 0 && failed >= crawled * 0.5 ? "partial" : "complete"
+    // "partial" fires when a meaningful majority of fetch attempts
+    // failed. Use total attempts (not just successes) as the denominator
+    // so small crawls don't trip on a single failure. Require at least
+    // 5 attempts before the rule kicks in — a 2-page site with 1
+    // timeout shouldn't read as "partial".
+    const attempted = crawled + failed
+    const successRate = attempted > 0 ? crawled / attempted : 0
+    const status =
+      crawled === 0                          ? "failed"
+      : attempted >= 5 && successRate < 0.5  ? "partial"
+      : "complete"
 
     await updateJob(jobId, {
       status,
