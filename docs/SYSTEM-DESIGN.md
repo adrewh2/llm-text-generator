@@ -128,6 +128,8 @@ sequenceDiagram
     loop client poll (until terminal status)
         U->>DB: GET /api/p/[id] every 1.5 s
     end
+
+    note over U: After terminal: Vercel's edge CDN serves<br/>repeat polls from Cache-Control; updateJob<br/>revalidates sibling job ids on re-crawl.
 ```
 
 ### Failure modes and retries

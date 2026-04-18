@@ -162,8 +162,9 @@ Every new-crawl request lands here. The route:
 Client polls every `ui.POLL_INTERVAL_MS` (1.5s) until the job is terminal. The route:
 
 - Fetches the `jobs` row and, for terminal statuses, joins on `pages` for `result` and `crawled_pages`.
-- Calls `bumpPageRequest(pageUrl)` on every non-failed status so `pages.last_requested_at` advances even while a user is watching a mid-flight job. This is how active pages stay monitored.
+- Calls `bumpPageRequest(pageUrl)` on every non-failed status so `pages.last_requested_at` advances even while a user is watching a mid-flight job. This is how active pages stay monitored. Terminal responses are CDN-cached (below), so the bump fires once per `s-maxage` window rather than on every poll — still well under the 5-day sweeper threshold.
 - Scrubs the `error` field (removes resolved IPs and SSRF-specific detail from user-facing text).
+- Sets `Cache-Control: public, s-maxage=3600, stale-while-revalidate=86400` on terminal responses so Vercel's edge CDN serves repeat polls without touching Supabase. In-flight responses return `no-store` to keep progress live. Invalidation happens from the write side: when `updateJob` writes a new terminal result, it calls `revalidatePath('/api/p/:id')` for every job id that maps to that URL — required because `getJob` resolves `job.result` through `pages.result` by `page_url`, so a monitor re-crawl changes the JSON for every historical job id sharing the URL.
 
 ### `GET /api/monitor` — daily sweep
 

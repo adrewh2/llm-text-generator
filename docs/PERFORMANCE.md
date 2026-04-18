@@ -126,7 +126,7 @@ In order of what breaks as the numbers above grow:
 2. **JSONB storage pressure on `pages.crawled_pages`.** At ~12 KB per row × 1 M+ pages, this is the dominant cost. Mitigations: (a) drop `bodyExcerpt` from the stored JSONB once the LLM enrichment has consumed it, (b) move `crawled_pages` to a separate table with cold-storage partitioning by date, (c) switch to Supabase Storage for historical snapshots.
 3. **Connection pool saturation.** Supabase Pro's default PgBouncer pool is ~200 concurrent connections. Our server-side code caches one client per Fluid instance, so at the "Large" scenario with ~100 concurrent instances, we're at ~50 % pool utilization — plenty of headroom. Only matters past ~500 concurrent instances.
 4. **Query performance on the `jobs` table at 100 M+ rows.** The existing index `idx_jobs_page_status_created (page_url, status, created_at DESC)` stays fast because it's used with an equality filter on `page_url`. No full scans. Writes stay fast. Vacuum / autovacuum pressure rises but is managed by Supabase.
-5. **Read-heavy traffic on `/p/[id]` polling.** Currently every 1.5 s poll hits Postgres. At Large-scale concurrent-user counts this is the first thing to edge-cache (see §8).
+5. **Read-heavy traffic on `/p/[id]` polling.** Terminal responses are edge-cached on Vercel's CDN (`s-maxage=3600, stale-while-revalidate=86400`) with targeted revalidation via `revalidatePath` on every terminal-result write — see `app/api/p/[id]/route.ts` and `lib/store.ts`. Repeat polls for finished jobs no longer touch Postgres. In-flight polls still read the DB every 1.5 s (bounded by concurrent-user count, not total-URL count).
 
 ### What doesn't get worse with size
 
@@ -195,7 +195,7 @@ Even with unlimited budget:
 ## 8. If we had to scale 10× (in priority order)
 
 1. **Upgrade Anthropic tier.** Tier 1 → Tier 3 is ~50× RPM; the single biggest lever.
-2. **Edge-cache terminal `/p/[id]` responses.** Headers-only change. Drops Postgres reads on the polling path to near-zero for completed crawls.
+2. ~~**Edge-cache terminal `/p/[id]` responses.**~~ *Shipped.* Terminal polls serve from Vercel's CDN; `updateJob` calls `revalidatePath` for every sibling job id when a terminal result is written, so monitor re-crawls invalidate historical job ids immediately. Postgres reads on the polling path drop to near-zero for completed crawls.
 3. **QStash Queues with parallelism cap.** Smooths bursts into Anthropic without retry storms.
 4. **Supabase jobs-table cleanup cron** (delete old `jobs` rows where a newer terminal exists). Keeps DB size bounded.
 5. **Browserless offload for Puppeteer** if SPA-heavy traffic becomes a meaningful share.
