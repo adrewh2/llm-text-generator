@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
+import { revalidatePath } from "next/cache"
 import type { CrawlJob, ScoredPage } from "./crawler/types"
 import { crawler } from "./config"
 import { requireEnv } from "./env"
@@ -123,6 +124,20 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
       if (pagesErr) {
         errorLog("store.updateJob.pages", new Error(`${id}: ${pagesErr.message}`))
         throw new Error(pagesErr.message)
+      }
+
+      // Purge the edge cache for every historical /api/p/:id that
+      // resolves to this URL. getJob() reads pages.result by
+      // page_url, so an old job id's JSON changes the moment the
+      // shared row is rewritten here. Without this, CDN-cached
+      // responses for older jobs would serve yesterday's result
+      // until their s-maxage window expires.
+      const { data: siblings } = await supabase
+        .from("jobs")
+        .select("id")
+        .eq("page_url", job.page_url)
+      for (const s of siblings ?? []) {
+        revalidatePath(`/api/p/${s.id}`)
       }
     }
   }

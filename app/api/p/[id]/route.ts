@@ -24,12 +24,26 @@ export async function GET(
     await bumpPageRequest(job.url)
   }
 
-  return NextResponse.json({
-    ...job,
-    error: job.error ? scrubError(job.error) : undefined,
-    createdAt: job.createdAt.toISOString(),
-    updatedAt: job.updatedAt.toISOString(),
-  })
+  // Terminal job shape is immutable until the monitor cron re-crawls
+  // this URL; at that point updateJob() calls revalidatePath() for
+  // every job id mapping to the URL, so a cached copy is correct
+  // until the next write. stale-while-revalidate is a safety net in
+  // case a revalidation signal is delayed or dropped.
+  const isTerminal =
+    job.status === "complete" || job.status === "partial" || job.status === "failed"
+  const cacheControl = isTerminal
+    ? "public, s-maxage=3600, stale-while-revalidate=86400"
+    : "no-store"
+
+  return NextResponse.json(
+    {
+      ...job,
+      error: job.error ? scrubError(job.error) : undefined,
+      createdAt: job.createdAt.toISOString(),
+      updatedAt: job.updatedAt.toISOString(),
+    },
+    { headers: { "Cache-Control": cacheControl } },
+  )
 }
 
 /**
