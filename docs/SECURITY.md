@@ -230,7 +230,7 @@ Listed in case a reviewer wonders:
 - **No structured audit log** of auth events or rate-limit denials.
 - **No CAPTCHA** on the landing page.
 - **No IP allowlist / blocklist** on our own API surface.
-- **Vercel Sandbox / Queue for crawl execution** — the current architecture runs crawls in-process via `waitUntil`. We've designed the re-crawl dispatch as a clean seam (`dispatchRecrawl()` in `app/api/monitor/route.ts`) so a future Vercel Queue / Inngest migration is a localized change.
+- **~~Vercel Sandbox / Queue for crawl execution~~** — *addressed.* Crawls now publish to Upstash QStash (`lib/jobQueue.ts`) and land at the signed `/api/worker/crawl` route. QStash owns retry-on-failure and at-least-once delivery. In-process `waitUntil` is kept only as a local-dev fallback when `QSTASH_TOKEN` is absent.
 
 ---
 

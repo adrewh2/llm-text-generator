@@ -14,7 +14,6 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { randomUUID, timingSafeEqual } from "crypto"
-import { waitUntil } from "@vercel/functions"
 import {
   createJob,
   getActiveJobForUrl,
@@ -23,7 +22,7 @@ import {
   sweepStaleMonitoredPages,
 } from "@/lib/store"
 import { detectChange } from "@/lib/crawler/monitor"
-import { runCrawlPipeline } from "@/lib/crawler/pipeline"
+import { enqueueCrawl } from "@/lib/jobQueue"
 import { debugLog } from "@/lib/log"
 import { monitor } from "@/lib/config"
 
@@ -85,9 +84,9 @@ export async function GET(req: NextRequest) {
 }
 
 /**
- * Queue-boundary: create a job row and spawn the crawl pipeline.
- * Today this runs in-process via waitUntil. Replacing the body with
- * an enqueue call (Vercel Queues / Inngest) is where scaling goes.
+ * Queue-boundary: create a job row and hand the crawl off via the
+ * shared `enqueueCrawl` helper — QStash in production, in-process
+ * `waitUntil` as a local-dev fallback.
  *
  * Attaches to an in-flight job when one already exists for the URL
  * (prior cron tick still running, or a user submission in the same
@@ -100,7 +99,7 @@ async function dispatchRecrawl(pageUrl: string): Promise<string> {
 
   const jobId = randomUUID()
   await createJob(jobId, pageUrl)
-  waitUntil(runCrawlPipeline(jobId, pageUrl))
+  await enqueueCrawl(jobId, pageUrl)
   return jobId
 }
 
