@@ -1,6 +1,7 @@
 "use client"
 
-import { AlertCircle, CheckCircle2, Circle, Loader2, XCircle } from "lucide-react"
+import Link from "next/link"
+import { AlertCircle, CheckCircle2, Circle, Loader2, Plus, XCircle } from "lucide-react"
 import type { JobStatus } from "@/lib/crawler/types"
 import { MAX_PAGES } from "@/lib/crawler/config"
 import type { ApiJob } from "./types"
@@ -100,21 +101,36 @@ export default function ProgressPane({
           </div>
         )}
 
-        <div className="bg-zinc-50 rounded-xl overflow-hidden border border-zinc-200">
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-zinc-200">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-zinc-500 text-xs font-mono">
-              {isSimulated
-                ? `${domain} · retrieving cached result`
-                : `${job.progress.discovered} URLs discovered · ${job.progress.crawled} crawled`}
-            </span>
-          </div>
-          <div className="h-24 flex items-center justify-center p-4">
-            <p className="text-zinc-400 text-xs font-mono">
-              {bottomLabel(job, simulatedStep, domain)}
+        {!isSimulated && job.status === "failed" ? (
+          <div className="bg-zinc-50 rounded-xl border border-zinc-200 p-5 flex flex-col items-center gap-3">
+            <p className="text-xs text-zinc-500 text-center">
+              Try a different site — most public sites crawl cleanly.
             </p>
+            <Link
+              href="/?focus=1"
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-zinc-700 hover:text-zinc-900 px-3.5 py-2 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-white transition-colors"
+            >
+              <Plus size={14} className="text-zinc-400" />
+              Try another URL
+            </Link>
           </div>
-        </div>
+        ) : (
+          <div className="bg-zinc-50 rounded-xl overflow-hidden border border-zinc-200">
+            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-zinc-200">
+              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-zinc-500 text-xs font-mono">
+                {isSimulated
+                  ? `${domain} · retrieving cached result`
+                  : `${job.progress.discovered} URLs discovered · ${job.progress.crawled} crawled`}
+              </span>
+            </div>
+            <div className="h-24 flex items-center justify-center p-4">
+              <p className="text-zinc-400 text-xs font-mono">
+                {bottomLabel(job, simulatedStep, domain)}
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
