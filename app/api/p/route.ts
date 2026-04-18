@@ -55,18 +55,55 @@ export async function POST(req: NextRequest) {
   // redirect chain; normalizeUrl strips per-request session/OAuth
   // tokens (e.g. Google's dsh/ifkv/osid) so the cache key is stable
   // across resubmissions.
-  let canonicalUrl = url.trim()
-  try {
-    const probe = await safeFetch(canonicalUrl, {
-      method: "HEAD",
-      signal: AbortSignal.timeout(5000),
-    })
-    canonicalUrl = probe.url || canonicalUrl
-  } catch {
-    // Any validation / network failure here is recoverable: fall
-    // through to the original submitted URL. The pipeline's own
-    // assertSafeUrl will reject clearly-malicious URLs before the
-    // first crawl fetch.
+  //
+  // To unify `www.foo.com` and `foo.com`, we probe both forms:
+  // - If they resolve to the same URL, the server expressed a
+  //   preference (e.g. speedtest.net → www.speedtest.net); honor it.
+  // - If they resolve independently, no server preference exists
+  //   (e.g. speedtest.com); strip `www.` as dedup convention.
+  const probe = async (u: string): Promise<string> => {
+    try {
+      const res = await safeFetch(u, {
+        method: "HEAD",
+        signal: AbortSignal.timeout(5000),
+      })
+      return res.url || u
+    } catch {
+      return u
+    }
+  }
+  const altWwwForm = (u: string): string | null => {
+    try {
+      const parsed = new URL(u)
+      parsed.hostname = parsed.hostname.startsWith("www.")
+        ? parsed.hostname.slice(4)
+        : `www.${parsed.hostname}`
+      return parsed.toString()
+    } catch {
+      return null
+    }
+  }
+  const stripWww = (u: string): string => {
+    try {
+      const parsed = new URL(u)
+      parsed.hostname = parsed.hostname.replace(/^www\./, "")
+      return parsed.toString()
+    } catch {
+      return u
+    }
+  }
+
+  const trimmed = url.trim()
+  let canonicalUrl = trimmed
+  const resolvedA = await probe(trimmed)
+  const alt = altWwwForm(trimmed)
+  if (alt) {
+    const resolvedB = await probe(alt)
+    const nA = normalizeUrl(resolvedA) || resolvedA
+    const nB = normalizeUrl(resolvedB) || resolvedB
+    canonicalUrl = nA === nB ? resolvedA : stripWww(resolvedA)
+  } else {
+    canonicalUrl = resolvedA
   }
   canonicalUrl = normalizeUrl(canonicalUrl) || canonicalUrl
 
