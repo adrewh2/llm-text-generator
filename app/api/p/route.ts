@@ -35,20 +35,23 @@ export async function POST(req: NextRequest) {
     canonicalUrl = probe.url || canonicalUrl
   } catch { /* use original */ }
 
-  // Already have a cached result — record user interest and return
-  const cached = await getPageByUrl(canonicalUrl)
-  if (cached) {
+  // Check for an existing result
+  const existing = await getPageByUrl(canonicalUrl)
+
+  if (existing && !existing.isStale) {
+    // Fresh cached result — serve immediately with simulated animation
     if (user) await upsertUserRequest(user.id, canonicalUrl)
-    return NextResponse.json({ page_id: cached.jobId, cached: true }, { status: 200 })
+    return NextResponse.json({ page_id: existing.jobId, cached: true }, { status: 200 })
   }
 
-  // In-progress job for this URL
+  // In-progress job already running for this URL — attach to it
   const active = await getActiveJobForUrl(canonicalUrl)
   if (active) {
     return NextResponse.json({ page_id: active.jobId, cached: false }, { status: 200 })
   }
 
-  // New job
+  // Stale or new — run a fresh crawl
+  // (if stale, the old pages.result is preserved until the new crawl succeeds)
   const id = randomUUID()
   await createJob(id, canonicalUrl)
   waitUntil(runCrawlPipeline(id, canonicalUrl))

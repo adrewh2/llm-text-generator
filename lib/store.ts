@@ -66,8 +66,9 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
 
   await supabase.from("jobs").update(jobRow).eq("id", id)
 
-  // When the result is ready, write the canonical page and record user history
-  if (updates.result !== undefined) {
+  // When the result is ready, write the canonical page — only if non-empty
+  // so a failed re-crawl never wipes out the previous good result
+  if (updates.result !== undefined && updates.result.trim().length > 0) {
     const { data: job } = await supabase
       .from("jobs")
       .select("page_url, site_name, genre")
@@ -89,10 +90,20 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
 
 // ─── Pages ───────────────────────────────────────────────────────────────────
 
-export async function getPageByUrl(url: string): Promise<{ jobId: string } | undefined> {
+const PAGE_TTL_HOURS = 24
+
+export async function getPageByUrl(url: string): Promise<{ jobId: string; isStale: boolean } | undefined> {
   const supabase = getClient()
-  const { data: page } = await supabase.from("pages").select("url").eq("url", url).not("result", "is", null).maybeSingle()
+  const { data: page } = await supabase
+    .from("pages")
+    .select("url, updated_at")
+    .eq("url", url)
+    .not("result", "is", null)
+    .maybeSingle()
   if (!page) return undefined
+
+  const ageHours = (Date.now() - new Date(page.updated_at).getTime()) / 3_600_000
+  const isStale = ageHours >= PAGE_TTL_HOURS
 
   const { data: job } = await supabase
     .from("jobs")
@@ -103,7 +114,7 @@ export async function getPageByUrl(url: string): Promise<{ jobId: string } | und
     .limit(1)
     .single()
 
-  return job ? { jobId: job.id } : undefined
+  return job ? { jobId: job.id, isStale } : undefined
 }
 
 export async function getActiveJobForUrl(url: string): Promise<{ jobId: string } | undefined> {
