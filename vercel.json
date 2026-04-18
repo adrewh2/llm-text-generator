@@ -1,8 +1,16 @@
 {
   "functions": {
-    "app/api/jobs/route.ts": {
-      "maxDuration": 300,
-      "memory": 2048
+    "app/api/p/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/monitor/route.ts": {
+      "maxDuration": 300
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/monitor",
+      "schedule": "0 0 * * *"
+    }
+  ]
 }

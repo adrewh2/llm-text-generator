@@ -34,5 +34,11 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*"],
+  // Run on every non-static request so the Supabase session cookie is
+  // refreshed on API routes too (per Supabase's SSR guidance). Without
+  // this, supabase.auth.getUser() may return null inside POST /api/p
+  // even when the user is signed in.
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js)$).*)",
+  ],
 }

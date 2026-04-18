@@ -7,6 +7,38 @@ export interface FetchResult {
   error?: string
 }
 
+/**
+ * True if the HTML body is a bot-challenge or access-denied page rather
+ * than real content. These show up with 200 status (Cloudflare JS
+ * challenge, for instance), so we can't rely on HTTP codes alone.
+ */
+export function isBlockedByChallenge(html: string): boolean {
+  const lower = html.toLowerCase()
+
+  // Cloudflare challenge markers
+  if (
+    lower.includes("cf-browser-verification") ||
+    lower.includes("cf_chl_opt") ||
+    lower.includes("__cf_chl_") ||
+    (lower.includes("challenge-platform") && lower.includes("cloudflare"))
+  ) return true
+
+  // Title-based detection catches other providers (PerimeterX, Akamai,
+  // DataDome) and generic "checking your browser" interstitials.
+  const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i)
+  const title = titleMatch?.[1]?.trim().toLowerCase() ?? ""
+  if (!title) return false
+  return (
+    /^just a moment\b/.test(title) ||
+    /^attention required/.test(title) ||
+    /^access denied/.test(title) ||
+    /^please wait\b/.test(title) ||
+    /^checking your browser/.test(title) ||
+    /^you have been blocked/.test(title) ||
+    /^please verify/.test(title)
+  )
+}
+
 export async function fetchPage(url: string): Promise<FetchResult> {
   try {
     const res = await fetch(url, {
@@ -18,6 +50,13 @@ export async function fetchPage(url: string): Promise<FetchResult> {
       },
       redirect: "follow",
     })
+
+    // Reject non-2xx responses even when they return HTML — otherwise
+    // an error page (e.g. a 400/404 with a "Bad Request" HTML body) gets
+    // treated as real content and ends up in the llms.txt output.
+    if (!res.ok) {
+      return { ok: false, status: res.status, error: `HTTP ${res.status}` }
+    }
 
     const contentType = res.headers.get("content-type") || ""
     if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) {
@@ -35,6 +74,9 @@ export async function fetchPage(url: string): Promise<FetchResult> {
     }
 
     const html = new TextDecoder().decode(buffer)
+    if (isBlockedByChallenge(html)) {
+      return { ok: false, status: res.status, error: "Bot challenge page" }
+    }
     return { ok: true, status: res.status, html }
   } catch (e: unknown) {
     const err = e as Error

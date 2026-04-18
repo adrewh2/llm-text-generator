@@ -67,10 +67,12 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
   if (updates.siteName !== undefined) jobRow.site_name = updates.siteName
   if (updates.error !== undefined) jobRow.error = updates.error
 
-  await supabase.from("jobs").update(jobRow).eq("id", id)
-
-  // When the result is ready, write the canonical page — only if non-empty
-  // so a failed re-crawl never wipes out the previous good result
+  // When the result is ready, write the canonical page FIRST — only if
+  // non-empty so a failed re-crawl never wipes out the previous good
+  // result. Writing pages before the job status flip means any polling
+  // client that sees status=complete is guaranteed to also see the
+  // result; the previous order occasionally left the client with
+  // status=complete + result=null, tripping validation on empty text.
   if (updates.result !== undefined && updates.result.trim().length > 0) {
     const { data: job } = await supabase
       .from("jobs")
@@ -85,10 +87,18 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
         site_name: updates.siteName ?? job.site_name ?? null,
         genre: updates.genre ?? job.genre ?? null,
         crawled_pages: updates.pages ?? null,
+        // A successful crawl is the strongest possible "check" of a
+        // site's current state — we just fetched it end-to-end. Mark
+        // it as such so the dashboard shows "Checked just now" from
+        // the moment the page is generated, rather than dangling on
+        // "Awaiting check" until the next cron tick.
+        last_checked_at: now,
         updated_at: now,
       }, { onConflict: "url" })
     }
   }
+
+  await supabase.from("jobs").update(jobRow).eq("id", id)
 }
 
 // ─── Pages ───────────────────────────────────────────────────────────────────
@@ -132,6 +142,64 @@ export async function getActiveJobForUrl(url: string): Promise<{ jobId: string }
   return job ? { jobId: job.id } : undefined
 }
 
+// ─── Monitoring ──────────────────────────────────────────────────────────────
+
+export async function getMonitoredPages(): Promise<Array<{
+  url: string
+  contentSignature: string | null
+}>> {
+  const supabase = getClient()
+  const { data } = await supabase
+    .from("pages")
+    .select("url, content_signature")
+    .eq("monitored", true)
+  return (data ?? []).map((p) => ({
+    url: p.url,
+    contentSignature: p.content_signature ?? null,
+  }))
+}
+
+export async function recordMonitorCheck(
+  pageUrl: string,
+  signature: string | null,
+): Promise<void> {
+  const supabase = getClient()
+  const patch: Record<string, unknown> = { last_checked_at: new Date().toISOString() }
+  // Only overwrite the signature when we actually computed one — a null
+  // here means "detection failed this cycle", keep the previous sig so
+  // we can still diff next time.
+  if (signature !== null) patch.content_signature = signature
+  await supabase.from("pages").update(patch).eq("url", pageUrl)
+}
+
+/**
+ * Turn off monitoring on pages not requested in the last N days.
+ * Returns the number of rows affected so the cron can report it.
+ */
+export async function sweepStaleMonitoredPages(staleAfterDays: number): Promise<number> {
+  const supabase = getClient()
+  const cutoff = new Date(Date.now() - staleAfterDays * 86_400_000).toISOString()
+  const { count } = await supabase
+    .from("pages")
+    .update({ monitored: false }, { count: "exact" })
+    .eq("monitored", true)
+    .lt("last_requested_at", cutoff)
+  return count ?? 0
+}
+
+/**
+ * Bump `pages.last_requested_at` — called whenever a user interacts
+ * with a page's URL, so the sweeper can tell dormant URLs from active
+ * ones. No-op if the page doesn't exist yet.
+ */
+export async function bumpPageRequest(pageUrl: string): Promise<void> {
+  const supabase = getClient()
+  await supabase
+    .from("pages")
+    .update({ last_requested_at: new Date().toISOString() })
+    .eq("url", pageUrl)
+}
+
 // ─── User requests ────────────────────────────────────────────────────────────
 
 export async function upsertUserRequest(userId: string, pageUrl: string): Promise<void> {
@@ -147,21 +215,62 @@ export async function removeUserRequest(userId: string, pageUrl: string): Promis
   await supabase.from("user_requests").delete().eq("user_id", userId).eq("page_url", pageUrl)
 }
 
-export async function getUserPages(userId: string): Promise<Array<{
+export interface UserPageEntry {
   pageUrl: string
   siteName: string | null
   genre: string | null
   requestedAt: Date
   latestJobId: string | null
   latestJobStatus: string | null
+  monitored: boolean
+  lastCheckedAt: Date | null
+}
+
+/**
+ * Fetch every page in a user's history along with its current llms.txt
+ * result. Used by /api/pages/download to build the zip archive. Rows
+ * without a result (crawl not yet complete) are skipped.
+ */
+export async function getUserPageResults(userId: string): Promise<Array<{
+  url: string
+  siteName: string | null
+  result: string
 }>> {
+  const supabase = getClient()
+  const { data: requests } = await supabase
+    .from("user_requests")
+    .select("page_url, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+  if (!requests || requests.length === 0) return []
+
+  const urls = requests.map((r) => r.page_url)
+  const { data: pages } = await supabase
+    .from("pages")
+    .select("url, site_name, result")
+    .in("url", urls)
+
+  const byUrl = new Map((pages ?? []).map((p) => [p.url, p]))
+  return requests
+    .map((r) => {
+      const p = byUrl.get(r.page_url)
+      if (!p?.result) return null
+      return { url: p.url, siteName: p.site_name ?? null, result: p.result }
+    })
+    .filter((p): p is { url: string; siteName: string | null; result: string } => p !== null)
+}
+
+export async function getUserPages(
+  userId: string,
+  { offset = 0, limit = 20 }: { offset?: number; limit?: number } = {},
+): Promise<UserPageEntry[]> {
   const supabase = getClient()
   const { data } = await supabase
     .from("user_requests")
     .select("page_url, created_at")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
-    .limit(200)
+    .range(offset, offset + limit - 1)
 
   if (!data || data.length === 0) return []
 
@@ -170,10 +279,13 @@ export async function getUserPages(userId: string): Promise<Array<{
   // Fetch page metadata
   const { data: pages } = await supabase
     .from("pages")
-    .select("url, site_name, genre")
+    .select("url, site_name, genre, monitored, last_checked_at")
     .in("url", pageUrls)
 
-  // Fetch latest job per page_url
+  // Fetch latest job per page_url. Only consider terminal jobs —
+  // user_requests rows are only created on completion, so every URL in
+  // the dashboard has at least one. A re-crawl in progress (monitor
+  // tick) still links to the last completed result.
   const { data: jobs } = await supabase
     .from("jobs")
     .select("id, page_url, status, created_at")
@@ -198,6 +310,8 @@ export async function getUserPages(userId: string): Promise<Array<{
       requestedAt: new Date(r.created_at),
       latestJobId: job?.id ?? null,
       latestJobStatus: job?.status ?? null,
+      monitored: page?.monitored ?? false,
+      lastCheckedAt: page?.last_checked_at ? new Date(page.last_checked_at) : null,
     }
   })
 }

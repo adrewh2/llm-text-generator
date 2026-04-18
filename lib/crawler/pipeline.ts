@@ -55,34 +55,31 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       progress: { discovered: discoveredUrls.size, crawled: 0, failed: 0 },
     })
 
-    // Fetch homepage with plain HTTP first to detect SPA
+    // Fetch homepage with plain HTTP first to detect SPA. If it fails
+    // (bot-block, 4xx, timeout), fall through to the Puppeteer path
+    // below — claude.ai and similar sites 403 against a plain fetch but
+    // render fine in a real browser.
     const homepageFetch = await fetchPage(baseUrl)
-    if (!homepageFetch.ok || !homepageFetch.html) {
-      await updateJob(jobId, {
-        status: "failed",
-        error: `Failed to fetch homepage: ${homepageFetch.error || "unknown error"}`,
-      })
-      return
-    }
+    const rawHomepageHtml = homepageFetch.ok ? homepageFetch.html ?? null : null
+    const rawHomepageMeta = rawHomepageHtml ? extractMetadata(baseUrl, rawHomepageHtml) : null
 
-    const rawHomepageHtml = homepageFetch.html
-    const rawHomepageMeta = extractMetadata(baseUrl, rawHomepageHtml)
+    // Trigger the SPA (Puppeteer) path if either: plain fetch failed, or
+    // the returned HTML looks like a JS shell / bot-challenge.
+    const plainFetchFailed = rawHomepageHtml === null
+    const isSpa = !plainFetchFailed && isSpaHtml(rawHomepageHtml!, rawHomepageMeta?.bodyExcerpt || "")
+    const needsBrowser = plainFetchFailed || isSpa
+    console.log(`[pipeline] plainFetchFailed=${plainFetchFailed} isSpa=${isSpa} bodyExcerptLen=${rawHomepageMeta?.bodyExcerpt?.length ?? 0} htmlLen=${rawHomepageHtml?.length ?? 0}`)
+    if (needsBrowser) await spaBrowser.init()
 
-    // Detect SPA / bot-challenge page — if so, use Puppeteer for the whole crawl
-    const isSpa = isSpaHtml(rawHomepageHtml, rawHomepageMeta.bodyExcerpt || "")
-    console.log(`[pipeline] isSpa=${isSpa} bodyExcerptLen=${rawHomepageMeta.bodyExcerpt?.length ?? 0} htmlLen=${rawHomepageHtml.length}`)
-    if (isSpa) await spaBrowser.init()
-
-    // Get real homepage content
+    // Try the browser render as our homepage source when needed.
     let homepageHtml = rawHomepageHtml
     let homepageMeta = rawHomepageMeta
-    if (isSpa) {
+    if (needsBrowser) {
       const rendered = await spaBrowser.fetchPageWithLinks(baseUrl, baseUrl)
-      console.log(`[pipeline] SPA rendered ok=${rendered.ok} links=${rendered.links.length}`)
-      if (rendered.ok) {
+      console.log(`[pipeline] browser render ok=${rendered.ok} links=${rendered.links.length}`)
+      if (rendered.ok && rendered.html) {
         homepageHtml = rendered.html
         homepageMeta = extractMetadata(baseUrl, homepageHtml)
-        // Seed queue with rendered links
         for (const link of rendered.links) {
           if (!discoveredUrls.has(link) && isAllowed(link, robots.disallowed)) {
             discoveredUrls.add(link)
@@ -90,6 +87,14 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
           }
         }
       }
+    }
+
+    if (!homepageHtml || !homepageMeta) {
+      await updateJob(jobId, {
+        status: "failed",
+        error: `Failed to fetch homepage: ${homepageFetch.error || "browser render failed"}`,
+      })
+      return
     }
 
     const [homepageMdUrl] = await Promise.all([probeMarkdown(baseUrl)])
@@ -102,7 +107,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     const visited = new Set<string>([baseUrl])
 
     // Discover navigation links from homepage if sitemap was sparse (non-SPA path)
-    if (!isSpa && queue.length < 5) {
+    if (!needsBrowser && queue.length < 5) {
       const navLinks = extractLinksFromHtml(homepageHtml, baseUrl)
       for (const link of navLinks) {
         if (!discoveredUrls.has(link) && isAllowed(link, robots.disallowed)) {
@@ -117,7 +122,11 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     const cappedSet = new Set(cappedUrls)
     queue.splice(0, queue.length, ...queue.filter((q) => cappedSet.has(q.url)))
 
-    // LLM ranking: intelligently select the most valuable URLs to crawl
+    // LLM ranking: intelligently select the most valuable URLs to crawl.
+    // Preserve the LLM's output order — it has the full site context
+    // (name, genre, homepage excerpt, complete URL set) and is better
+    // placed to set priority than a path-based regex. The path regex
+    // survives only as a tiebreaker below.
     const siteName0 = extractSiteName(homepageHtml, new URL(baseUrl).hostname)
     const homepageExcerpt = homepageMeta.bodyExcerpt || ""
     const rankedUrls = await rankCandidateUrls(
@@ -125,8 +134,11 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       siteName0,
       homepageExcerpt,
     )
-    const rankedSet = new Set(rankedUrls)
-    queue.splice(0, queue.length, ...queue.filter((q) => rankedSet.has(q.url)))
+    const urlToItem = new Map(queue.map((q) => [q.url, q]))
+    const reordered = rankedUrls
+      .map((u) => urlToItem.get(u))
+      .filter((q): q is { url: string; depth: number } => !!q)
+    queue.splice(0, queue.length, ...reordered)
 
     console.log(`[pipeline] queue after capping+ranking: ${queue.length} urls`)
     queue.slice(0, 5).forEach(q => console.log(`  ${q.url}`))
@@ -134,9 +146,6 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     await updateJob(jobId, {
       progress: { discovered: discoveredUrls.size, crawled, failed },
     })
-
-    // Prioritize high-value paths before marketing pages
-    queue.sort((a, b) => urlPriority(b.url) - urlPriority(a.url))
 
     // Worker pool: each worker grabs the next URL as soon as it finishes,
     // no waiting for batch siblings. Safe in JS because sync code is atomic.
@@ -152,13 +161,13 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
         visited.add(item.url)
 
         const { url, depth } = item
-        if (!isSpa) await delay(POLITENESS_DELAY_MS + Math.random() * 100)
+        if (!needsBrowser) await delay(POLITENESS_DELAY_MS + Math.random() * 100)
 
         let html: string | null = null
         let links: string[] = []
         let mdUrlResolved: string | null = null
 
-        if (isSpa) {
+        if (needsBrowser) {
           const result = await spaBrowser.fetchPageWithLinks(url, baseUrl)
           if (result.ok) { html = result.html; links = result.links }
         } else {
@@ -175,7 +184,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
           pages.push({ url, title: urlToLabel(url), headings: [], fetchStatus: "error", descriptionProvenance: "none" })
         } else if (crawled < MAX_PAGES) {
           const meta = extractMetadata(url, html)
-          const mdUrl = isSpa ? await probeMarkdown(url) : mdUrlResolved
+          const mdUrl = needsBrowser ? await probeMarkdown(url) : mdUrlResolved
           pages.push({ ...meta, mdUrl: mdUrl || undefined, fetchStatus: "ok" })
           crawled++
 
@@ -193,7 +202,7 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       }
     }
 
-    await Promise.all(Array.from({ length: isSpa ? 1 : CONCURRENCY }, () => worker()))
+    await Promise.all(Array.from({ length: needsBrowser ? 1 : CONCURRENCY }, () => worker()))
 
     // Detect genre + site name
     const genre = detectGenre(homepageHtml, [...discoveredUrls])
@@ -242,7 +251,17 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
       : undefined
     const result = assembleFile(siteName, primary, optional, summary, preamble, robotsNotice)
 
-    const status = failed > 0 && failed >= crawled * 0.5 ? "partial" : "complete"
+    // "partial" fires when a meaningful majority of fetch attempts
+    // failed. Use total attempts (not just successes) as the denominator
+    // so small crawls don't trip on a single failure. Require at least
+    // 5 attempts before the rule kicks in — a 2-page site with 1
+    // timeout shouldn't read as "partial".
+    const attempted = crawled + failed
+    const successRate = attempted > 0 ? crawled / attempted : 0
+    const status =
+      crawled === 0                          ? "failed"
+      : attempted >= 5 && successRate < 0.5  ? "partial"
+      : "complete"
 
     await updateJob(jobId, {
       status,
@@ -256,20 +275,6 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     await updateJob(jobId, { status: "failed", error: message })
   } finally {
     await spaBrowser.close()
-  }
-}
-
-function urlPriority(url: string): number {
-  try {
-    const path = new URL(url).pathname.toLowerCase()
-    if (/\/docs?\/|\/api\/|\/reference\/|\/guide\/|\/tutorial\/|\/learn\//.test(path)) return 10
-    if (/\/example|\/demo|\/sample|\/cookbook/.test(path)) return 8
-    if (/\/changelog|\/release/.test(path)) return 6
-    if (/\/blog\/|\/post\/|\/article\//.test(path)) return 4
-    if (/\/about|\/pricing|\/support|\/faq/.test(path)) return 3
-    return 5
-  } catch {
-    return 0
   }
 }
 

@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
-import { ArrowRight, Globe, Zap, CheckCircle, RefreshCw, Loader2, BookMarked } from "lucide-react"
+import { ArrowRight, Globe, Zap, CheckCircle, RefreshCw, Loader2, BookMarked, FolderDown } from "lucide-react"
 import { useRouter } from "next/navigation"
 import NavAuth from "./NavAuth"
 
@@ -155,7 +155,7 @@ export default function LandingPage() {
               <button
                 type="submit"
                 disabled={loading || !url.trim()}
-                className="flex items-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-4 py-2 rounded-[9px] hover:bg-zinc-800 active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+                className="flex items-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-4 py-2 rounded-[9px] hover:bg-zinc-800 active:scale-95 disabled:cursor-not-allowed transition-all whitespace-nowrap"
               >
                 {loading ? (
                   <><Loader2 size={13} className="animate-spin" /> Generating…</>
@@ -251,7 +251,12 @@ export default function LandingPage() {
               {
                 icon: BookMarked,
                 title: "Page history",
-                desc: "Every page you generate is saved to your dashboard — browse and revisit any past result in one place.",
+                desc: "Every llms.txt page you request is saved to your dashboard.",
+              },
+              {
+                icon: FolderDown,
+                title: "Stay up to date",
+                desc: "Download a folder with the latest llms.txt versions in one click.",
               },
             ].map(({ icon: Icon, title, desc }) => (
               <div key={title} className="flex items-start gap-4 p-5 rounded-xl border border-zinc-200 bg-white">
