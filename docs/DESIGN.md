@@ -199,6 +199,10 @@ Worker pool (5 non-SPA, 1 SPA): fetch + extract metadata for each URL
 genre detection (developer_docs, ecommerce, personal_site, institutional,
                  blog_publication, generic) from homepage + URL patterns
   ↓
+resolveExternalReferences: homepage-only outbound anchors → LLM ranks
+  down to crawler.EXTERNAL_REFS_MAX_KEEP (8) → each fetched once for
+  metadata (no link discovery, depth 1 only) → merged into the page set
+  ↓
 LLM enrich (enrichBatch, batches of 20): returns pageType, importance 1–10,
   section hint, and a description where missing
   ↓
@@ -239,6 +243,19 @@ The pipeline runs under a 270-second timeout enforced via `Promise.race`. If the
 - **Canonical URL + lang** from standard tags.
 - **`.md` sibling:** `probeMarkdown(url)` tries `{url}.md` and, for trailing-slash URLs, `{path}index.html.md` per the spec; HEAD first, falling back to a 4 KB GET if HEAD is unreliable; validated by content-type plus lightweight markdown signals.
 
+### External references
+
+The same-domain filter in `extractLinksFromHtml` is correct for the crawl queue — without it, a single outbound anchor would give the crawler permission to roam the web — but leaves the output with no cross-origin entries, even when the site explicitly links to its own spec / upstream docs / closely related projects. `resolveExternalReferences` in `pipeline.ts` bridges that gap.
+
+Steps:
+
+1. **Extract homepage externals only.** `extractExternalLinksFromHtml(homepageHtml, baseUrl)` collects cross-origin anchors with their anchor text. Subpages are intentionally ignored — homepage externals are the curated set the site itself vouches for.
+2. **LLM ranks them.** `rankExternalReferences` (see §7) picks up to `crawler.EXTERNAL_REFS_MAX_KEEP` (8), dropping social-media profiles, tracking pixels, hosting badges, and similar noise.
+3. **Fetch each once, for metadata only.** `fetchPage(url)` + `extractMetadata(url, html)` runs on each kept URL in parallel. If a fetch fails, the curated reference is kept with an anchor-text-only title rather than silently dropped.
+4. **Merge into `successful`.** External entries flow through `llmEnrichPages`, `scorePages`, and `assignSections` alongside internal pages, so the LLM can place them in whatever section it thinks fits (often `Resources`, `References`, or a topic-specific label).
+
+Depth is strictly 1 for externals by construction: `resolveExternalReferences` never calls `extractLinksFromHtml` on external HTML, and the fetched URLs never enter the crawl queue. They also don't count against `MAX_PAGES`. SSRF is preserved because `fetchPage` still goes through `safeFetch`, which validates every redirect hop.
+
 ### Scoring
 
 `scorePages` in `score.ts` produces a numeric score per page from:
@@ -253,12 +270,13 @@ Thresholds: primary ≥ 50, optional 15–49, excluded < 15. These are starting 
 
 ## 7. LLM Usage
 
-Four call sites, all pinned to `claude-haiku-4-5-20251001`:
+Five call sites, all pinned to `claude-haiku-4-5-20251001`:
 
 1. **`rankCandidateUrls`** — given up to `llm.RANK_MAX_KEEP` (120) URLs plus the site name and homepage excerpt, return the list re-ordered by likely value. Skipped entirely for candidate lists below `llm.RANK_SKIP_BELOW` (10).
 2. **`enrichBatch`** (called from `llmEnrichPages`) — batches of `llm.ENRICH_BATCH_SIZE` (20) pages, run in parallel. Per page, returns `pageType`, `importance` (1–10), a `section` label, and a `description` (the LLM rewrites even when the page had one — replacement is kept only if it differs; provenance is then flipped to `llm`). The `section` value is the *primary* signal for primary pages (score ≥ 50); the path-regex inference runs only when the LLM didn't return a usable section. Pages with score < 50 are always placed into `Optional` regardless of what the LLM suggested.
-3. **`llmSiteName`** — given deterministic candidates (`og:site_name`, `application-name`, JSON-LD `name`, `<title>`, first `<h1>`) plus the hostname, returns a clean 1–4-word brand name. Falls back to the deterministic result when the LLM is unavailable or returns something unusable (see `cleanSiteName` in `siteName.ts`).
-4. **`generateSitePreamble`** — given site name, genre, and the selected pages, returns a 1–3 sentence intro paragraph for the assembled file. If this call fails, the file is assembled without a preamble rather than faking one.
+3. **`rankExternalReferences`** — given homepage outbound anchors (URL + anchor text) plus the site name and homepage excerpt, return up to `crawler.EXTERNAL_REFS_MAX_KEEP` (8) curated references. Prompt is tuned to keep spec / upstream / related-project links and drop social media, tracking, hosting badges, and peripheral mentions. Skipped when there's nothing to prune (candidates ≤ `maxKeep`).
+4. **`llmSiteName`** — given deterministic candidates (`og:site_name`, `application-name`, JSON-LD `name`, `<title>`, first `<h1>`) plus the hostname, returns a clean 1–4-word brand name. Falls back to the deterministic result when the LLM is unavailable or returns something unusable (see `cleanSiteName` in `siteName.ts`).
+5. **`generateSitePreamble`** — given site name, genre, and the selected pages, returns a 1–3 sentence intro paragraph for the assembled file. If this call fails, the file is assembled without a preamble rather than faking one.
 
 ### What the LLM does *not* decide
 
@@ -316,7 +334,7 @@ The result page keeps a per-tab LRU (`JOB_CACHE_MAX = 30`) of recently-seen jobs
 
 ## 10. Security Model
 
-Full discussion in `SECURITY.md`. Summary:
+Full discussion in [`SECURITY.md`](./SECURITY.md). Summary:
 
 ### SSRF
 
@@ -499,7 +517,7 @@ The following are out of scope for the current implementation. Each is plausible
 /middleware.ts                       Supabase SSR session + /dashboard gate
 /next.config.ts                      CSP + security headers
 /vercel.json                         function duration + cron schedule
-/SECURITY.md                         threat model + defenses
+/docs/SECURITY.md                    threat model + defenses
 ```
 
 ---

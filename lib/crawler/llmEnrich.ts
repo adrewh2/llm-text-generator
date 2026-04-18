@@ -294,6 +294,76 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7, 12]`
 }
 
 /**
+ * Filter a list of external reference links down to the ones worth
+ * including in the generated `llms.txt`. The homepage ships every
+ * outbound anchor imaginable — spec links, tracking pixels, footer
+ * partner badges, social icons, "made with X" boilerplate — and most
+ * of them aren't useful references. The model sees anchor text + URL
+ * for each and returns indices.
+ *
+ * Returns candidates unchanged when the LLM is unavailable or the
+ * list is too short to benefit from ranking; returns a curated subset
+ * otherwise. Never embellishes or rewrites — the caller uses these
+ * URLs verbatim.
+ */
+export async function rankExternalReferences(
+  candidates: Array<{ url: string; anchor: string }>,
+  siteName: string,
+  homepageExcerpt: string,
+  maxKeep: number,
+): Promise<Array<{ url: string; anchor: string }>> {
+  const client = getClient()
+  if (!client || candidates.length === 0) return []
+  // Small lists: keep them all (up to cap). The LLM round-trip isn't
+  // worth the latency when there's nothing to prune.
+  if (candidates.length <= maxKeep) return candidates
+
+  const numbered = candidates
+    .map((c, i) => {
+      const anchor = c.anchor ? ` — "${neuter(c.anchor).slice(0, 100)}"` : ""
+      return `${i + 1}. ${c.url}${anchor}`
+    })
+    .join("\n")
+
+  const prompt = `You are selecting external reference links to include in the llms.txt file for "${neuter(siteName)}". These URLs will appear as entries alongside the site's own pages — not crawled, just referenced. Pick links that help an LLM understand what this site relates to.
+
+Good to include: specifications, standards, or specs the site implements; canonical reference docs for the main library / framework / protocol; closely related projects or upstreams.
+
+Skip: social media profiles (twitter.com, x.com, linkedin.com, facebook.com), analytics, tracking pixels, CDN / hosting badges (vercel.com, netlify.com, cloudflare), payment processor logos, generic legal pages of third-party tools, and anything that's clearly a peripheral mention.
+
+Homepage context:
+${homepageExcerpt.slice(0, 400)}
+
+From the ${candidates.length} external URLs below, return a JSON array of up to ${maxKeep} 1-based indices for the most valuable references, in order of importance.
+
+URLs:
+${numbered}
+
+Respond ONLY with a JSON array of integers, e.g. [1, 3, 7]`
+
+  try {
+    const message = await client.messages.create({
+      model: MODEL,
+      max_tokens: 256,
+      messages: [{ role: "user", content: prompt }],
+    })
+
+    const text = message.content[0].type === "text" ? message.content[0].text : ""
+    const match = text.match(/\[[\d,\s]+\]/)
+    if (!match) return []
+
+    const indices: number[] = JSON.parse(match[0])
+    return indices
+      .filter((i) => typeof i === "number" && i >= 1 && i <= candidates.length)
+      .map((i) => candidates[i - 1])
+      .slice(0, maxKeep)
+  } catch (err) {
+    debugLog("llmEnrich.rankExternalReferences", err)
+    return []
+  }
+}
+
+/**
  * Pick a clean brand/site name from raw HTML candidates.
  *
  * Deterministic extraction (`extractSiteName` / `cleanSiteName`) does

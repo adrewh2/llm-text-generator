@@ -54,6 +54,22 @@ export function filterAndSelectPages(
   baseUrl?: string,
   maxOutput = 60
 ): { primary: ScoredPage[]; optional: ScoredPage[] } {
+  const baseHostname = baseUrl
+    ? (() => { try { return new URL(baseUrl).hostname } catch { return null } })()
+    : null
+
+  // Drop same-domain root-path URLs — if we crawled "/" on the site
+  // we started from, it's the current `llms.txt`'s home and is
+  // already represented by the H1. Scoped to the base hostname so
+  // external references like llmstxt.org/ survive this filter.
+  const isOwnHomepage = (url: string): boolean => {
+    try {
+      const u = new URL(url)
+      if (u.hostname !== baseHostname) return false
+      return u.pathname === "/" || u.pathname === ""
+    } catch { return false }
+  }
+
   // Deduplicate by hostname+path (not exact URL) so same-page query
   // variants the normalizer didn't strip still collapse. Sort by score
   // descending first so the highest-scored version wins the slot.
@@ -65,8 +81,7 @@ export function filterAndSelectPages(
       if (seen.has(key)) return false
       seen.add(key)
       if (baseUrl && key === normalizeForComparison(baseUrl)) return false
-      const path = (() => { try { return new URL(p.url).pathname } catch { return "" } })()
-      if (path === "/" || path === "") return false
+      if (isOwnHomepage(p.url)) return false
       return true
     })
 
@@ -81,8 +96,6 @@ export function filterAndSelectPages(
     .filter((p) => {
       if (p.score < 15 || p.score >= 50) return false
       if (primaryUrls.has(p.url)) return false
-      const path = (() => { try { return new URL(p.url).pathname } catch { return "" } })()
-      if (path === "/" || path === "") return false
       return true
     })
     .sort((a, b) => b.score - a.score)

@@ -3,10 +3,10 @@ import { fetchSitemapUrls } from "./sitemap"
 import { fetchPage } from "./fetchPage"
 import { extractMetadata, extractSiteName, extractSiteNameCandidates } from "./extract"
 import { probeMarkdown } from "./markdownProbe"
-import { extractLinksFromHtml } from "./discover"
+import { extractLinksFromHtml, extractExternalLinksFromHtml } from "./discover"
 import { isSpaHtml, SpaBrowser } from "./spaCrawler"
 import { scorePages } from "./score"
-import { llmEnrichPages, generateSitePreamble, rankCandidateUrls, llmSiteName } from "./llmEnrich"
+import { llmEnrichPages, generateSitePreamble, rankCandidateUrls, rankExternalReferences, llmSiteName } from "./llmEnrich"
 import { assignSections, filterAndSelectPages } from "./group"
 import { assembleFile } from "./assemble"
 import { detectGenre } from "./genre"
@@ -19,6 +19,7 @@ import { assertSafeUrl, UnsafeUrlError } from "./ssrf"
 const {
   MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS,
   PIPELINE_BUDGET_MS, URLS_PER_PREFIX_CAP, PREFIX_SEGMENT_DEPTH,
+  EXTERNAL_REFS_MAX_KEEP,
 } = crawler
 
 class PipelineTimeoutError extends Error {
@@ -261,7 +262,7 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
 
     // Strip pages whose description exactly matches the generic homepage tagline
     const homepageDesc = homepageMeta.description?.trim()
-    const successful = pages
+    const internalSuccessful = pages
       .filter((p) => p.fetchStatus === "ok")
       .map((p) => {
         if (homepageDesc && p.url !== baseUrl && p.description?.trim() === homepageDesc) {
@@ -269,6 +270,17 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
         }
         return p
       })
+
+    // External references: homepage outbound anchors the LLM judges
+    // worth keeping (spec links, upstream docs, related projects).
+    // These flow through enrichment/scoring alongside internal pages
+    // and are fetched exactly once for metadata — we never follow
+    // links from them.
+    const externalRefs = await resolveExternalReferences(
+      homepageHtml, baseUrl, siteName, homepageMeta.bodyExcerpt || "",
+    )
+
+    const successful = [...internalSuccessful, ...externalRefs]
 
     // LLM enrichment: classify pages and generate missing descriptions
     await updateJob(jobId, { status: "enriching", genre, siteName })
@@ -335,4 +347,61 @@ async function setStatus(jobId: string, status: JobStatus) {
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
+}
+
+/**
+ * Gather external reference links from the homepage, let the LLM
+ * pick the few worth keeping, and fetch each once for metadata.
+ *
+ * Fetches happen in parallel but are bounded by
+ * `EXTERNAL_REFS_MAX_KEEP`. Any fetch that 4xx/5xx/timeouts falls
+ * back to an anchor-text-only entry so we don't silently drop a
+ * curated reference because one third-party server was flaky.
+ */
+async function resolveExternalReferences(
+  homepageHtml: string,
+  baseUrl: string,
+  siteName: string,
+  homepageExcerpt: string,
+): Promise<ExtractedPage[]> {
+  const candidates = extractExternalLinksFromHtml(homepageHtml, baseUrl)
+  if (candidates.length === 0) return []
+
+  const kept = await rankExternalReferences(
+    candidates, siteName, homepageExcerpt, EXTERNAL_REFS_MAX_KEEP,
+  )
+  if (kept.length === 0) return []
+
+  const fetched = await Promise.all(
+    kept.map(async ({ url, anchor }): Promise<ExtractedPage | null> => {
+      try {
+        const res = await fetchPage(url)
+        if (res.ok && res.html) {
+          const meta = extractMetadata(url, res.html)
+          return {
+            ...meta,
+            title: meta.title || anchor || hostnameFor(url),
+            fetchStatus: "ok",
+          }
+        }
+      } catch {
+        // fall through to the anchor-text entry below
+      }
+      // The ref was curated by the LLM — keep it even if the fetch
+      // failed. An entry with just an anchor-text title is more
+      // useful than silently dropping a known-good reference.
+      return {
+        url,
+        title: anchor || hostnameFor(url),
+        headings: [],
+        fetchStatus: "ok",
+        descriptionProvenance: "none",
+      }
+    }),
+  )
+  return fetched.filter((p): p is ExtractedPage => p !== null)
+}
+
+function hostnameFor(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, "") } catch { return url }
 }

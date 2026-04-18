@@ -44,6 +44,16 @@ export const crawler = {
    * record instead of being terminated mid-flight.
    */
   PIPELINE_BUDGET_MS: 270_000,
+  /**
+   * Max external (cross-domain) reference links to include in the
+   * output. Homepage anchors only — we extract every external link
+   * from the homepage, the LLM ranks them, and the top N are fetched
+   * once each for og:title / og:description. They flow through the
+   * normal scoring + section-assignment pass alongside internal
+   * pages, so a value that feels high is fine; the LLM ranker drops
+   * social / tracking / footer noise.
+   */
+  EXTERNAL_REFS_MAX_KEEP: 8,
 } as const
 
 // ─── LLM enrichment ─────────────────────────────────────────────────────────
