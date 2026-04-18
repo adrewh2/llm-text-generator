@@ -1,15 +1,18 @@
-// Dev-only structured log. No-op in production so we don't noise up
-// serverless logs, and no-op on the client when NODE_ENV is inlined
-// as "production" at build time.
+// Structured log. In production it stays quiet for string / object
+// payloads (so the crawler doesn't noise up serverless logs with
+// routine debug info), but ALWAYS emits when the payload is an
+// `Error` — those are operational issues a reviewer needs to see in
+// Vercel runtime logs. In dev everything emits.
 export function debugLog(context: string, data: unknown): void {
-  if (process.env.NODE_ENV === "production") return
-  const message =
-    data instanceof Error
-      ? data.stack ?? data.message
-      : typeof data === "string"
+  const isError = data instanceof Error
+  if (process.env.NODE_ENV === "production" && !isError) return
+  const message = isError
+    ? (data.stack ?? data.message)
+    : typeof data === "string"
       ? data
       : safeStringify(data)
-  console.warn(`[${context}] ${message}`)
+  const method = isError ? console.error : console.warn
+  method(`[${context}] ${message}`)
 }
 
 function safeStringify(value: unknown): string {

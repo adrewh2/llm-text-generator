@@ -59,17 +59,28 @@ function resolveWorkerUrl(): string | null {
 
 export async function enqueueCrawl(jobId: string, url: string): Promise<void> {
   const workerUrl = resolveWorkerUrl()
+  const branch =
+    qstash && workerUrl ? "qstash" :
+    !qstash ? "fallback:no-token" :
+    "fallback:no-worker-url"
+  // Unconditional one-liner so Vercel runtime logs show which path
+  // fired for every enqueue. Removable once the queue path is
+  // validated end-to-end, but useful as a long-term operational
+  // signal — a sudden jump in `fallback:*` events in prod means
+  // QStash state has drifted.
+  console.info(`[enqueueCrawl] branch=${branch} jobId=${jobId}`)
+
   if (qstash && workerUrl) {
     try {
       await qstash.publishJSON({
         url: workerUrl,
         body: { jobId, url },
         retries: 3,
-        // Wait the full pipeline budget + a bit of slack before
-        // declaring the delivery a failure. Matches
-        // `crawler.PIPELINE_BUDGET_MS` — the pipeline self-terminates
-        // at that point and writes a "failed" state; QStash treats
-        // our 200 response as success either way.
+        // Wait the full pipeline budget before declaring the delivery
+        // a failure. Matches `crawler.PIPELINE_BUDGET_MS` — the
+        // pipeline self-terminates at that point and writes a
+        // "failed" state; QStash treats our 200 response as success
+        // either way.
         timeout: Math.ceil(crawler.PIPELINE_BUDGET_MS / 1000),
       })
       return
