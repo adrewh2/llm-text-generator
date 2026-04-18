@@ -217,8 +217,14 @@ export async function bumpPageRequest(pageUrl: string): Promise<void> {
 
 export async function upsertUserRequest(userId: string, pageUrl: string): Promise<void> {
   const supabase = getClient()
+  // Explicitly pass created_at so re-requesting a URL refreshes the
+  // timestamp (on conflict the upsert writes whatever we send; the
+  // DEFAULT NOW() only fires on INSERT). This makes the dashboard
+  // order-by created_at DESC surface the most recently-asked-about
+  // page at the top — a user who's made many requests shouldn't have
+  // to page past history to find a URL they just re-submitted.
   await supabase.from("user_requests").upsert(
-    { user_id: userId, page_url: pageUrl },
+    { user_id: userId, page_url: pageUrl, created_at: new Date().toISOString() },
     { onConflict: "user_id,page_url" }
   )
 }
