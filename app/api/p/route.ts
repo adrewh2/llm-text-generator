@@ -5,18 +5,12 @@ import { runCrawlPipeline } from "@/lib/crawler/pipeline"
 import { isValidHttpUrl, normalizeUrl } from "@/lib/crawler/url"
 import { safeFetch } from "@/lib/crawler/safeFetch"
 import { clientIp, consumeRateLimit } from "@/lib/rateLimit"
+import { api, rateLimit } from "@/lib/config"
 import { waitUntil } from "@vercel/functions"
 import { createClient } from "@/lib/supabase/server"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
-
-const MAX_URL_LENGTH = 2048
-
-// Anonymous: 3 crawl submissions / hour with bursts of 3. Signed-in
-// users get a looser budget because we can revoke individual accounts.
-const ANON_RATE = { capacity: 3, refillPerSec: 3 / 3600 }
-const AUTH_RATE = { capacity: 10, refillPerSec: 10 / 3600 }
 
 export async function POST(req: NextRequest) {
   let body: { url?: string }
@@ -30,7 +24,7 @@ export async function POST(req: NextRequest) {
   if (!url || typeof url !== "string") {
     return NextResponse.json({ error: "url is required" }, { status: 400 })
   }
-  if (url.length > MAX_URL_LENGTH) {
+  if (url.length > api.MAX_URL_LENGTH) {
     return NextResponse.json({ error: "URL is too long" }, { status: 400 })
   }
   if (!isValidHttpUrl(url.trim())) {
@@ -44,7 +38,7 @@ export async function POST(req: NextRequest) {
   // anon bucket is tiny so bots can't drain our LLM / Puppeteer
   // budget; signed-in users get a bigger one.
   const rateKey = user ? `user:${user.id}` : `ip:${clientIp(req)}`
-  const rate = consumeRateLimit(rateKey, user ? AUTH_RATE : ANON_RATE)
+  const rate = consumeRateLimit(rateKey, user ? rateLimit.AUTH : rateLimit.ANON)
   if (!rate.allowed) {
     return NextResponse.json(
       { error: "Too many requests — please slow down." },

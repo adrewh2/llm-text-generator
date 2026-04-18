@@ -1,7 +1,8 @@
 import { UnsafeUrlError } from "./ssrf"
 import { safeFetch } from "./safeFetch"
+import { crawler } from "../config"
 
-const MAX_SIZE = 5 * 1024 * 1024
+const MAX_SIZE = crawler.RESPONSE_MAX_BYTES
 export const USER_AGENT =
   "LlmsTxtGenerator/1.0 (+https://llm-text-generator.vercel.app)"
 

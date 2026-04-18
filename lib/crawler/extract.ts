@@ -1,5 +1,10 @@
 import { load, type CheerioAPI } from "cheerio"
 import type { DescriptionProvenance, ExtractedPage } from "./types"
+import { crawler } from "../config"
+
+// Cap excerpt at roughly 4 KB of UTF-8 so a malicious site serving a
+// wall of 4-byte Unicode can't inflate what we store in pages.crawled_pages.
+const MAX_EXCERPT_BYTES = crawler.EXCERPT_MAX_BYTES
 
 export function extractMetadata(
   url: string,
@@ -122,10 +127,6 @@ function extractHeadings($: CheerioAPI): string[] {
     })
   return headings
 }
-
-// Cap excerpt at roughly 4 KB of UTF-8 so a malicious site serving a
-// wall of 4-byte Unicode can't inflate what we store in pages.crawled_pages.
-const MAX_EXCERPT_BYTES = 4096
 
 function extractExcerpt($: CheerioAPI): string {
   const main = $("main, article, [role='main'], .content, .post-content, #content, .entry-content").first()

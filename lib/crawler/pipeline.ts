@@ -13,14 +13,10 @@ import { detectGenre } from "./genre"
 import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix } from "./url"
 import { updateJob } from "../store"
 import type { ExtractedPage, JobStatus } from "./types"
-import { MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS } from "./config"
+import { crawler } from "../config"
 import { assertSafeUrl, UnsafeUrlError } from "./ssrf"
 
-// Cap the entire pipeline well below the route's 300s maxDuration so
-// we can write a clean "failed" record instead of having the function
-// terminated mid-flight. The extra 30s lets any in-flight cleanup
-// (Puppeteer close, final DB write) complete.
-const PIPELINE_TIME_BUDGET_MS = 270_000
+const { MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS, PIPELINE_BUDGET_MS } = crawler
 
 class PipelineTimeoutError extends Error {
   constructor() { super("Exceeded time budget") }
@@ -28,7 +24,7 @@ class PipelineTimeoutError extends Error {
 
 export async function runCrawlPipeline(jobId: string, targetUrl: string): Promise<void> {
   const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new PipelineTimeoutError()), PIPELINE_TIME_BUDGET_MS),
+    setTimeout(() => reject(new PipelineTimeoutError()), PIPELINE_BUDGET_MS),
   )
   try {
     await Promise.race([runPipelineInner(jobId, targetUrl), timeout])

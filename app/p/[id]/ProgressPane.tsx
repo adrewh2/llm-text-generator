@@ -3,8 +3,10 @@
 import Link from "next/link"
 import { AlertCircle, CheckCircle2, Circle, Loader2, Plus, XCircle } from "lucide-react"
 import type { JobStatus } from "@/lib/crawler/types"
-import { MAX_PAGES } from "@/lib/crawler/config"
+import { crawler } from "@/lib/config"
 import type { ApiJob } from "./types"
+
+const { MAX_PAGES } = crawler
 
 const STEPS: Array<{ id: JobStatus; label: string }> = [
   { id: "crawling",   label: "Crawling pages" },

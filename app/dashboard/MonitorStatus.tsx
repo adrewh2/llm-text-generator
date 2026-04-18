@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { formatDistanceToNowStrict } from "date-fns"
 import { Eye } from "lucide-react"
+import { ui } from "@/lib/config"
 
 interface Props {
   monitored: boolean
@@ -17,7 +18,7 @@ export default function MonitorStatus({ monitored, lastCheckedAt }: Props) {
   const [, setTick] = useState(0)
   useEffect(() => {
     if (!lastCheckedAt) return
-    const id = setInterval(() => setTick((n) => n + 1), 10_000)
+    const id = setInterval(() => setTick((n) => n + 1), ui.MONITOR_STATUS_TICK_MS)
     return () => clearInterval(id)
   }, [lastCheckedAt])
 

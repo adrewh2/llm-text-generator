@@ -3,14 +3,11 @@ import JSZip from "jszip"
 import { getUserPageResults } from "@/lib/store"
 import { createClient } from "@/lib/supabase/server"
 import { urlToFilename } from "@/lib/crawler/urlLabel"
+import { api } from "@/lib/config"
 
 export const runtime = "nodejs"
 
-// Upper bound on how many results we load into memory for a single
-// zip. Each result is small (a few KB) but 10K × 3KB × 2 (zip copy)
-// would blow a serverless function's memory. 500 is generous for a
-// user who's been using the product for months.
-const MAX_DOWNLOAD_ENTRIES = 500
+const MAX_DOWNLOAD_ENTRIES = api.DOWNLOAD_MAX_ENTRIES
 
 export async function GET() {
   const supabase = await createClient()

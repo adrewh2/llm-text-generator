@@ -1,11 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk"
 import type { ExtractedPage, PageType, ScoredPage, SiteGenre, DescriptionProvenance } from "./types"
-import { SECTION_HINTS } from "./config"
+import { SECTION_HINTS, llm } from "../config"
 import { debugLog } from "../log"
 
-// Pin one model across every LLM call so upgrades are a one-line swap.
-const MODEL = "claude-haiku-4-5-20251001"
-const BATCH_SIZE = 20
+const { MODEL, ENRICH_BATCH_SIZE, RANK_MAX_KEEP, RANK_SKIP_BELOW, DESCRIPTION_MAX_CHARS, SECTION_MAX_CHARS } = llm
 
 interface EnrichedData {
   pageType: PageType
@@ -23,8 +21,8 @@ const VALID_PAGE_TYPES = new Set<PageType>([
   "program", "news", "project", "other",
 ])
 
-const MAX_SECTION_LEN = 30
-const MAX_DESCRIPTION_LEN = 240
+const MAX_SECTION_LEN = SECTION_MAX_CHARS
+const MAX_DESCRIPTION_LEN = DESCRIPTION_MAX_CHARS
 
 // Remove characters that can be used to close our prompt delimiters
 // and re-open an injected instruction block. Keeps the content readable
@@ -69,8 +67,8 @@ export async function llmEnrichPages(
   if (!client) return new Map()
 
   const batches: ExtractedPage[][] = []
-  for (let i = 0; i < pages.length; i += BATCH_SIZE) {
-    batches.push(pages.slice(i, i + BATCH_SIZE))
+  for (let i = 0; i < pages.length; i += ENRICH_BATCH_SIZE) {
+    batches.push(pages.slice(i, i + ENRICH_BATCH_SIZE))
   }
 
   const results: EnrichmentMap = new Map()
@@ -238,14 +236,14 @@ export async function rankCandidateUrls(
   candidates: string[],
   siteName: string,
   homepageExcerpt: string,
-  maxKeep = 120,
+  maxKeep = RANK_MAX_KEEP,
 ): Promise<string[]> {
   const client = getClient()
   if (!client || candidates.length === 0) return candidates
 
   // Very small lists: not worth a round trip — the dedup upside is
   // negligible and ranking is moot.
-  if (candidates.length <= 10) return candidates
+  if (candidates.length <= RANK_SKIP_BELOW) return candidates
 
   const numbered = candidates.map((u, i) => `${i + 1}. ${u}`).join("\n")
 

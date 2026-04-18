@@ -24,19 +24,12 @@ import {
 import { detectChange } from "@/lib/crawler/monitor"
 import { runCrawlPipeline } from "@/lib/crawler/pipeline"
 import { debugLog } from "@/lib/log"
+import { monitor } from "@/lib/config"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
 
-const STALE_MONITOR_DAYS = 5
-// Politeness: space out repeated hits against the same host so the
-// cron doesn't hammer a single origin with N back-to-back requests.
-const SAME_HOST_DELAY_MS = 400
-// Batch size for the monitor query so we don't pull thousands of rows
-// into memory in a single invocation. Pages are picked oldest-
-// last_checked_at first (see getMonitoredPages), so a batch touches
-// the most-stale entries first.
-const MONITOR_BATCH_SIZE = 200
+const { STALE_DAYS: STALE_MONITOR_DAYS, BATCH_SIZE: MONITOR_BATCH_SIZE, SAME_HOST_DELAY_MS } = monitor
 
 interface Summary {
   checked: number

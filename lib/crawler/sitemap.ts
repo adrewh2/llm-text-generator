@@ -2,9 +2,9 @@ import { load } from "cheerio"
 import { normalizeUrl } from "./url"
 import { safeFetch } from "./safeFetch"
 import { USER_AGENT } from "./fetchPage"
+import { crawler } from "../config"
 
-const MAX_SITEMAP_URLS = 500
-const SITEMAP_TIMEOUT_MS = 10000
+const { MAX_SITEMAP_URLS, SITEMAP_TIMEOUT_MS } = crawler
 
 export async function fetchSitemapUrls(sitemapUrl: string, baseUrl: string): Promise<string[]> {
   const urls: string[] = []

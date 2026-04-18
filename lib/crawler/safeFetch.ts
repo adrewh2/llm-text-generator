@@ -12,8 +12,9 @@
 // See README "Known limitations" for the trade-off.
 
 import { assertSafeUrl } from "./ssrf"
+import { crawler } from "../config"
 
-const MAX_REDIRECTS = 5
+const { MAX_REDIRECTS } = crawler
 
 export async function safeFetch(
   url: string,

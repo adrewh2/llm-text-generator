@@ -1,7 +1,9 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import type { CrawlJob, ScoredPage } from "./crawler/types"
-import { PAGE_TTL_HOURS } from "./crawler/config"
+import { crawler } from "./config"
 import { requireEnv } from "./env"
+
+const { PAGE_TTL_HOURS } = crawler
 
 // Server-only store: uses the service role key so writes bypass RLS.
 // This key must never be exposed to the client. One client is lazily

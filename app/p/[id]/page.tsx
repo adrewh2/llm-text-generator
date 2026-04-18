@@ -7,18 +7,13 @@ import Link from "next/link"
 import { validateLlmsTxt } from "@/lib/crawler/validate"
 import { createClient } from "@/lib/supabase/client"
 import { debugLog } from "@/lib/log"
+import { ui } from "@/lib/config"
 import ProgressPane from "./ProgressPane"
 import ResultPane from "./ResultPane"
 import { useVisibleStatus } from "./useVisibleStatus"
 import type { ApiJob } from "./types"
 
-// Simulated step durations (ms) for cached results — one per step.
-const SIM_STEP_DURATIONS = [1800, 1600, 1400, 1200]
-
-// Module-level cache — persists across remounts so navigation is
-// flicker-free. Bounded as an LRU so a long-lived browser session
-// can't leak memory by accumulating every visited job id.
-const JOB_CACHE_MAX = 30
+const { SIM_STEP_DURATIONS_MS: SIM_STEP_DURATIONS, JOB_CACHE_MAX, POLL_INTERVAL_MS, MAX_POLL_FAILURES } = ui
 const jobCache = new Map<string, ApiJob>()
 function cacheGetJob(id: string): ApiJob | undefined {
   const job = jobCache.get(id)
@@ -69,12 +64,11 @@ function PageViewInner() {
   // the simulation would freeze mid-flight.
   const shouldSimulateRef = useRef(shouldSimulate)
   useEffect(() => { shouldSimulateRef.current = shouldSimulate }, [shouldSimulate])
-  // Circuit breaker: after this many consecutive polling failures,
-  // stop polling and show an error. Prevents grinding a dead endpoint
-  // forever if the server starts consistently 5xx-ing.
+  // Circuit breaker: after MAX_POLL_FAILURES consecutive polling
+  // failures, stop polling and show an error. Prevents grinding a
+  // dead endpoint forever if the server starts consistently 5xx-ing.
   const pollFailuresRef = useRef(0)
   const [pollDead, setPollDead] = useState(false)
-  const MAX_POLL_FAILURES = 5
 
   // Track auth state for the lifetime of this page. `getUser` settles
   // the initial value; `onAuthStateChange` covers subsequent
@@ -155,7 +149,7 @@ function PageViewInner() {
 
   useEffect(() => {
     fetchJob()
-    intervalRef.current = setInterval(fetchJob, 1500)
+    intervalRef.current = setInterval(fetchJob, POLL_INTERVAL_MS)
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
       if (simTimerRef.current) clearTimeout(simTimerRef.current)

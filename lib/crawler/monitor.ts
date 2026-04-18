@@ -17,8 +17,9 @@ import { createHash } from "crypto"
 import { fetchSitemapUrls } from "./sitemap"
 import { safeFetch } from "./safeFetch"
 import { USER_AGENT } from "./fetchPage"
+import { crawler } from "../config"
 
-const HOMEPAGE_FETCH_TIMEOUT_MS = 8000
+const { HOMEPAGE_FETCH_TIMEOUT_MS } = crawler
 
 /**
  * Fetch the signature inputs and return a single hash. Returns `null`

@@ -2,14 +2,10 @@
 
 import { useEffect, useRef, useState } from "react"
 import type { JobStatus } from "@/lib/crawler/types"
+import { ui } from "@/lib/config"
 import type { ApiJob } from "./types"
 
-// Minimum time each pipeline step stays visible on screen during a
-// live crawl. Prevents fast backend transitions (scoring → assembling
-// → complete in <100ms) from flashing by unreadably. Genuinely slow
-// steps are unaffected — the effect only caps how fast the *displayed*
-// status can catch up to the real one.
-const LIVE_MIN_STEP_DWELL_MS = 1200
+const { LIVE_MIN_STEP_DWELL_MS } = ui
 
 // Ordered pipeline progression. "complete" is the terminal display
 // state; "partial" is surfaced at the end as-is so the UI can badge it.
