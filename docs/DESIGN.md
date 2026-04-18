@@ -14,7 +14,7 @@ The design is tight on purpose. Every URL produces one shared, globally-visible 
 2. **Globally-shared result per URL.** One `llms.txt` per site, reused across all users. No per-user copies; no per-user mutations. Users get their own *history* (what they've asked for), but the *result* is shared.
 3. **Crawl one URL once, keep it fresh passively.** A cached result under 24 hours old is returned immediately. A daily cron checks for upstream change on URLs that users are still actively using.
 4. **Security is a pipeline concern, not a wrapper.** SSRF validation runs at every fetch hop; rate limiting runs on every `POST /api/p`; prompt injection defenses run on every LLM call.
-5. **Single function, single region, single Postgres.** No Redis, no queue service, no edge runtime. Vercel Fluid Compute + Supabase Postgres. Anything more would be premature.
+5. **Everything lives on Vercel + Supabase.** Next.js on Fluid Compute, Postgres for durable state, Upstash Redis for rate-limiter state, Upstash QStash for the crawl-job queue. All provisioned via the Vercel Marketplace so env vars are wired into Production + Preview automatically. No self-hosted services, no edge runtime, no region sprawl.
 
 ### Scope
 
@@ -154,7 +154,7 @@ Every new-crawl request lands here. The route:
 2. Looks up the rate-limit key: `user.id` if signed in, else the client IP. Runs a token bucket against `rateLimit.AUTH` (10/hr) or `rateLimit.ANON` (3/hr). On miss, returns `429` with `Retry-After` and, for anon users, a `signInPrompt: true` hint the landing page uses to nudge sign-in.
 3. Checks for an existing `pages.result` under 24 hours old (`crawler.PAGE_TTL_HOURS`). If fresh, returns the most recent terminal job id with `cached: true` — no new crawl.
 4. Checks for an in-flight job on the same URL. If one exists, returns its id with `cached: false`. This is what makes two users hitting the same URL simultaneously share one crawl.
-5. Otherwise, creates a new `jobs` row and dispatches `runCrawlPipeline()` via `waitUntil(...)` so the HTTP response returns immediately while the crawl continues in the same Fluid Compute instance.
+5. Otherwise, creates a new `jobs` row and calls `enqueueCrawl(jobId, url)` (`lib/jobQueue.ts`), which publishes to QStash if `QSTASH_TOKEN` is set and falls back to `waitUntil(runCrawlPipeline(...))` for local dev. Either way the HTTP response returns immediately; the actual crawl runs later in the worker (`app/api/worker/crawl/route.ts` for the QStash path, the caller's own Fluid Compute instance for the fallback).
 6. On all three branches (cache-hit, in-flight attach, new crawl), if the user is signed in, `upsertUserRequest` adds the URL to their dashboard history. The row is an upsert against `UNIQUE(user_id, page_url)` so re-submissions don't duplicate.
 
 ### `GET /api/p/[id]` — the poll target
@@ -304,7 +304,7 @@ On each invocation:
 1. **Sweep stale.** `sweepStaleMonitoredPages(monitor.STALE_DAYS)` sets `monitored = false` on any page whose `last_requested_at` is older than 5 days. This keeps the working set bounded to URLs people are actually using.
 2. **Fetch a batch.** `getMonitoredPages({ limit: monitor.BATCH_SIZE })` pulls up to 200 monitored pages, oldest-checked first. Pages are processed sequentially, with a `monitor.SAME_HOST_DELAY_MS` (400 ms) politeness delay when two in a row share the same host.
 3. **Compute signature.** `computeSignature(pageUrl)` in `monitor.ts` fetches the sitemap (via `fetchSitemapUrls`, which honors `crawler.SITEMAP_TIMEOUT_MS` = 10 s and `MAX_SITEMAP_URLS` = 500) and the homepage (8 s via `crawler.HOMEPAGE_FETCH_TIMEOUT_MS`) in parallel. It hashes each separately — `sha256(sortedSitemapUrls.join("\n"))` and `sha256(normalizedHtml)` — then combines them as `sha256("${sitemapHash}|${homepageHash}")`. If both fetches fail, it returns `null` (caller treats that as "skip this cycle"). Homepage normalization strips `<script>`, `<style>`, and comments and collapses whitespace so per-request build ids don't trigger false positives.
-4. **Compare.** `detectChange` treats the first-ever check (no stored signature) as `changed: false` — it just records the baseline. On every subsequent check, a mismatch triggers `dispatchRecrawl()`, which creates a new `jobs` row and kicks off `runCrawlPipeline()` via `waitUntil`. A match is a no-op beyond updating the timestamp.
+4. **Compare.** `detectChange` treats the first-ever check (no stored signature) as `changed: false` — it just records the baseline. On every subsequent check, a mismatch triggers `dispatchRecrawl()`, which creates a new `jobs` row and hands it to `enqueueCrawl` (same queue path as user submissions). A match is a no-op beyond updating the timestamp.
 5. **Record.** `recordMonitorCheck(pageUrl, signature)` always updates `last_checked_at`; it only overwrites `content_signature` if the sig was computed successfully, so a transient fetch failure doesn't wipe the baseline.
 
 A successful crawl also sets `last_checked_at = now()` in `updateJob()` (see `lib/store.ts:104`). So the moment a page is generated for the first time, the dashboard shows "Refreshed just now" — it doesn't dangle on "Awaiting check" until the next cron tick.
@@ -353,9 +353,12 @@ Known limitation: TOCTOU between `assertSafeUrl` and the actual fetch (DNS rebin
 
 ### Rate limiting
 
-`lib/rateLimit.ts` — token bucket, keyed per process. Anon: capacity 3, refill `3/3600` per second. Auth: capacity 10, refill `10/3600`. Applied on `POST /api/p` only — reads and cached-hit responses are free.
+`lib/rateLimit.ts` — token bucket, keyed by user id when signed in and by client IP otherwise. Anon: capacity 3, refill `3/3600` per second. Auth: capacity 10, refill `10/3600`. Applied on `POST /api/p` only — reads and cached-hit responses are free.
 
-Known limitation: in-memory per-instance, so a cold start resets the bucket. Acceptable at current traffic; the upgrade path is Upstash Redis with the same token-bucket semantics.
+Two backends, selected at module load:
+
+- **Upstash Redis** (`@upstash/ratelimit`) when both `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are set. State is centralized so instance churn / region failover / autoscale can't reset a user's bucket, and the limits hold up against distributed IPs. On a transient Redis error the limiter fails open (logged) — a flaky Redis shouldn't take down all crawl submissions.
+- **In-memory token bucket** otherwise. Keeps `npm run dev` working without a Redis dependency. Fine for a single Fluid Compute instance; not fit for production at scale since a cold-start or autoscale event gives the attacker a fresh bucket.
 
 ### Prompt injection
 
@@ -414,13 +417,13 @@ Secrets come from environment variables: `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_
 
 *Trade-off:* No per-call model selection, no fallback tier. *Why:* Haiku is fast and cheap enough for description writing; a swap is one line in `lib/config.ts`. Anything fancier (Sonnet for the preamble, Haiku for pages) adds complexity without a proven quality delta on this task.
 
-### `waitUntil` for background crawl
+### Crawl execution backend
 
-*Trade-off:* Crawls share the request's Fluid Compute instance; no durable retry on platform-level failure. *Why:* avoids a queue service (Inngest, Vercel Queues, SQS) for MVP. Vercel's graceful shutdown gives the crawl several seconds to checkpoint if the instance is recycled, and the 270 s pipeline budget stays comfortably under the 300 s function cap. Moving to a durable queue is an isolated refactor when it's needed.
+*Trade-off:* The same `enqueueCrawl(jobId, url)` helper in `lib/jobQueue.ts` has two backends chosen at call time. *Why:* production (Vercel + `QSTASH_TOKEN` set) publishes to QStash, which then POSTs the signed job to `/api/worker/crawl`; the worker runs the pipeline synchronously so QStash's retry-on-non-2xx semantics buy us real mid-pipeline durability. Local dev (no `QSTASH_TOKEN`) keeps the pre-queue behaviour — `waitUntil(runCrawlPipeline(...))` in the caller's own Fluid Compute instance — so `npm run dev` works without a publicly reachable callback URL. The caller-side code path is one line in both cases (`await enqueueCrawl(id, url)`).
 
-### In-memory rate limiter
+### Rate limiter backend
 
-*Trade-off:* Per-instance state; a cold start resets the bucket. *Why:* acceptable at current traffic and trivially upgradeable to Redis later. The bucket key (user id or IP) doesn't change with the backend, so the migration is dropping in a different store.
+*Trade-off:* The same module has an in-memory path (dev) and a Redis path (prod) selected by env. *Why:* local dev shouldn't require a network dependency, and the interface is identical in both paths so callers are unaffected. Upstash is the production target because Vercel KV is deprecated and Upstash Redis is the Marketplace-recommended replacement; the `@upstash/ratelimit` library wraps the right Lua-atomic token-bucket primitives.
 
 ### Public `jobs` reads
 
@@ -463,6 +466,7 @@ The following are out of scope for the current implementation. Each is plausible
     /pages/route.ts                  GET:  paginated history
     /pages/download/route.ts         GET:  zip export
     /monitor/route.ts                GET:  cron handler
+    /worker/crawl/route.ts           POST: QStash-signed crawl worker
   /auth/callback/route.ts            OAuth return
   /login/page.tsx                    OAuth picker
   /dashboard
@@ -483,7 +487,8 @@ The following are out of scope for the current implementation. Each is plausible
   config.ts                          all tunable constants
   env.ts                             requireEnv()
   log.ts                             debugLog()
-  rateLimit.ts                       token bucket + client IP
+  rateLimit.ts                       token bucket (Upstash Redis + in-memory fallback)
+  jobQueue.ts                        enqueueCrawl (QStash + waitUntil fallback)
   store.ts                           Supabase queries (service-role)
   /supabase
     client.ts                        browser client (anon)

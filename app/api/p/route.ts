@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 import { randomUUID } from "crypto"
 import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, upsertUserRequest } from "@/lib/store"
-import { runCrawlPipeline } from "@/lib/crawler/pipeline"
 import { isValidHttpUrl, normalizeUrl } from "@/lib/crawler/url"
 import { safeFetch } from "@/lib/crawler/safeFetch"
 import { clientIp, consumeRateLimit } from "@/lib/rateLimit"
 import { api, rateLimit } from "@/lib/config"
-import { waitUntil } from "@vercel/functions"
+import { enqueueCrawl } from "@/lib/jobQueue"
 import { createClient } from "@/lib/supabase/server"
 
 export const runtime = "nodejs"
@@ -38,7 +37,7 @@ export async function POST(req: NextRequest) {
   // anon bucket is tiny so bots can't drain our LLM / Puppeteer
   // budget; signed-in users get a bigger one.
   const rateKey = user ? `user:${user.id}` : `ip:${clientIp(req)}`
-  const rate = consumeRateLimit(rateKey, user ? rateLimit.AUTH : rateLimit.ANON)
+  const rate = await consumeRateLimit(rateKey, user ? rateLimit.AUTH : rateLimit.ANON)
   if (!rate.allowed) {
     return NextResponse.json(
       {
@@ -97,7 +96,7 @@ export async function POST(req: NextRequest) {
   await createJob(id, canonicalUrl)
   await bumpPageRequest(canonicalUrl)
   if (user) await upsertUserRequest(user.id, canonicalUrl)
-  waitUntil(runCrawlPipeline(id, canonicalUrl))
+  await enqueueCrawl(id, canonicalUrl)
 
   return NextResponse.json({ page_id: id, cached: false }, { status: 201 })
 }

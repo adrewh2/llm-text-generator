@@ -5,6 +5,9 @@
     },
     "app/api/monitor/route.ts": {
       "maxDuration": 300
+    },
+    "app/api/worker/crawl/route.ts": {
+      "maxDuration": 300
     }
   },
   "crons": [

@@ -1,18 +1,24 @@
-// Simple in-memory rate limiter. Fluid Compute reuses function
-// instances across requests, so one bucket survives across many
-// invocations — good enough to stop casual abuse without pulling in
-// a KV / Redis dependency. A serious actor with distributed IPs or a
-// cold-start bypass would still slip through; swap for Upstash /
-// Vercel KV when that becomes a real problem.
+// Rate limiter. Two paths:
 //
-// Algorithm: token bucket. Each key has `capacity` tokens that refill
-// at `refillPerSec` per second. Each hit costs one token. When the
-// bucket is empty, requests are rejected.
+//   - Upstash Redis (preferred in production). Activated when both
+//     UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are set.
+//     State is centralized so instance churn / region failover / cold
+//     starts can't reset a user's bucket, and the bucket also holds
+//     up against distributed IPs hitting us across instances.
+//
+//   - In-memory token bucket (fallback). Used when the Upstash env
+//     vars are absent — keeps `npm run dev` working without requiring
+//     a network dependency. On Vercel Fluid Compute a single instance
+//     reuses memory across requests, which is good enough to stop
+//     casual abuse but won't hold up against attackers aiming at cold
+//     starts or autoscale events.
+//
+// Both paths speak the same `consumeRateLimit(key, cfg) → LimitResult`
+// interface. Callers `await` regardless of which one's active.
 
-interface Bucket {
-  tokens: number
-  updatedAt: number // ms
-}
+import { Ratelimit } from "@upstash/ratelimit"
+import { Redis } from "@upstash/redis"
+import { debugLog } from "./log"
 
 interface LimitConfig {
   /** Max burst size. */
@@ -20,9 +26,6 @@ interface LimitConfig {
   /** Sustained rate (tokens / second). */
   refillPerSec: number
 }
-
-const MAX_KEYS = 10_000
-const buckets = new Map<string, Bucket>()
 
 export interface LimitResult {
   allowed: boolean
@@ -32,7 +35,58 @@ export interface LimitResult {
   remaining: number
 }
 
-export function consumeRateLimit(key: string, cfg: LimitConfig): LimitResult {
+// ─── Upstash path ────────────────────────────────────────────────────────────
+
+// Redis client is built once per Fluid Compute instance. Absent when
+// the env vars aren't set — callers fall back to the in-memory path.
+const redis: Redis | null = (() => {
+  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+    return null
+  }
+  try {
+    return Redis.fromEnv()
+  } catch (err) {
+    debugLog("rateLimit.redisInit", err)
+    return null
+  }
+})()
+
+// Ratelimit instances are keyed by (capacity, refillPerSec) so the
+// two configs we ship today (anon, auth) each produce one stable
+// instance per process. Cheap to hold — they wrap the Redis client.
+const limiterCache = new Map<string, Ratelimit>()
+function getUpstashLimiter(cfg: LimitConfig): Ratelimit | null {
+  if (!redis) return null
+  const cacheKey = `${cfg.capacity}:${cfg.refillPerSec}`
+  let limiter = limiterCache.get(cacheKey)
+  if (!limiter) {
+    // Upstash's tokenBucket wants integer refill rates. Our configs
+    // are expressed as tokens-per-second (often a fraction like
+    // 3/3600). Translate to a per-hour window — all current configs
+    // produce clean integers (anon=3/hr, auth=10/hr).
+    const perHour = Math.max(1, Math.round(cfg.refillPerSec * 3600))
+    limiter = new Ratelimit({
+      redis,
+      limiter: Ratelimit.tokenBucket(perHour, "1 h", cfg.capacity),
+      prefix: "rl",
+      analytics: false,
+    })
+    limiterCache.set(cacheKey, limiter)
+  }
+  return limiter
+}
+
+// ─── In-memory fallback ──────────────────────────────────────────────────────
+
+interface Bucket {
+  tokens: number
+  updatedAt: number // ms
+}
+
+const MAX_KEYS = 10_000
+const buckets = new Map<string, Bucket>()
+
+function consumeInMemory(key: string, cfg: LimitConfig): LimitResult {
   const now = Date.now()
   let b = buckets.get(key)
   if (!b) {
@@ -57,7 +111,6 @@ export function consumeRateLimit(key: string, cfg: LimitConfig): LimitResult {
 }
 
 function touchLRU(key: string, b: Bucket): void {
-  // Map preserves insertion order → delete + set moves to tail.
   buckets.delete(key)
   buckets.set(key, b)
   while (buckets.size > MAX_KEYS) {
@@ -65,6 +118,30 @@ function touchLRU(key: string, b: Bucket): void {
     if (oldest === undefined) break
     buckets.delete(oldest)
   }
+}
+
+// ─── Public entrypoint ───────────────────────────────────────────────────────
+
+export async function consumeRateLimit(
+  key: string,
+  cfg: LimitConfig,
+): Promise<LimitResult> {
+  const limiter = getUpstashLimiter(cfg)
+  if (limiter) {
+    try {
+      const { success, remaining, reset } = await limiter.limit(key)
+      if (success) return { allowed: true, retryAfterSec: 0, remaining }
+      const retryAfterSec = Math.max(1, Math.ceil((reset - Date.now()) / 1000))
+      return { allowed: false, retryAfterSec, remaining: 0 }
+    } catch (err) {
+      // Fail open on Upstash errors. A transient Redis outage
+      // shouldn't take down all signups / crawls; better to permit
+      // the request and revisit if it becomes frequent.
+      debugLog("rateLimit.upstashLimit", err)
+      return { allowed: true, retryAfterSec: 0, remaining: cfg.capacity }
+    }
+  }
+  return consumeInMemory(key, cfg)
 }
 
 /**
