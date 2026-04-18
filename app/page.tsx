@@ -213,7 +213,8 @@ export default function LandingPage() {
             <div className="w-3 h-3 rounded-full bg-[#28c840]" />
             <span className="ml-3 text-zinc-500 text-xs font-mono">llms.txt — example output</span>
           </div>
-          <pre className="bg-zinc-950 p-6 text-[13px] font-mono leading-[1.7] overflow-x-auto">
+          <pre className="bg-zinc-950 text-[13px] font-mono leading-[1.7] overflow-x-auto overscroll-x-none">
+            <div className="p-6 w-max min-w-full">
             {EXAMPLE_OUTPUT.split("\n").map((line, i) => {
               if (line.startsWith("# ")) return (
                 <div key={i}><span className="text-zinc-500"># </span><span className="text-white font-semibold">{line.slice(2)}</span></div>
@@ -235,6 +236,7 @@ export default function LandingPage() {
               }
               return <div key={i} className="text-zinc-600 empty:h-2">{line}</div>
             })}
+            </div>
           </pre>
         </div>
       </section>
