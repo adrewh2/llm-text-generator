@@ -101,5 +101,23 @@ export function filterAndSelectPages(
     .sort((a, b) => b.score - a.score)
     .slice(0, 10)
 
+  // Single-page-site fallback. The homepage is normally excluded as
+  // redundant with the H1, but on sites where it's the *only*
+  // crawlable content (Vite/SvelteKit/React SPA one-pagers, simple
+  // tools, dashboards — jamlunch.com was the motivating case) that
+  // leaves the output empty and the pipeline fails the job. Rescue
+  // the homepage here so we still produce a valid (if minimal)
+  // llms.txt: `# <SiteName>` + `## Optional` with the single
+  // homepage link. Sections aren't required by the spec, but we
+  // place it under Optional so the tiering stays meaningful.
+  if (primary.length === 0 && optional.length === 0) {
+    const rescueHomepage = pages
+      .filter((p) => isOwnHomepage(p.url) && p.score >= 15)
+      .sort((a, b) => b.score - a.score)[0]
+    if (rescueHomepage) {
+      optional.push(rescueHomepage)
+    }
+  }
+
   return { primary, optional }
 }
