@@ -27,7 +27,7 @@ This is the biggest surface and the one most talked-through in code comments.
 
 - Rejects any scheme other than `http:` / `https:`.
 - Rejects `localhost` (and `*.localhost`) by literal match, before DNS.
-- Resolves the hostname via `dns.lookup(…, { all: true })` and rejects if **any** returned address falls inside a forbidden range: RFC1918 (`10/8`, `172.16/12`, `192.168/16`), loopback (`127/8`, `::1`), link-local (`169.254/16`, `fe80::/10`) — which also covers AWS metadata (`169.254.169.254`), multicast, benchmark, IETF reserved, ULA (`fc00::/7`), and IPv4-mapped IPv6. See `isForbiddenIpv4` / `isForbiddenIpv6` for the exact ranges.
+- Resolves the hostname via `dns.lookup(…, { all: true, verbatim: true })` and rejects if **any** returned address falls inside a forbidden range: RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), RFC 6598 CGNAT (`100.64/10`), loopback (`127/8`, `::1`), link-local (`169.254/16`, `fe80::/10`) — which also covers AWS / GCP / Azure metadata at `169.254.169.254` / `metadata.google.internal` — multicast, benchmark, IETF reserved, ULA (`fc00::/7`), and IPv4-mapped IPv6. See `isForbiddenIpv4` / `isForbiddenIpv6` for the exact ranges.
 - Throws `UnsafeUrlError` on rejection so callers can distinguish SSRF rejection from regular network errors.
 
 ### Where the guard runs
