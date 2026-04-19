@@ -132,13 +132,19 @@ export const api = {
 // ─── Rate limiting ──────────────────────────────────────────────────────────
 
 /**
- * Token-bucket configs for POST /api/p. Anon gets a small bucket so
- * a bot can't drain LLM budget; signed-in users can burst further
- * because we can revoke accounts individually.
+ * Token-bucket configs for POST /api/p. Two buckets per user class —
+ * a loose submit floor that protects the cheap validation + HEAD
+ * probe + DB-lookup path from abuse, and a tight new-crawl quota
+ * that protects LLM / Puppeteer budget. Every submission deducts
+ * from SUBMIT; only cache-miss submissions that actually dispatch a
+ * fresh crawl also deduct from NEW_CRAWL. Anon buckets are smaller
+ * than auth because we can't revoke abusive IPs individually.
  */
 export const rateLimit = {
-  ANON: { capacity: 3, refillPerSec: 3 / 3600 },
-  AUTH: { capacity: 10, refillPerSec: 10 / 3600 },
+  ANON_SUBMIT: { capacity: 60, refillPerSec: 60 / 3600 },
+  AUTH_SUBMIT: { capacity: 300, refillPerSec: 300 / 3600 },
+  ANON_NEW_CRAWL: { capacity: 3, refillPerSec: 3 / 3600 },
+  AUTH_NEW_CRAWL: { capacity: 10, refillPerSec: 10 / 3600 },
 }
 
 // ─── Monitoring cron ────────────────────────────────────────────────────────

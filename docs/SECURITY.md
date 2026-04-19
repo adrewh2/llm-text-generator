@@ -57,14 +57,18 @@ An unauthenticated HTTP client can POST any URL to `/api/p` and trigger up to 25
 
 ### The control
 
-`lib/rateLimit.ts` — a token-bucket rate limiter, keyed by user id when signed in and by client IP (via `X-Forwarded-For`) when not. Applied at the top of `POST /api/p`.
+`lib/rateLimit.ts` — two token buckets per principal (principal = `user.id` when signed in, else client IP via `X-Forwarded-For`). Both are backed by **Upstash Redis** (`@upstash/ratelimit`) in production, with an in-memory fallback for local dev. Keys are prefixed per-bucket (`submit:…` / `newcrawl:…`) so the two limiters never share Redis state.
 
-- **Anon**: 3 requests / hour with a burst of 3.
-- **Signed-in**: 10 requests / hour with a burst of 10 (we can revoke specific accounts if we need to).
+| Bucket | Anon | Auth | Consumed when |
+|---|---|---|---|
+| **SUBMIT** (abuse floor) | 60 /hr | 300 /hr | Every `POST /api/p` — bounds the cheap path (URL validation + HEAD probe + two DB lookups). Normal users will never hit it. |
+| **NEW_CRAWL** (budget guard) | 3 /hr | 10 /hr | Only when the submission actually dispatches a fresh crawl (cache miss + no in-flight attach). Protects Anthropic tokens, Puppeteer memory, and function-time. |
 
-Backend selected at module load: **Upstash Redis** (`@upstash/ratelimit`) when `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` are set — bucket state is centralized, immune to instance churn / region failover / distributed-IP dodges. **In-memory fallback** otherwise, used for local development. Upstash errors fail open (logged) on the principle that a flaky Redis shouldn't take down all submissions.
+The split means a user repeatedly loading *already-cached* URLs (their own prior submissions, popular third-party URLs in the globally-shared cache) never runs down the tight new-crawl quota — they only see the "you've hit your limit for generating new pages" message when they try to crawl a URL that isn't cached or in flight.
 
-On denial the endpoint returns `429 Too Many Requests` with a `Retry-After` header.
+Backend selection: **Upstash Redis** (`@upstash/ratelimit`) when `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` are set — bucket state is centralized, immune to instance churn / region failover / distributed-IP dodges. **In-memory fallback** otherwise, used for local development only. Upstash errors fail open (logged) on the principle that a flaky Redis shouldn't take down all submissions.
+
+On denial the endpoint returns `429 Too Many Requests` with a `Retry-After` header plus a JSON body `{ error, reason, retryAfterSec, signInPrompt }` where `reason` is `submit_flood` or `new_crawl_quota`.
 
 Upper-bound inputs are also limited independently. All constants live in `lib/config.ts`:
 

@@ -33,21 +33,26 @@ export async function POST(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  // Rate limit — keyed by user id when signed in, IP when not. The
-  // anon bucket is tiny so bots can't drain our LLM / Puppeteer
-  // budget; signed-in users get a bigger one.
-  const rateKey = user ? `user:${user.id}` : `ip:${clientIp(req)}`
-  const rate = await consumeRateLimit(rateKey, user ? rateLimit.AUTH : rateLimit.ANON)
-  if (!rate.allowed) {
+  // Two-bucket rate limiting. Keys are prefixed per-bucket so the
+  // limiters never share Redis entries. SUBMIT is a loose abuse
+  // floor charged on every POST — bounds how often the cheap path
+  // (URL validation + HEAD probe + DB lookups) can run. NEW_CRAWL
+  // is the tight quota charged only when a submission actually
+  // dispatches a fresh crawl; see further down.
+  const principal = user ? `user:${user.id}` : `ip:${clientIp(req)}`
+  const submit = await consumeRateLimit(
+    `submit:${principal}`,
+    user ? rateLimit.AUTH_SUBMIT : rateLimit.ANON_SUBMIT,
+  )
+  if (!submit.allowed) {
     return NextResponse.json(
       {
-        error: "Too many requests — please slow down.",
-        // Hint the client to surface a Sign-In CTA. Anon users get
-        // a tighter bucket than signed-in users; a nudge to sign in
-        // is a reasonable response to the denial.
+        error: "Too many submissions — please slow down.",
+        reason: "submit_flood",
+        retryAfterSec: submit.retryAfterSec,
         signInPrompt: !user,
       },
-      { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
+      { status: 429, headers: { "Retry-After": String(submit.retryAfterSec) } },
     )
   }
 
@@ -123,6 +128,27 @@ export async function POST(req: NextRequest) {
     await bumpPageRequest(canonicalUrl)
     if (user) await upsertUserRequest(user.id, canonicalUrl)
     return NextResponse.json({ page_id: active.jobId, cached: false }, { status: 200 })
+  }
+
+  // About to dispatch a fresh crawl — this is the expensive path, so
+  // charge the tight new-crawl bucket. A denial here leaves the
+  // submit bucket already ticked (the user did submit), which is
+  // fine: cache-hit URLs remain available until the new-crawl
+  // window refills.
+  const newCrawl = await consumeRateLimit(
+    `newcrawl:${principal}`,
+    user ? rateLimit.AUTH_NEW_CRAWL : rateLimit.ANON_NEW_CRAWL,
+  )
+  if (!newCrawl.allowed) {
+    return NextResponse.json(
+      {
+        error: "You've hit your limit for generating new pages.",
+        reason: "new_crawl_quota",
+        retryAfterSec: newCrawl.retryAfterSec,
+        signInPrompt: !user,
+      },
+      { status: 429, headers: { "Retry-After": String(newCrawl.retryAfterSec) } },
+    )
   }
 
   // Stale or new — run a fresh crawl. Bump `last_requested_at` AFTER

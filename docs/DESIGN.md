@@ -124,7 +124,7 @@ Supabase Auth handles everything: GitHub and Google OAuth providers, SSR session
 The app is **optionally-authenticated** on the main flow. Anyone can generate an `llms.txt` without signing in. Sign-in unlocks:
 
 - `/dashboard` (history list)
-- Higher rate limit (10/hr vs 3/hr)
+- Higher rate limits (300/hr submit + 10/hr new crawls vs 60/hr + 3/hr anon — see §Rate limiting)
 - `GET /api/pages` + `GET /api/pages/download` (history API + zip export)
 - Remembering what you've asked for across devices
 
@@ -151,7 +151,7 @@ All routes live under `/app/api`.
 Every new-crawl request lands here. The route:
 
 1. Parses and validates the URL (`≤ 2048` chars, http(s), canonicalized via a HEAD probe that is itself SSRF-validated).
-2. Looks up the rate-limit key: `user.id` if signed in, else the client IP. Runs a token bucket against `rateLimit.AUTH` (10/hr) or `rateLimit.ANON` (3/hr). On miss, returns `429` with `Retry-After` and, for anon users, a `signInPrompt: true` hint the landing page uses to nudge sign-in.
+2. Looks up the principal: `user.id` if signed in, else the client IP. Consumes the **SUBMIT** token bucket — `AUTH_SUBMIT` (300/hr) or `ANON_SUBMIT` (60/hr) — a loose abuse floor charged on every POST. On miss, returns `429` with `reason: "submit_flood"`, `retryAfterSec`, and (for anon users) `signInPrompt: true`. Later, if the request branches into the new-crawl path, the tight **NEW_CRAWL** bucket — `AUTH_NEW_CRAWL` (10/hr) or `ANON_NEW_CRAWL` (3/hr) — is charged too; a denial at that point returns `429` with `reason: "new_crawl_quota"`. Cache-hit and in-flight-attach submissions *never* touch the new-crawl bucket, so a user whose new-crawl quota is exhausted can still reach already-cached URLs.
 3. Checks for an existing `pages.result` under 24 hours old (`crawler.PAGE_TTL_HOURS`). If fresh, returns the most recent terminal job id with `cached: true` — no new crawl.
 4. Checks for an in-flight job on the same URL. If one exists, returns its id with `cached: false`. This is what makes two users hitting the same URL simultaneously share one crawl.
 5. Otherwise, creates a new `jobs` row and calls `enqueueCrawl(jobId, url)` (`lib/jobQueue.ts`), which publishes to QStash if `QSTASH_TOKEN` is set and falls back to `waitUntil(runCrawlPipeline(...))` for local dev. Either way the HTTP response returns immediately; the actual crawl runs later in the worker (`app/api/worker/crawl/route.ts` for the QStash path, the caller's own Fluid Compute instance for the fallback).
@@ -358,9 +358,18 @@ Known limitation: TOCTOU between `assertSafeUrl` and the actual fetch (DNS rebin
 
 ### Rate limiting
 
-`lib/rateLimit.ts` — token bucket, keyed by user id when signed in and by client IP otherwise. Anon: capacity 3, refill `3/3600` per second. Auth: capacity 10, refill `10/3600`. Applied on `POST /api/p` only — reads and cached-hit responses are free.
+Two token buckets per principal (principal = `user.id` when signed in, else client IP). Both live in `lib/rateLimit.ts`; both are backed by **Upstash Redis** (`@upstash/ratelimit`) in production, with an in-memory fallback for local dev.
 
-Two backends, selected at module load:
+| Bucket | Anon | Auth | Consumed when | Denial `reason` |
+|---|---|---|---|---|
+| `SUBMIT` | 60/hr | 300/hr | Every `POST /api/p` (abuse floor) | `submit_flood` |
+| `NEW_CRAWL` | 3/hr | 10/hr | Only when the request dispatches a fresh crawl (cache miss + no in-flight attach) | `new_crawl_quota` |
+
+The split lets normal users re-visit cached URLs freely while still protecting Anthropic / Puppeteer budget from a bot looping on fresh domains. A user whose `NEW_CRAWL` bucket is empty can still load any URL that's already in the global `pages` cache (same product), and only sees the "you've hit your limit for generating new pages" message when they try a genuinely new URL.
+
+Redis keys are prefixed per bucket (`submit:…`, `newcrawl:…`) so the two limiters never share state. Denials return `429` with `Retry-After` plus a JSON body `{ error, reason, retryAfterSec, signInPrompt }`; the landing client renders "Try again in N minutes" using `retryAfterSec` and surfaces a Sign-In CTA when `signInPrompt` is set.
+
+Backend selection:
 
 - **Upstash Redis** (`@upstash/ratelimit`) when both `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are set. State is centralized so instance churn / region failover / autoscale can't reset a user's bucket, and the limits hold up against distributed IPs. On a transient Redis error the limiter fails open (logged) — a flaky Redis shouldn't take down all crawl submissions.
 - **In-memory token bucket** otherwise. Keeps `npm run dev` working without a Redis dependency. Fine for a single Fluid Compute instance; not fit for production at scale since a cold-start or autoscale event gives the attacker a fresh bucket.
@@ -400,7 +409,7 @@ All tunable constants are in `/lib/config.ts`, grouped by domain. This is the si
 - **`crawler`** — `MAX_PAGES: 25`, `MAX_DEPTH: 2`, `CONCURRENCY: 5`, `POLITENESS_DELAY_MS: 300`, `PAGE_TTL_HOURS: 24`, `URLS_PER_PREFIX_CAP: 5`, `PREFIX_SEGMENT_DEPTH: 2`, `MAX_SITEMAP_URLS: 500`, `SITEMAP_MAX_BYTES: 10 MB`, `SITEMAP_TIMEOUT_MS: 10_000`, `HOMEPAGE_FETCH_TIMEOUT_MS: 8_000`, `RESPONSE_MAX_BYTES: 5 MB`, `MAX_REDIRECTS: 5`, `MAX_CRAWL_DELAY_MS: 10_000`, `EXCERPT_MAX_BYTES: 4 KB`, `PIPELINE_BUDGET_MS: 270_000`, `EXTERNAL_REFS_MAX_KEEP: 8`.
 - **`llm`** — `MODEL: claude-haiku-4-5-20251001`, `ENRICH_BATCH_SIZE: 20`, `RANK_MAX_KEEP: 120`, `RANK_SKIP_BELOW: 10`, `DESCRIPTION_MAX_CHARS: 240`, `SECTION_MAX_CHARS: 30`.
 - **`api`** — `MAX_URL_LENGTH: 2048`, `PAGES_DEFAULT_LIMIT: 20`, `PAGES_MAX_LIMIT: 50`, `DOWNLOAD_MAX_ENTRIES: 500`.
-- **`rateLimit`** — `ANON: { capacity: 3, refillPerSec: 3/3600 }`, `AUTH: { capacity: 10, refillPerSec: 10/3600 }`.
+- **`rateLimit`** — `ANON_SUBMIT: { capacity: 60, refillPerSec: 60/3600 }`, `AUTH_SUBMIT: { capacity: 300, refillPerSec: 300/3600 }`, `ANON_NEW_CRAWL: { capacity: 3, refillPerSec: 3/3600 }`, `AUTH_NEW_CRAWL: { capacity: 10, refillPerSec: 10/3600 }`.
 - **`monitor`** — `STALE_DAYS: 5`, `BATCH_SIZE: 200`, `SAME_HOST_DELAY_MS: 400`, `STUCK_JOB_AFTER_MS: 900_000`.
 - **`ui`** — `POLL_INTERVAL_MS: 1_500`, `MAX_POLL_FAILURES: 5`, `LIVE_MIN_STEP_DWELL_MS: 1_200`, `SIM_STEP_DURATIONS_MS: [1800, 1600, 1400, 1200]`, `MONITOR_STATUS_TICK_MS: 10_000`, `JOB_CACHE_MAX: 30`.
 
