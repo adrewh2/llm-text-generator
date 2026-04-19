@@ -32,7 +32,7 @@ const MAX_DESCRIPTION_LEN = DESCRIPTION_MAX_CHARS
 // model is told to treat as data.
 function neuter(s: string): string {
   return s
-    .replace(/<\/?[a-z_]+>/gi, "")                 // strip tag-like constructs
+    .replace(/<[^>]*>/g, "")                       // strip any <...> (tags, including `<svg onload=…>` with attributes that the previous bare-identifier pattern let through)
     .replace(/\[\[[\s\S]*?\]\]/g, "")              // [[prompt-template guards]]
     .replace(/\{\{[\s\S]*?\}\}/g, "")              // {{template markers}}
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")       // [text](url) → text (keeps readable content, drops the URL payload)

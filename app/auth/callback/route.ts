@@ -13,6 +13,14 @@ function sanitizeNext(next: string | null): string {
   if (!next.startsWith("/")) return DEFAULT_NEXT
   if (next.startsWith("//")) return DEFAULT_NEXT
   if (next.startsWith("/\\")) return DEFAULT_NEXT // IE/old-browser trick
+  // Reject control / whitespace chars — browsers differ on how they
+  // normalise `/\t//evil.com` and similar, so sidestep the spec
+  // variance entirely.
+  if (/[\x00-\x1f\s]/.test(next)) return DEFAULT_NEXT
+  // Reject percent-encoded path separators — an intermediate proxy
+  // can normalise `/%2f%2fevil.com` back to `//evil.com` before the
+  // browser sees it.
+  if (/%2f|%5c/i.test(next)) return DEFAULT_NEXT
   return next
 }
 
