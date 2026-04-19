@@ -1,9 +1,22 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getPageByUrl, hasUserRequest, removeUserRequest, upsertUserRequest } from "@/lib/store"
 import { isAllowedOrigin } from "@/lib/upstash/rateLimit"
-import { createClient } from "@/lib/supabase/server"
+import { getCurrentUser } from "@/lib/supabase/getUser"
+import { normalizeUrl } from "@/lib/crawler/net/url"
 
 export const runtime = "nodejs"
+
+/**
+ * Normalize the incoming query param the same way `POST /api/p` does
+ * before looking anything up — otherwise www vs non-www variants, or
+ * a bookmarked link that kept a tracking param, produce 404s even
+ * though the page exists under its canonical key. Returns null when
+ * the raw input doesn't parse as a URL at all.
+ */
+function canonicalPageUrl(raw: string | null): string | null {
+  if (!raw) return null
+  return normalizeUrl(raw) ?? raw
+}
 
 /**
  * GET /api/p/request?pageUrl=…
@@ -16,11 +29,10 @@ export const runtime = "nodejs"
  * anon callers get a plain `false` so the UI just hides the button.
  */
 export async function GET(req: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
   if (!user) return NextResponse.json({ inHistory: false })
 
-  const pageUrl = new URL(req.url).searchParams.get("pageUrl")
+  const pageUrl = canonicalPageUrl(new URL(req.url).searchParams.get("pageUrl"))
   if (!pageUrl) return NextResponse.json({ error: "pageUrl required" }, { status: 400 })
 
   const inHistory = await hasUserRequest(user.id, pageUrl)
@@ -43,11 +55,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
 
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
   if (!user) return new NextResponse(null, { status: 401 })
 
-  const pageUrl = new URL(req.url).searchParams.get("pageUrl")
+  const pageUrl = canonicalPageUrl(new URL(req.url).searchParams.get("pageUrl"))
   if (!pageUrl) return NextResponse.json({ error: "pageUrl required" }, { status: 400 })
 
   const page = await getPageByUrl(pageUrl)
@@ -62,11 +73,10 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
 
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
   if (!user) return new NextResponse(null, { status: 401 })
 
-  const pageUrl = new URL(req.url).searchParams.get("pageUrl")
+  const pageUrl = canonicalPageUrl(new URL(req.url).searchParams.get("pageUrl"))
   if (!pageUrl) return NextResponse.json({ error: "pageUrl required" }, { status: 400 })
 
   await removeUserRequest(user.id, pageUrl)

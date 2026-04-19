@@ -69,23 +69,34 @@ export async function createJob(jobId: string, url: string): Promise<{ pageId: s
  */
 export async function getPageById(pageId: string): Promise<CrawlJob | undefined> {
   const supabase = getClient()
+  // Single round-trip: fetch the page row plus its latest job via
+  // PostgREST's embedded-resource syntax against the jobs_page_url_fkey
+  // foreign key. `!` disambiguates the FK path, and the inner
+  // order/limit narrow the embedded array to exactly the newest job.
+  // Previously this was two sequential queries (pages, then jobs on
+  // the URL the page query returned) — cutting that to one halves
+  // /p/{id} poll latency and every dashboard row-refresh poll.
   const { data: page } = await supabase
     .from("pages")
-    .select("id, url, result, crawled_pages, site_name, genre")
+    .select(`
+      id,
+      url,
+      result,
+      crawled_pages,
+      site_name,
+      genre,
+      jobs:jobs!jobs_page_url_fkey(*)
+    `)
     .eq("id", pageId)
+    .order("created_at", { foreignTable: "jobs", ascending: false })
+    .limit(1, { foreignTable: "jobs" })
     .maybeSingle()
   if (!page) return undefined
 
-  // Latest job for this URL — any status. A monitor-triggered re-crawl
-  // in flight should surface as a non-terminal status even if the page
-  // already has a cached result, so the UI can show "Refreshing…".
-  const { data: job } = await supabase
-    .from("jobs")
-    .select("*")
-    .eq("page_url", page.url)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  // A monitor-triggered re-crawl in flight should surface as a non-
+  // terminal status even when `pages.result` is still the previous
+  // terminal output, so the UI can show "Refreshing…".
+  const job = Array.isArray(page.jobs) ? page.jobs[0] : null
   if (!job) return undefined
 
   const isTerminal = job.status === "complete" || job.status === "partial"
@@ -134,31 +145,39 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
     }
 
     if (job) {
-      const { error: pagesErr } = await supabase.from("pages").upsert({
+      // Build the upsert payload so an omitted `pages` leaves the prior
+      // `crawled_pages` alone. A callsite that writes a fresh `result`
+      // but doesn't re-submit the page list (e.g. a future re-assembly
+      // path) would otherwise wipe the cached explorer data on every
+      // write.
+      const pagesUpdate: Record<string, unknown> = {
         url: job.page_url,
         result: updates.result,
         site_name: updates.siteName ?? job.site_name ?? null,
         genre: updates.genre ?? job.genre ?? null,
-        crawled_pages: updates.pages ?? null,
         // A fresh crawl is itself the strongest check signal — set
         // last_checked_at so the dashboard doesn't dangle on "Awaiting
         // check" until the next cron tick.
         last_checked_at: now,
         updated_at: now,
-      }, { onConflict: "url" })
+      }
+      if (updates.pages !== undefined) pagesUpdate.crawled_pages = updates.pages
+      // Returning the id from the upsert saves an extra SELECT on the
+      // revalidation path — previously we upserted, then re-queried
+      // the same row just to learn its UUID.
+      const { data: pageRow, error: pagesErr } = await supabase
+        .from("pages")
+        .upsert(pagesUpdate, { onConflict: "url" })
+        .select("id")
+        .maybeSingle()
       if (pagesErr) {
         errorLog("store.updateJob.pages", new Error(`${id}: ${pagesErr.message}`))
         throw new Error(pagesErr.message)
       }
 
-      // /api/p/:pageId is 1:1 with this page row now (page id stays
-      // stable across re-crawls), so a single revalidation covers the
+      // /api/p/:pageId is 1:1 with this page row (page id stays stable
+      // across re-crawls), so a single revalidation covers the
       // terminal-response cache.
-      const { data: pageRow } = await supabase
-        .from("pages")
-        .select("id")
-        .eq("url", job.page_url)
-        .maybeSingle()
       if (pageRow) revalidatePath(`/api/p/${pageRow.id}`)
     }
   }
@@ -300,14 +319,20 @@ export async function sweepStaleMonitoredPages(staleAfterDays: number): Promise<
 /**
  * Bump `pages.last_requested_at` — called whenever a user interacts
  * with a page's URL, so the sweeper can tell dormant URLs from active
- * ones. No-op if the page doesn't exist yet.
+ * ones. No-op if the page doesn't exist yet. Errors go to Sentry so
+ * a Supabase outage here doesn't silently drift sweeper decisions —
+ * the caller doesn't wait on this (fire-and-forget) so we log instead
+ * of throwing.
  */
 export async function bumpPageRequest(pageUrl: string): Promise<void> {
   const supabase = getClient()
-  await supabase
+  const { error } = await supabase
     .from("pages")
     .update({ last_requested_at: new Date().toISOString() })
     .eq("url", pageUrl)
+  if (error) {
+    errorLog("store.bumpPageRequest", new Error(`${pageUrl}: ${error.message}`))
+  }
 }
 
 // ─── User requests ────────────────────────────────────────────────────────────

@@ -39,9 +39,24 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Runs on every non-static request; API routes need the session
-  // refresh too, otherwise getUser() may return null mid-session.
+  // Scope: only routes that actually need the session cookie kept
+  // fresh. Previously this ran on every non-static request — every
+  // public /p/{id} view triggered a Supabase `getUser()` roundtrip
+  // for anons, which the anon-readable page doesn't use.
+  //
+  // Covered:
+  //   - /dashboard/*   — server-gated to signed-in users
+  //   - /login         — reads session to auto-redirect if signed in
+  //   - /auth/*        — OAuth callback exchanges code for session
+  //   - /api/*         — auth-gated endpoints (submit, history,
+  //                      download, request). /api/p/{id} GET is
+  //                      public but still runs through Supabase for
+  //                      other reasons; the small extra round-trip
+  //                      here is cheaper than excluding it precisely.
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js)$).*)",
+    "/dashboard/:path*",
+    "/login",
+    "/auth/:path*",
+    "/api/:path*",
   ],
 }

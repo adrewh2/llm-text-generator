@@ -318,7 +318,11 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7, 12]`
       .filter((i) => typeof i === "number" && i >= 1 && i <= candidates.length)
       .map((i) => candidates[i - 1])
 
-    return kept.length > 0 ? kept : candidates.slice(0, maxKeep)
+    // The LLM occasionally returns duplicate indices (e.g. [1, 1, 2]).
+    // `visited` in the pipeline already dedupes the actual fetch, but
+    // duplicates on this list inflate the prompt of later LLM passes.
+    const deduped = Array.from(new Set(kept))
+    return deduped.length > 0 ? deduped : candidates.slice(0, maxKeep)
   } catch (err) {
     debugLog("llmEnrich.rankCandidateUrls", err)
     return candidates.slice(0, maxKeep)

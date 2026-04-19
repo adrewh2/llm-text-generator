@@ -7,7 +7,7 @@ import { assertSafeUrl, UnsafeUrlError } from "@/lib/crawler/net/ssrf"
 import { clientIp, consumeRateLimit, isAllowedOrigin } from "@/lib/upstash/rateLimit"
 import { api, rateLimit } from "@/lib/config"
 import { enqueueCrawl } from "@/lib/upstash/jobQueue"
-import { createClient } from "@/lib/supabase/server"
+import { getCurrentUser } from "@/lib/supabase/getUser"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
@@ -50,8 +50,7 @@ export async function POST(req: NextRequest) {
     throw err
   }
 
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
 
   // Two-bucket rate limiting. Keys are prefixed per-bucket so the
   // limiters never share Redis entries. SUBMIT is a loose abuse
@@ -80,16 +79,18 @@ export async function POST(req: NextRequest) {
   // Returns a response if handled, null if the caller should continue.
   // `page_id` in the response is the pages.id UUID — stable across
   // re-crawls, so two users of the same URL land on the same /p/{id}.
+  // bumpPageRequest fires best-effort; a flaky Supabase write
+  // shouldn't turn a cache-hit into a 500 for the user.
   const tryServeAt = async (key: string): Promise<NextResponse | null> => {
     const existing = await getPageByUrl(key)
     if (existing && !existing.isStale) {
-      await bumpPageRequest(key)
+      bumpPageRequest(key).catch(() => {})
       if (user) await upsertUserRequest(user.id, key)
       return NextResponse.json({ page_id: existing.pageId, cached: true }, { status: 200 })
     }
     const active = await getActiveJobForUrl(key)
     if (active) {
-      await bumpPageRequest(key)
+      bumpPageRequest(key).catch(() => {})
       if (user) await upsertUserRequest(user.id, key)
       return NextResponse.json({ page_id: active.pageId, cached: false }, { status: 200 })
     }

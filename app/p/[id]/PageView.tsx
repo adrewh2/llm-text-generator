@@ -1,6 +1,6 @@
 "use client"
 
-import { Suspense, useCallback, useEffect, useRef, useState } from "react"
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useParams, useSearchParams } from "next/navigation"
 import { LayoutDashboard, Loader2, Plus, Shield } from "lucide-react"
 import Link from "next/link"
@@ -154,12 +154,25 @@ function PageViewInner({
   }, [pageId, startSimulation])
 
   useEffect(() => {
-    fetchJob()
-    intervalRef.current = setInterval(fetchJob, POLL_INTERVAL_MS)
+    // Skip the initial fetch + polling when SSR already seeded a
+    // terminal job — we'd otherwise spend one /api/p/{id} round-trip
+    // on every page open to re-confirm state that's already on the
+    // page. A monitor re-crawl that happens after SSR will be picked
+    // up on the next full navigation; not waiting 1.5s to learn about
+    // it is a fine trade for a faster first interaction on the 99%
+    // common path.
+    const initiallyTerminal = job
+      ? ["complete", "partial", "failed"].includes(job.status)
+      : false
+    if (!initiallyTerminal) {
+      fetchJob()
+      intervalRef.current = setInterval(fetchJob, POLL_INTERVAL_MS)
+    }
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
       if (simTimerRef.current) clearTimeout(simTimerRef.current)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchJob])
 
   const visibleStatus = useVisibleStatus(job, simulatedStep !== null)
@@ -191,7 +204,13 @@ function PageViewInner({
   // would trip "missing H1" on empty text. The store writes pages first,
   // so this is belt-and-suspenders.
   const result = showResult ? job?.result : undefined
-  const validation = result ? validateLlmsTxt(result) : null
+  // Re-validating on every render (polling tick, auth change, etc.)
+  // re-parses the whole result string; memoize so it only runs when
+  // the terminal result actually changes.
+  const validation = useMemo(
+    () => (result ? validateLlmsTxt(result) : null),
+    [result],
+  )
 
   return (
     <div className="h-screen font-sans bg-white flex flex-col">

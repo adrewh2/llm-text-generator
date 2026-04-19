@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { ArrowLeft, Github } from "lucide-react"
@@ -9,7 +9,11 @@ import Link from "next/link"
 export default function LoginPage() {
   const [loading, setLoading] = useState<string | null>(null)
   const [error, setError] = useState("")
-  const supabase = createClient()
+  // Stash the Supabase client behind a ref so its identity stays
+  // stable across renders. Previously `createClient()` ran in the
+  // render body and the `useEffect` below depended on `supabase`,
+  // which made the effect fire on every render.
+  const supabase = useRef(createClient()).current
   const router = useRouter()
 
   // Already signed in → skip the login screen entirely. Prevents the

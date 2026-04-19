@@ -24,13 +24,17 @@ export async function GET(
     bumpPageRequest(job.url).catch(() => {})
   }
 
-  // Terminal jobs are immutable until the next re-crawl, at which point
-  // updateJob() revalidates the path. The TTL is a safety net.
-  const isTerminal =
-    job.status === "complete" || job.status === "partial" || job.status === "failed"
-  const cacheControl = isTerminal
-    ? "public, s-maxage=86400, stale-while-revalidate=604800"
-    : "no-store"
+  // Terminal success → long-lived edge cache; `updateJob` revalidates
+  // the path on the next re-crawl. `failed` is kept short because it
+  // often reflects a transient condition (DNS blip, bot challenge, a
+  // site we haven't yet added a workaround for) — we'd rather absorb
+  // a retry hot path than pin someone's broken result for a day.
+  const cacheControl =
+    job.status === "complete" || job.status === "partial"
+      ? "public, s-maxage=86400, stale-while-revalidate=604800"
+      : job.status === "failed"
+      ? "public, s-maxage=60"
+      : "no-store"
 
   return NextResponse.json(
     {
