@@ -34,6 +34,7 @@ Paste a URL, the app discovers pages (sitemap → robots → link-following, wit
 **Accounts**
 - Supabase OAuth sign-in (GitHub + Google); anonymous access to the generate + view paths remains fully supported
 - Per-user dashboard of every page they requested, with infinite scroll, remove-from-history action, and bulk ZIP download
+- **Add-to-dashboard** action on the result page — signed-in viewers landing on a shared `/p/[id]` URL they haven't seen before get a one-click save button (far-left of Copy / Download) that adds the page to their history without re-crawling; button auto-hides on URLs already saved
 - Row-Level Security on every table; service-role key used only server-side — one user cannot read another user's history even with the anon key
 - Two-bucket rate limiter on `POST /api/p` — a loose **SUBMIT** floor (60/hr anon, 300/hr auth by default) on every POST, and a tight **NEW_CRAWL** quota (3/hr anon, 10/hr auth by default) charged only when a submission dispatches a fresh pipeline run. Keyed by user id when signed in, by client IP when not. Upstash Redis state in production, in-memory fallback for local dev.
 

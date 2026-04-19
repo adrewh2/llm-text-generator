@@ -41,16 +41,16 @@ export default function NavAuth({ initialUser = null }: { initialUser?: User | n
   }
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-2 sm:gap-3">
       {onDashboard ? (
-        <Link href="/" className={HEADER_BUTTON_CLASS}>
+        <Link href="/" className={HEADER_BUTTON_CLASS} aria-label="Generate">
           <Plus size={14} className="text-zinc-400" />
-          Generate
+          <span className="hidden sm:inline">Generate</span>
         </Link>
       ) : (
-        <Link href="/dashboard" className={HEADER_BUTTON_CLASS}>
+        <Link href="/dashboard" className={HEADER_BUTTON_CLASS} aria-label="Dashboard">
           <LayoutDashboard size={14} className="text-zinc-400" />
-          Dashboard
+          <span className="hidden sm:inline">Dashboard</span>
         </Link>
       )}
       <UserMenu user={user} />

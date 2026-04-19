@@ -331,6 +331,22 @@ export async function removeUserRequest(userId: string, pageUrl: string): Promis
   await supabase.from("user_requests").delete().eq("user_id", userId).eq("page_url", pageUrl)
 }
 
+/**
+ * Check whether a (user, page_url) association exists. Cheap lookup
+ * against the UNIQUE(user_id, page_url) index — used by the result
+ * page to decide whether to show the "Add to dashboard" affordance.
+ */
+export async function hasUserRequest(userId: string, pageUrl: string): Promise<boolean> {
+  const supabase = getClient()
+  const { data } = await supabase
+    .from("user_requests")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("page_url", pageUrl)
+    .maybeSingle()
+  return !!data
+}
+
 export interface UserPageEntry {
   pageUrl: string
   pageId: string | null

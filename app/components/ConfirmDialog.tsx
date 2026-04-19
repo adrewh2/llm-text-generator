@@ -8,6 +8,13 @@ interface Props {
   body: string
   note?: string
   confirmLabel?: string
+  /**
+   * "danger" (default) styles the confirm button red — use for
+   * delete / remove flows. "primary" styles it as the standard
+   * neutral dark-pill CTA — use when the action isn't destructive
+   * (e.g. kicking off a zip download).
+   */
+  confirmVariant?: "danger" | "primary"
   onConfirm: () => void
   onCancel: () => void
 }
@@ -17,6 +24,7 @@ export default function ConfirmDialog({
   body,
   note,
   confirmLabel = "Delete",
+  confirmVariant = "danger",
   onConfirm,
   onCancel,
 }: Props) {
@@ -101,7 +109,11 @@ export default function ConfirmDialog({
           <button
             ref={confirmButtonRef}
             onClick={confirm}
-            className="text-sm font-medium text-white bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+            className={
+              confirmVariant === "primary"
+                ? "text-sm font-medium text-white bg-zinc-950 hover:bg-zinc-800 px-4 py-2 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400"
+                : "text-sm font-medium text-white bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+            }
           >
             {confirmLabel}
           </button>

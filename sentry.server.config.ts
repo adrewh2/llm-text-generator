@@ -9,6 +9,11 @@ import * as Sentry from "@sentry/nextjs"
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
 
+  // Dev-only errors (HMR transients, unfinished refactors, stale
+  // caches) aren't signal. Gate on NODE_ENV so `next dev` is a
+  // no-op while Vercel / `next start` still forward events.
+  enabled: process.env.NODE_ENV === "production",
+
   // 10 % sampling on traces is plenty for volume calibration; raise
   // if we start chasing a specific perf issue.
   tracesSampleRate: 0.1,

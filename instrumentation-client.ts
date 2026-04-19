@@ -11,6 +11,11 @@ import * as Sentry from "@sentry/nextjs"
 
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+  // Dev HMR routinely throws transient ReferenceErrors on stale
+  // cached JSX during fast-refresh — noise that doesn't reflect prod
+  // behaviour. Gate on NODE_ENV so `next dev` is a no-op while
+  // `next start` + Vercel deploys still forward events.
+  enabled: process.env.NODE_ENV === "production",
   tracesSampleRate: 0.1,
   replaysSessionSampleRate: 0,
   replaysOnErrorSampleRate: 1.0,

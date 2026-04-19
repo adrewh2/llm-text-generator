@@ -198,16 +198,22 @@ function PageViewInner({
       <AppHeader
         center={
           <>
+            {/* Domain stays visible on every viewport — users need to
+                know which site's llms.txt they're looking at — and
+                truncate handles long ones. Divider stays too because
+                it's the visual separator between the brand and the
+                domain. Page count + spec chip hide below sm; the
+                mobile right side is tight enough already. */}
             <span className="h-4 w-px bg-zinc-200 shrink-0" aria-hidden />
             {domain
-              ? <span className="text-sm text-zinc-500 hidden sm:block truncate">{domain}</span>
-              : <div className="h-3 w-32 bg-zinc-100 rounded animate-pulse hidden sm:block" />}
+              ? <span className="text-sm text-zinc-500 truncate">{domain}</span>
+              : <div className="h-3 w-24 sm:w-32 bg-zinc-100 rounded animate-pulse" />}
             {showResult ? (
               <>
                 <span className="text-zinc-300 hidden sm:block">·</span>
                 <span className="text-xs text-zinc-400 font-mono hidden sm:block shrink-0">{crawledCount} pages</span>
                 {validation && (
-                  <span className={`flex items-center gap-1.5 ml-1 text-xs font-medium px-2.5 py-1 rounded-full ring-1 shrink-0 ${
+                  <span className={`hidden sm:flex items-center gap-1.5 ml-1 text-xs font-medium px-2.5 py-1 rounded-full ring-1 shrink-0 ${
                     validation.valid
                       ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
                       : "bg-red-50 text-red-600 ring-red-100"
@@ -228,15 +234,18 @@ function PageViewInner({
           </>
         }
         right={
-          <div className="flex items-center gap-3">
-            <Link href="/" className={HEADER_BUTTON_CLASS}>
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Buttons stay visible on every viewport; labels collapse
+                to icon-only below sm so the right side fits next to
+                the logo + avatar without overlapping the center slot. */}
+            <Link href="/" className={HEADER_BUTTON_CLASS} aria-label="Generate">
               <Plus size={14} className="text-zinc-400" />
-              Generate
+              <span className="hidden sm:inline">Generate</span>
             </Link>
             {user && (
-              <Link href="/dashboard" className={HEADER_BUTTON_CLASS}>
+              <Link href="/dashboard" className={HEADER_BUTTON_CLASS} aria-label="Dashboard">
                 <LayoutDashboard size={14} className="text-zinc-400" />
-                Dashboard
+                <span className="hidden sm:inline">Dashboard</span>
               </Link>
             )}
             {user && <UserMenu user={user} />}
@@ -269,7 +278,7 @@ function PageViewInner({
             <Loader2 size={24} className="text-zinc-400 animate-spin" />
           </div>
         ) : showResult && job.result ? (
-          <ResultPane job={job} />
+          <ResultPane job={job} signedIn={!!user} />
         ) : displayJob ? (
           <ProgressPane
             job={displayJob}
