@@ -219,8 +219,8 @@ export default function LandingClient({ initialUser }: { initialUser: User | nul
               />
               <button
                 type="submit"
-                disabled={loading || !url.trim() || !!validationHint}
-                className="flex items-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-4 py-2 rounded-[9px] hover:bg-zinc-800 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 transition-all whitespace-nowrap"
+                disabled={loading || !url.trim()}
+                className="flex items-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-4 py-2 rounded-[9px] hover:bg-zinc-800 active:scale-95 disabled:cursor-not-allowed transition-all whitespace-nowrap"
               >
                 {loading ? (
                   <><Loader2 size={13} className="animate-spin" /> Generating…</>

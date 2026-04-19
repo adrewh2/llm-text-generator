@@ -77,6 +77,68 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
     return () => observer.disconnect()
   }, [fetchMore, hasMore])
 
+  // Live-refresh ONLY the rows whose latest job is still non-terminal
+  // — hits /api/p/{id} once per running row instead of refetching the
+  // whole paginated window on every tick. Merges by pageUrl. When a
+  // row flips terminal we reuse the job's updatedAt for lastCheckedAt
+  // (updateJob writes both at the same `now` — lib/store.ts#L137-148)
+  // so MonitorStatus goes "Refreshing…" → "Refreshed just now"
+  // immediately, instead of sitting on a stale timestamp until the
+  // next monitor cron tick.
+  const runningIdsKey = pages
+    .filter(
+      (p) => p.pageId !== null &&
+        p.latestJobStatus !== null &&
+        !["complete", "partial", "failed"].includes(p.latestJobStatus),
+    )
+    .map((p) => p.pageId)
+    .join(",")
+  useEffect(() => {
+    if (!runningIdsKey) return
+    const ids = runningIdsKey.split(",")
+    let cancelled = false
+    const tick = async () => {
+      const results = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const res = await fetch(`/api/p/${id}`)
+            if (!res.ok) return null
+            return (await res.json()) as {
+              url: string
+              status: string
+              siteName?: string
+              genre?: string
+              updatedAt: string
+            }
+          } catch {
+            return null
+          }
+        }),
+      )
+      if (cancelled) return
+      const byUrl = new Map<string, { url: string; status: string; siteName?: string; genre?: string; updatedAt: string }>()
+      for (const r of results) {
+        if (r) byUrl.set(r.url, r)
+      }
+      if (byUrl.size === 0) return
+      setPages((prev) => prev.map((p) => {
+        const job = byUrl.get(p.pageUrl)
+        if (!job) return p
+        const terminal = ["complete", "partial", "failed"].includes(job.status)
+        return {
+          ...p,
+          siteName: job.siteName ?? p.siteName,
+          genre: job.genre ?? p.genre,
+          latestJobStatus: job.status,
+          lastCheckedAt: terminal ? job.updatedAt : p.lastCheckedAt,
+        }
+      }))
+    }
+    tick()
+    const intervalId = setInterval(tick, 3000)
+    return () => { cancelled = true; clearInterval(intervalId) }
+  }, [runningIdsKey])
+
   if (pages.length === 0) {
     return (
       <div className="text-center py-24 border border-dashed border-zinc-200 rounded-2xl">
