@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { bumpPageRequest, getPageById } from "@/lib/store"
+import { scrubError } from "./scrubError"
 
 export const runtime = "nodejs"
 
@@ -16,8 +17,11 @@ export async function GET(
   if (!job) return NextResponse.json({ error: "Not found" }, { status: 404 })
 
   // Count a view as "active use" so the monitor sweeper keeps the page.
+  // Fire-and-forget — this write doesn't gate the response. Awaiting
+  // it added a DB roundtrip to every view latency for no user benefit;
+  // the sweeper is eventually-consistent.
   if (job.status !== "failed") {
-    await bumpPageRequest(job.url)
+    bumpPageRequest(job.url).catch(() => {})
   }
 
   // Terminal jobs are immutable until the next re-crawl, at which point
@@ -37,24 +41,4 @@ export async function GET(
     },
     { headers: { "Cache-Control": cacheControl } },
   )
-}
-
-/**
- * Map internal pipeline errors to short user-facing messages. Prevents
- * us from leaking SSRF internals (resolved IPs, path hints) or stack
- * details that would signal "that attack got through to the crawler".
- */
-function scrubError(raw: string): string {
-  const lower = raw.toLowerCase()
-  if (lower.startsWith("unsafe url") || lower.includes("forbidden ip"))
-    return "This URL can't be crawled."
-  if (lower.includes("http 403") || lower.includes("bot challenge"))
-    return "This site blocked our crawler."
-  if (lower.startsWith("http ")) return "The site returned an error."
-  if (lower.includes("timeout") || lower.includes("timed out"))
-    return "The site took too long to respond."
-  if (lower.includes("dns")) return "Couldn't resolve that domain."
-  if (lower.includes("browser render failed")) return "We couldn't render this site."
-  if (lower.includes("exceeded time budget")) return "Crawl took longer than our budget allows."
-  return "Couldn't generate a result for this site."
 }
