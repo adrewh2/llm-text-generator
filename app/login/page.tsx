@@ -17,7 +17,7 @@ export default function LoginPage() {
   // but accidentally navigate back to /login.
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
-      if (data.user) router.replace("/dashboard")
+      if (data.user) router.replace("/")
     })
   }, [supabase, router])
 
