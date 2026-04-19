@@ -278,7 +278,7 @@ function PageViewInner({
             <Loader2 size={24} className="text-zinc-400 animate-spin" />
           </div>
         ) : showResult && job.result ? (
-          <ResultPane job={job} />
+          <ResultPane job={job} signedIn={!!user} />
         ) : displayJob ? (
           <ProgressPane
             job={displayJob}
