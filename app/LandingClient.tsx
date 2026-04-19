@@ -292,8 +292,8 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
 
       {/* How it works */}
       <section id="how-it-works" className="border-t border-zinc-100 bg-[#FAFAFA]">
-        <div className="max-w-4xl mx-auto px-6 py-20">
-          <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-[0.12em] text-center mb-14">
+        <div className="max-w-4xl mx-auto px-6 py-10">
+          <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-[0.12em] text-center mb-8">
             How it works
           </p>
           <div className="grid md:grid-cols-3 gap-10">
@@ -312,7 +312,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
               </div>
             ))}
           </div>
-          <div className="mt-16 p-5 rounded-xl bg-white border border-zinc-200 flex items-start gap-4">
+          <div className="mt-8 p-5 rounded-xl bg-white border border-zinc-200 flex items-start gap-4">
             <div className="w-8 h-8 rounded-lg bg-zinc-100 flex items-center justify-center shrink-0">
               <RefreshCw size={14} className="text-zinc-600" />
             </div>
@@ -337,8 +337,8 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
 
       {/* Sign-in Features */}
       <section className="border-t border-zinc-200 bg-zinc-100">
-        <div className="max-w-4xl mx-auto px-6 py-20">
-          <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-[0.12em] text-center mb-14">
+        <div className="max-w-4xl mx-auto px-6 py-14">
+          <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-[0.12em] text-center mb-10">
             {user ? "Enjoy these signed-in features!" : "Sign in for more features"}
           </p>
           <div className="grid md:grid-cols-2 gap-6">
