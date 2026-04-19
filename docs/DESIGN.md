@@ -144,6 +144,7 @@ All routes live under `/app/api`.
 | `GET /api/pages?offset&limit` | Required | Paginated dashboard list. |
 | `GET /api/pages/download` | Required | Zip of every completed page in the user's history. |
 | `GET /api/monitor` | Bearer `CRON_SECRET` | Vercel Cron target; runs the daily monitor sweep. |
+| `POST /api/worker/crawl` | QStash signature | QStash pushes here with `{ jobId, url }`; the route synchronously runs `runCrawlPipeline`. Signature-verified via `verifySignatureAppRouter` from `@upstash/qstash/nextjs`, body shape-checked (UUID + http(s)) on top. |
 | `GET /auth/callback` | — | OAuth return path, exchanges code for session. |
 
 ### `POST /api/p` — the hot path
@@ -162,9 +163,9 @@ Every new-crawl request lands here. The route:
 Client polls every `ui.POLL_INTERVAL_MS` (1.5s) until the job is terminal. The route:
 
 - Fetches the `jobs` row and, for terminal statuses, joins on `pages` for `result` and `crawled_pages`.
-- Calls `bumpPageRequest(pageUrl)` on every non-failed status so `pages.last_requested_at` advances even while a user is watching a mid-flight job. This is how active pages stay monitored. Terminal responses are CDN-cached (below), so the bump fires once per `s-maxage` window rather than on every poll — still well under the 5-day sweeper threshold.
+- Calls `bumpPageRequest(pageUrl)` on every non-failed status so `pages.last_requested_at` advances even while a user is watching a mid-flight job. This is how active pages stay monitored. Terminal responses are CDN-cached (below), so the bump fires once per edge-cache window rather than on every poll — still well under the 5-day sweeper threshold.
 - Scrubs the `error` field (removes resolved IPs and SSRF-specific detail from user-facing text).
-- Sets `Cache-Control: public, s-maxage=3600, stale-while-revalidate=86400` on terminal responses so Vercel's edge CDN serves repeat polls without touching Supabase. In-flight responses return `no-store` to keep progress live. Invalidation happens from the write side: when `updateJob` writes a new terminal result, it calls `revalidatePath('/api/p/:id')` for every job id that maps to that URL — required because `getJob` resolves `job.result` through `pages.result` by `page_url`, so a monitor re-crawl changes the JSON for every historical job id sharing the URL.
+- Sets `Cache-Control: public, s-maxage=86400, stale-while-revalidate=604800` on terminal responses — 1 day fresh, 7 days stale-while-revalidate. The long TTL is a safety net; freshness is maintained by **write-side invalidation**: when `updateJob` writes a new terminal result, it calls `revalidatePath('/api/p/:id')` for every job id that maps to the URL. This is required because `getJob` resolves `job.result` through `pages.result` by `page_url`, so a monitor re-crawl changes the JSON for every historical job id sharing the URL. The TTL only matters if a `revalidatePath` call is dropped, a deploy changes the response schema, or someone writes to Supabase outside of `updateJob` — in those cases the cache self-heals within a day rather than staying stale indefinitely. In-flight responses return `no-store` to keep progress live.
 
 ### `GET /api/monitor` — daily sweep
 
@@ -407,7 +408,7 @@ No API key or token ever reaches the log stream. Error messages embedded in job 
 All tunable constants are in `/lib/config.ts`, grouped by domain. This is the single place to change anything that might plausibly be adjusted for business or UX reasons. Values below are current as of this document:
 
 - **`crawler`** — `MAX_PAGES: 25`, `MAX_DEPTH: 2`, `CONCURRENCY: 5`, `POLITENESS_DELAY_MS: 300`, `PAGE_TTL_HOURS: 24`, `URLS_PER_PREFIX_CAP: 5`, `PREFIX_SEGMENT_DEPTH: 2`, `MAX_SITEMAP_URLS: 500`, `SITEMAP_MAX_BYTES: 10 MB`, `SITEMAP_TIMEOUT_MS: 10_000`, `HOMEPAGE_FETCH_TIMEOUT_MS: 8_000`, `RESPONSE_MAX_BYTES: 5 MB`, `MAX_REDIRECTS: 5`, `MAX_CRAWL_DELAY_MS: 10_000`, `EXCERPT_MAX_BYTES: 4 KB`, `PIPELINE_BUDGET_MS: 270_000`, `EXTERNAL_REFS_MAX_KEEP: 8`.
-- **`llm`** — `MODEL: claude-haiku-4-5-20251001`, `ENRICH_BATCH_SIZE: 20`, `RANK_MAX_KEEP: 120`, `RANK_SKIP_BELOW: 10`, `DESCRIPTION_MAX_CHARS: 240`, `SECTION_MAX_CHARS: 30`.
+- **`llm`** — `MODEL: claude-haiku-4-5-20251001`, `MAX_RETRIES: 5`, `CALL_TIMEOUT_MS: 60_000`, `ENRICH_BATCH_SIZE: 20`, `RANK_MAX_KEEP: 120`, `RANK_SKIP_BELOW: 10`, `DESCRIPTION_MAX_CHARS: 240`, `SECTION_MAX_CHARS: 30`.
 - **`api`** — `MAX_URL_LENGTH: 2048`, `PAGES_DEFAULT_LIMIT: 20`, `PAGES_MAX_LIMIT: 50`, `DOWNLOAD_MAX_ENTRIES: 500`.
 - **`rateLimit`** — `ANON_SUBMIT: { capacity: 60, refillPerSec: 60/3600 }`, `AUTH_SUBMIT: { capacity: 300, refillPerSec: 300/3600 }`, `ANON_NEW_CRAWL: { capacity: 3, refillPerSec: 3/3600 }`, `AUTH_NEW_CRAWL: { capacity: 10, refillPerSec: 10/3600 }`.
 - **`monitor`** — `STALE_DAYS: 5`, `BATCH_SIZE: 200`, `SAME_HOST_DELAY_MS: 400`, `STUCK_JOB_AFTER_MS: 900_000`.

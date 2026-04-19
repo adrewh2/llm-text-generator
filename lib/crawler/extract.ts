@@ -18,19 +18,20 @@ export function extractMetadata(
 
   const title = extractTitle($) || urlToTitle(url)
   const canonical = $('link[rel="canonical"]').attr("href") || undefined
+  const resolvedCanonical = canonical ? resolveUrl(canonical, url) : undefined
   const lang = $("html").attr("lang") || undefined
   const { description, provenance } = extractDescription($)
   const headings = extractHeadings($)
   const bodyExcerpt = extractExcerpt($)
 
   return {
-    url: canonical ? resolveUrl(canonical, url) : url,
+    url: resolvedCanonical ?? url,
     title,
     description,
     bodyExcerpt,
     headings,
     lang,
-    canonical: canonical ? resolveUrl(canonical, url) : undefined,
+    canonical: resolvedCanonical,
     descriptionProvenance: provenance,
   }
 }
