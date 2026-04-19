@@ -86,7 +86,7 @@ export default function LoginPage() {
         {error && <p className="text-xs text-red-500 mt-4 text-center">{error}</p>}
 
         <p className="text-sm text-zinc-500 text-center mt-8">
-          Sign in to track your history.
+          Sign in for tracked history and higher usage limits.
         </p>
       </div>
     </div>
