@@ -4,7 +4,9 @@ import { useState, useEffect, useRef, useMemo } from "react"
 import { ArrowRight, Globe, Zap, CheckCircle, RefreshCw, Loader2, BookMarked, FolderDown } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import type { User } from "@supabase/supabase-js"
 import { clientValidateUrl } from "@/lib/crawler/net/url"
+import { createClient } from "@/lib/supabase/client"
 
 const EXAMPLE_OUTPUT = `# FastHTML
 
@@ -23,7 +25,7 @@ const EXAMPLE_OUTPUT = `# FastHTML
 
 - [Starlette docs](https://gist.githubusercontent.com/jph00/.../starlette-sml.md): Starlette subset useful for FastHTML development`
 
-export default function LandingClient() {
+export default function LandingClient({ initialUser = null }: { initialUser?: User | null }) {
   const [url, setUrl] = useState("")
   const [focused, setFocused] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -31,6 +33,10 @@ export default function LandingClient() {
   // Set when the server's 429 response tagged this anon session —
   // renders a "Sign in for higher limits" link next to the error.
   const [showSignInHint, setShowSignInHint] = useState(false)
+  // Auth state drives the bottom CTA (Dashboard vs Sign in). Seeded
+  // from the server-resolved initialUser so hydration matches and the
+  // button doesn't flash "Sign in" for a signed-in user.
+  const [user, setUser] = useState<User | null>(initialUser)
   const router = useRouter()
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -53,6 +59,17 @@ export default function LandingClient() {
     }
     document.addEventListener("keydown", handleKeydown)
     return () => document.removeEventListener("keydown", handleKeydown)
+  }, [])
+
+  // Subscribe to auth changes so the signed-in-features CTA and
+  // heading update live if the user signs in/out in another tab.
+  // Initial value came from initialUser via SSR, so no flash.
+  useEffect(() => {
+    const supabase = createClient()
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, session) => setUser(session?.user ?? null),
+    )
+    return () => subscription.unsubscribe()
   }, [])
 
   const formatRetry = (seconds: number): string => {
@@ -322,7 +339,7 @@ export default function LandingClient() {
       <section className="border-t border-zinc-200 bg-zinc-100">
         <div className="max-w-4xl mx-auto px-6 py-20">
           <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-[0.12em] text-center mb-14">
-            Sign in for more features
+            {user ? "Enjoy these signed-in features!" : "Sign in for more features"}
           </p>
           <div className="grid md:grid-cols-2 gap-6">
             {[
@@ -350,10 +367,10 @@ export default function LandingClient() {
           </div>
           <div className="mt-8 text-center">
             <a
-              href="/login"
+              href={user ? "/dashboard" : "/login"}
               className="inline-flex items-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-zinc-800 transition-colors"
             >
-              Sign in to get started
+              {user ? "Go to your Dashboard" : "Sign in to get started"}
             </a>
           </div>
         </div>
