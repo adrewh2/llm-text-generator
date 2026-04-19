@@ -8,10 +8,11 @@ Paste a URL, the app discovers pages (sitemap → robots → link-following, wit
 
 **Crawler**
 - Discovery via `sitemap.xml`, `robots.txt`, and BFS link traversal (respects `Disallow` rules)
+- **LLM-prioritized crawl queue** — before crawling starts, Claude reorders the candidate URL list by likely value given the site name + homepage excerpt (up to `llm.RANK_MAX_KEEP = 120` URLs; skipped for small candidate sets). The worker pool then fetches in LLM-preferred order, so the 25-page budget is spent on the pages most worth showing an LLM. A per-path-prefix cap (`URLS_PER_PREFIX_CAP = 5` over a 2-segment bucket) runs first so a single section of a content-heavy site (e.g. 500 `/watch` URLs) can't crowd out the rest of the prompt.
 - Markdown-variant probing (prefers `.md` links per the spec)
 - SPA detection + headless-Chrome fallback via `puppeteer` (local) / `@sparticuz/chromium` (Vercel)
 - Worker-pool concurrency with a default politeness delay; honors `robots.txt` `Crawl-delay` as a shared cross-worker clock, capped at 10 s
-- SSRF-hardened: every outbound fetch resolves DNS and rejects RFC1918 / loopback / link-local / metadata IPs (`lib/crawler/ssrf.ts`)
+- SSRF-hardened: every outbound fetch resolves DNS and rejects RFC1918 / CGNAT / loopback / link-local / metadata IPs and non-default ports (`lib/crawler/ssrf.ts`)
 - Streaming body reads with hard byte caps so a server that omits or lies about `Content-Length` can't OOM us (`lib/crawler/readBounded.ts`)
 
 **LLM enrichment**
