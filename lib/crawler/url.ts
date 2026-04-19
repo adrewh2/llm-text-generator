@@ -39,6 +39,12 @@ export function normalizeUrl(url: string, base?: string): string | null {
 
     u.hash = ""
     u.hostname = u.hostname.toLowerCase()
+    // Strip userinfo — a submission of `https://alice:sekret@target.com`
+    // would otherwise forward credentials on every crawl fetch, land
+    // them in runtime logs + the QStash message body, and fork the
+    // cache key off the principal's secret.
+    u.username = ""
+    u.password = ""
 
     // Strip trailing slash on any non-root path so "/docs" and
     // "/docs/" don't become two cache keys.

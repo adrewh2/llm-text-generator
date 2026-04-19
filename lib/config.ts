@@ -145,6 +145,14 @@ export const rateLimit = {
   AUTH_SUBMIT: { capacity: 300, refillPerSec: 300 / 3600 },
   ANON_NEW_CRAWL: { capacity: 3, refillPerSec: 3 / 3600 },
   AUTH_NEW_CRAWL: { capacity: 10, refillPerSec: 10 / 3600 },
+  /**
+   * Cap on /api/monitor invocations, keyed globally (one bucket for
+   * the whole cron). Legit load is 1 call/day from Vercel Cron; this
+   * sits well above manual-testing needs but well below what a
+   * leaked-CRON_SECRET attacker could use to amplify into Anthropic /
+   * QStash spend (~800 LLM calls per invocation).
+   */
+  CRON_MONITOR: { capacity: 12, refillPerSec: 12 / 3600 },
 }
 
 // ─── Monitoring cron ────────────────────────────────────────────────────────

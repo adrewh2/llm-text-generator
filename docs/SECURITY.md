@@ -57,7 +57,9 @@ An unauthenticated HTTP client can POST any URL to `/api/p` and trigger up to 25
 
 ### The control
 
-`lib/rateLimit.ts` — two token buckets per principal (principal = `user.id` when signed in, else client IP via `X-Forwarded-For`). Both are backed by **Upstash Redis** (`@upstash/ratelimit`) in production, with an in-memory fallback for local dev. Keys are prefixed per-bucket (`submit:…` / `newcrawl:…`) so the two limiters never share Redis state.
+`lib/rateLimit.ts` — two token buckets per principal (principal = `user.id` when signed in, else client IP). IP detection reads `x-vercel-forwarded-for` first — Vercel's edge sets this header and rejects client-supplied attempts to override it — then falls back to `X-Forwarded-For` / `X-Real-IP` for non-Vercel environments. This closes an XFF-spoofing bypass where a client could submit `X-Forwarded-For: 1.2.3.4` to unlock a fresh rate-limit bucket per fake IP. Both buckets are backed by **Upstash Redis** (`@upstash/ratelimit`) in production, with an in-memory fallback for local dev. Keys are prefixed per-bucket (`submit:…` / `newcrawl:…`) so the two limiters never share Redis state.
+
+`/api/monitor` has its own bucket on top of the `CRON_SECRET` bearer check — a global `cron:monitor` key with `capacity: 12 / hr`. One cron invocation enqueues up to ~200 re-crawls × ~4 Anthropic calls each ≈ 800 LLM calls of spend, so a leaked secret would otherwise be a serious amplification vector. The cap sits well above Vercel Cron's 1 / day cadence + manual testing headroom but well below attacker-useful rates.
 
 | Bucket | Anon | Auth | Consumed when |
 |---|---|---|---|
@@ -143,6 +145,7 @@ Server-only secrets:
 - `SUPABASE_SERVICE_ROLE_KEY` — bypasses RLS, used by `lib/store.ts` only. Never shipped to the browser.
 - `ANTHROPIC_API_KEY` — used in `lib/crawler/llmEnrich.ts`.
 - `CRON_SECRET` — gates `/api/monitor`; comparison is timing-safe (`timingSafeEqual` with a length pre-check).
+- `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY` — QStash auth + delivery signature verification. The worker route (`app/api/worker/crawl/route.ts`) calls `requireEnv()` at import time for both signing keys when `QSTASH_TOKEN` is set, so a misconfigured prod deploy fails loudly at build rather than silently 401-ing every QStash delivery.
 
 `.env` is in `.gitignore`. `.env.example` documents what's required. The `requireEnv()` helper in `lib/env.ts` throws a clear error when a required variable is missing instead of crashing with "Cannot read properties of undefined".
 
@@ -179,7 +182,7 @@ Served on every response via `next.config.ts`:
 
 Every user-supplied string is validated:
 
-- Submitted URLs are checked against `MAX_URL_LENGTH = 2048`, `isValidHttpUrl`, `assertSafeUrl`, and passed through `normalizeUrl` (strips `utm_*`, locale params, OAuth flow params, Google session tokens — see `lib/crawler/url.ts`).
+- Submitted URLs are checked against `MAX_URL_LENGTH = 2048`, `isValidHttpUrl`, `assertSafeUrl`, and passed through `normalizeUrl` (strips userinfo, `utm_*`, locale params, OAuth flow params, Google session tokens — see `lib/crawler/url.ts`). Userinfo stripping matters: a submission of `https://alice:sekret@target.com` would otherwise forward credentials on every crawl fetch, land them in runtime logs + the QStash message body, and fork the cache key off the principal's secret.
 - Client-side UX guard: the landing page rejects non-http(s) schemes before the POST so the user doesn't eat a round-trip to see the error.
 - `DELETE /api/p/request` validates `pageUrl` via `isValidHttpUrl` before hitting the DB.
 - `/api/pages` offset/limit are clamped to `[0, ∞)` and `[1, 50]` respectively.

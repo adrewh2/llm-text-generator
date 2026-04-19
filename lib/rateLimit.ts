@@ -137,6 +137,19 @@ export async function consumeRateLimit(
  * the canonical header is x-forwarded-for (first entry is the client).
  */
 export function clientIp(req: { headers: Headers }): string {
+  // `x-vercel-forwarded-for` is set by Vercel's edge and is tamper-
+  // resistant — a client-supplied value is discarded. Prefer it so a
+  // spoofed `X-Forwarded-For: 1.2.3.4` header can't unlock a fresh
+  // rate-limit bucket per fake IP on production.
+  const vercel = req.headers.get("x-vercel-forwarded-for")
+  if (vercel) {
+    const first = vercel.split(",")[0]?.trim()
+    if (first) return first
+  }
+  // Non-Vercel envs (local dev, other hosts): fall back to
+  // X-Forwarded-For / X-Real-IP. Locally this is still client-
+  // controlled, which is fine since `npm run dev` isn't a trust
+  // boundary.
   const xff = req.headers.get("x-forwarded-for")
   if (xff) {
     const first = xff.split(",")[0]?.trim()
