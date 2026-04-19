@@ -18,7 +18,7 @@ Paste a URL, the app discovers pages (sitemap → robots → link-following, wit
 **LLM enrichment**
 - Per-page classification (`doc`, `api`, `example`, `blog`, `changelog`, `about`, …) via Claude
 - LLM-written descriptions, section names, and scoring — tuned to the site's inferred genre
-- Site-genre detection (`developer_docs`, `ecommerce`, `personal_site`, …) adapts section naming
+- Site-genre detection (23 categories: `developer_docs`, `api_reference`, `technical_knowledge_base`, `help_center`, `saas_product`, `marketing_site`, `ecommerce_store`, `marketplace`, `media_publication`, `blog`, `community_forum`, `social_platform`, `event_site`, `entertainment`, `government`, `academic_research`, `nonprofit`, `corporate`, `portfolio`, `personal`, `landing_page`, `directory_listing`, `generic`) — steers section naming and preamble tone
 
 **Output**
 - Spec-compliant `llms.txt` assembly with generated preamble and importance-ordered sections

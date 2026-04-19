@@ -202,8 +202,15 @@ Worker pool (5 non-SPA, 1 SPA): fetch + extract metadata for each URL
      set, a per-worker POLITENESS_DELAY_MS = 300 ms baseline applies
    - hard caps: crawler.MAX_PAGES = 25, crawler.PIPELINE_BUDGET_MS = 270s
   ↓
-genre detection (developer_docs, ecommerce, personal_site, institutional,
-                 blog_publication, generic) from homepage + URL patterns
+genre detection (23 categories: developer_docs, api_reference,
+                 technical_knowledge_base, help_center, saas_product,
+                 marketing_site, ecommerce_store, marketplace,
+                 media_publication, blog, community_forum, social_platform,
+                 event_site, entertainment, government, academic_research,
+                 nonprofit, corporate, portfolio, personal, landing_page,
+                 directory_listing, generic) from homepage HTML + URL
+                 patterns — priority-ordered so narrower subtypes match
+                 before broader siblings
   ↓
 resolveExternalReferences: homepage-only outbound anchors → LLM ranks
   down to crawler.EXTERNAL_REFS_MAX_KEEP (8) → each fetched once for
