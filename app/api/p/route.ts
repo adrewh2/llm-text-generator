@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { randomUUID } from "crypto"
+import { waitUntil } from "@vercel/functions"
 import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, upsertUserRequest } from "@/lib/store"
 import { altWwwForm, isValidHttpUrl, normalizeUrl } from "@/lib/crawler/net/url"
 import { resolveCanonicalUrl } from "@/lib/crawler/net/canonicalUrl"
@@ -8,6 +9,16 @@ import { clientIp, consumeRateLimit, isAllowedOrigin } from "@/lib/upstash/rateL
 import { api, rateLimit } from "@/lib/config"
 import { enqueueCrawl } from "@/lib/upstash/jobQueue"
 import { getCurrentUser } from "@/lib/supabase/getUser"
+import { errorLog } from "@/lib/log"
+
+// Fire-and-forget wrapper around `waitUntil` that surfaces failures to
+// Sentry via errorLog. Without the catch, a rejected background promise
+// logs once via Vercel but doesn't land in our Issues feed.
+function runAfterResponse(context: string, p: Promise<unknown>): void {
+  waitUntil(
+    p.catch((err) => errorLog(`api/p.${context}`, err instanceof Error ? err : new Error(String(err))))
+  )
+}
 
 export const runtime = "nodejs"
 export const maxDuration = 300
@@ -84,14 +95,16 @@ export async function POST(req: NextRequest) {
   const tryServeAt = async (key: string): Promise<NextResponse | null> => {
     const existing = await getPageByUrl(key)
     if (existing && !existing.isStale) {
-      bumpPageRequest(key).catch(() => {})
-      if (user) await upsertUserRequest(user.id, key)
+      // Defer both writes past the response — neither gates the
+      // client's ability to navigate to /p/{id} and start polling.
+      runAfterResponse("bumpPageRequest", bumpPageRequest(key))
+      if (user) runAfterResponse("upsertUserRequest", upsertUserRequest(user.id, key))
       return NextResponse.json({ page_id: existing.pageId, cached: true }, { status: 200 })
     }
     const active = await getActiveJobForUrl(key)
     if (active) {
-      bumpPageRequest(key).catch(() => {})
-      if (user) await upsertUserRequest(user.id, key)
+      runAfterResponse("bumpPageRequest", bumpPageRequest(key))
+      if (user) runAfterResponse("upsertUserRequest", upsertUserRequest(user.id, key))
       return NextResponse.json({ page_id: active.pageId, cached: false }, { status: 200 })
     }
     return null
@@ -144,17 +157,28 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Stale or new — run a fresh crawl. Bump `last_requested_at` AFTER
-  // the enqueue has been handed off so an enqueue that silently falls
-  // back to the in-process path (or fails entirely) doesn't mark the
-  // URL as "actively requested" for sweep purposes when nothing is
-  // actually running. The returned `page_id` is the pages.id UUID —
-  // stable across every future re-crawl of this URL.
+  // Stale or new — run a fresh crawl. createJob is the only write
+  // that has to block the response: once it returns, the pages + jobs
+  // rows exist so the client's immediate poll for /api/p/[id] finds
+  // a row. Everything after is backgrounded via waitUntil so the
+  // user navigates to /p/{id} without waiting on the QStash publish
+  // (~200 ms) or two small DB writes (~100 ms) — ~500 ms saved on
+  // the cache-miss hot path.
+  //
+  // Trade-off on ordering: the old code bumped last_requested_at AFTER
+  // enqueueCrawl so a failed enqueue wouldn't mark the URL as
+  // "actively requested". Under waitUntil they run concurrently, so a
+  // failed enqueue can leave an active-looking last_requested_at on a
+  // URL whose crawl never started. That's tolerable: `sweepStuckJobs`
+  // in the monitor cron force-fails non-terminal jobs past 15 min,
+  // and a failed job naturally ages out of monitoring after 5 days.
+  // The returned `page_id` is the pages.id UUID — stable across every
+  // future re-crawl of this URL.
   const jobId = randomUUID()
   const { pageId } = await createJob(jobId, canonicalUrl)
-  if (user) await upsertUserRequest(user.id, canonicalUrl)
-  await enqueueCrawl(jobId, canonicalUrl)
-  await bumpPageRequest(canonicalUrl)
+  runAfterResponse("enqueueCrawl", enqueueCrawl(jobId, canonicalUrl))
+  runAfterResponse("bumpPageRequest", bumpPageRequest(canonicalUrl))
+  if (user) runAfterResponse("upsertUserRequest", upsertUserRequest(user.id, canonicalUrl))
 
   return NextResponse.json({ page_id: pageId, cached: false }, { status: 201 })
 }
