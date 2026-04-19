@@ -1,7 +1,7 @@
-import { UnsafeUrlError } from "./ssrf"
-import { safeFetch } from "./safeFetch"
-import { readBoundedText } from "./readBounded"
-import { crawler } from "../config"
+import { UnsafeUrlError } from "../net/ssrf"
+import { safeFetch } from "../net/safeFetch"
+import { readBoundedText } from "../net/readBounded"
+import { crawler } from "../../config"
 
 const MAX_SIZE = crawler.RESPONSE_MAX_BYTES
 export const USER_AGENT =

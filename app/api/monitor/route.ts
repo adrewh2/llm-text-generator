@@ -14,9 +14,9 @@ import {
   sweepStuckJobs,
 } from "@/lib/store"
 import { detectChange } from "@/lib/crawler/monitor"
-import { enqueueCrawl } from "@/lib/jobQueue"
+import { enqueueCrawl } from "@/lib/upstash/jobQueue"
 import { errorLog } from "@/lib/log"
-import { consumeRateLimit } from "@/lib/rateLimit"
+import { consumeRateLimit } from "@/lib/upstash/rateLimit"
 import { monitor, rateLimit } from "@/lib/config"
 
 export const runtime = "nodejs"

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { removeUserRequest } from "@/lib/store"
-import { isAllowedOrigin } from "@/lib/rateLimit"
+import { isAllowedOrigin } from "@/lib/upstash/rateLimit"
 import { createClient } from "@/lib/supabase/server"
 
 export const runtime = "nodejs"

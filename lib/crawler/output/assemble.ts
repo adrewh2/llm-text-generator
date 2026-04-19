@@ -1,5 +1,5 @@
-import type { ScoredPage } from "./types"
-import { toLabel, urlPathSegments, urlToLabel } from "./urlLabel"
+import type { ScoredPage } from "../types"
+import { toLabel, urlPathSegments, urlToLabel } from "../net/urlLabel"
 
 export function assembleFile(
   siteName: string,

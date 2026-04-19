@@ -1,6 +1,6 @@
 import { load, type CheerioAPI } from "cheerio"
-import type { DescriptionProvenance, ExtractedPage } from "./types"
-import { crawler } from "../config"
+import type { DescriptionProvenance, ExtractedPage } from "../types"
+import { crawler } from "../../config"
 import { cleanSiteName, siteNameFromHostname } from "./siteName"
 
 // Cap excerpt at roughly 4 KB of UTF-8 so a malicious site serving a

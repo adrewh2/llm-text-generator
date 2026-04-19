@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useMemo } from "react"
 import { ArrowRight, Globe, Zap, CheckCircle, RefreshCw, Loader2, BookMarked, FolderDown } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { clientValidateUrl } from "@/lib/crawler/url"
+import { clientValidateUrl } from "@/lib/crawler/net/url"
 
 const EXAMPLE_OUTPUT = `# FastHTML
 

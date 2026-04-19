@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk"
-import type { ExtractedPage, ScoredPage, SiteGenre, DescriptionProvenance } from "./types"
-import { SECTION_HINTS, llm } from "../config"
-import { debugLog } from "../log"
+import type { ExtractedPage, ScoredPage, SiteGenre, DescriptionProvenance } from "../types"
+import { SECTION_HINTS, llm } from "../../config"
+import { debugLog } from "../../log"
 import { cleanSiteName } from "./siteName"
 
 const { MODEL, ENRICH_BATCH_SIZE, RANK_MAX_KEEP, RANK_SKIP_BELOW, DESCRIPTION_MAX_CHARS, SECTION_MAX_CHARS, MAX_RETRIES, CALL_TIMEOUT_MS } = llm

@@ -1,4 +1,4 @@
-import type { ExtractedPage, ScoredPage, SiteGenre } from "./types"
+import type { ExtractedPage, ScoredPage, SiteGenre } from "../types"
 import type { EnrichmentMap } from "./llmEnrich"
 
 export function scorePages(

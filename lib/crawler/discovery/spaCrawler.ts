@@ -1,7 +1,7 @@
 import type { Browser, Page } from "puppeteer"
-import { normalizeUrl, isSameDomain, shouldSkipUrl } from "./url"
+import { normalizeUrl, isSameDomain, shouldSkipUrl } from "../net/url"
 import { isBlockedByChallenge } from "./fetchPage"
-import { assertSafeUrl } from "./ssrf"
+import { assertSafeUrl } from "../net/ssrf"
 
 // Block media-type subresources to save bandwidth; SSRF-check every
 // other request so navigation redirects and XHRs can't route the

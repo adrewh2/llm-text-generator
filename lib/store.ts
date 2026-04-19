@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 import type { CrawlJob, ScoredPage } from "./crawler/types"
 import { crawler, monitor } from "./config"
-import { assertSafeUrl } from "./crawler/ssrf"
+import { assertSafeUrl } from "./crawler/net/ssrf"
 import { requireEnv } from "./env"
 import { errorLog } from "./log"
 
