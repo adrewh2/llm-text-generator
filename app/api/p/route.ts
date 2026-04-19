@@ -3,7 +3,7 @@ import { randomUUID } from "crypto"
 import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, upsertUserRequest } from "@/lib/store"
 import { altWwwForm, isValidHttpUrl, normalizeUrl } from "@/lib/crawler/url"
 import { resolveCanonicalUrl } from "@/lib/crawler/canonicalUrl"
-import { clientIp, consumeRateLimit } from "@/lib/rateLimit"
+import { clientIp, consumeRateLimit, isAllowedOrigin } from "@/lib/rateLimit"
 import { api, rateLimit } from "@/lib/config"
 import { enqueueCrawl } from "@/lib/jobQueue"
 import { createClient } from "@/lib/supabase/server"
@@ -12,6 +12,10 @@ export const runtime = "nodejs"
 export const maxDuration = 300
 
 export async function POST(req: NextRequest) {
+  if (!isAllowedOrigin(req)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+  }
+
   let body: { url?: string }
   try {
     body = await req.json()

@@ -16,7 +16,8 @@ import {
 import { detectChange } from "@/lib/crawler/monitor"
 import { enqueueCrawl } from "@/lib/jobQueue"
 import { errorLog } from "@/lib/log"
-import { monitor } from "@/lib/config"
+import { consumeRateLimit } from "@/lib/rateLimit"
+import { monitor, rateLimit } from "@/lib/config"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
@@ -34,6 +35,19 @@ interface Summary {
 
 export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) return new NextResponse("Unauthorized", { status: 401 })
+
+  // Single global bucket. Each invocation can enqueue ~200 re-crawls
+  // (batch size) × 4 Anthropic calls each ≈ 800 LLM calls of spend,
+  // so a leaked CRON_SECRET is a serious amplification vector. Cap
+  // well above the real cron cadence (1 / day) + manual testing
+  // headroom, well below attacker-useful rates.
+  const rate = await consumeRateLimit("cron:monitor", rateLimit.CRON_MONITOR)
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "cron rate limit exceeded" },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
+    )
+  }
 
   // Force-fail jobs stuck in a non-terminal status beyond the pipeline
   // budget + QStash retry window. Must run before getActiveJobForUrl

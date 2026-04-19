@@ -75,7 +75,7 @@ The contrast is the point — cache hits are ~1000× cheaper than new crawls, an
 ### Free tier (the ordering a demo hits)
 
 1. **QStash free: 500 messages/day.** Every new crawl = 1 message. The day cap is the tightest constraint by far — ~20/hour sustained if perfectly spaced.
-2. **Anthropic Haiku Tier 1: ~60 RPM / ~50 K TPM.** 4 LLM calls per crawl → ~15 crawls/min before 429s. The SDK's default `maxRetries: 2` (with exponential backoff and `Retry-After` honoured) absorbs brief overshoot; if retries exhaust, each enrichment step has a deterministic fallback so the crawl still completes.
+2. **Anthropic Haiku Tier 1: ~60 RPM / ~50 K TPM.** 4 LLM calls per crawl → ~15 crawls/min before 429s. We configure the SDK with `maxRetries: llm.MAX_RETRIES` (5, up from the default of 2) and `timeout: llm.CALL_TIMEOUT_MS` (60 s); SDK-default exponential backoff and `Retry-After` honouring absorb brief overshoots. If all 5 retries exhaust, each enrichment step has a deterministic fallback so the crawl still completes — degraded output quality, but no user-visible error.
 3. **Upstash Redis free: 500 K commands/month.** Every `POST /api/p` uses 2–3 commands for the SUBMIT bucket, plus another 2–3 on the cache-miss branch for the NEW_CRAWL bucket. At a realistic ~90 % cache-hit mix that averages ≲3 commands/POST — still ~60 POSTs/sec sustained before overage and **not** a real constraint at free-tier traffic.
 4. **Vercel Hobby:** soft invocation cap; not close at demo traffic.
 5. **Supabase free: 500 MB DB, 60-connection pool.** Our workload uses ~1 connection per Fluid instance; not close.

@@ -39,7 +39,7 @@ The design is tight on purpose. Every URL produces one shared, globally-visible 
 | Styling | Tailwind CSS 3, `lucide-react` icons |
 | Cron | Vercel Cron (`vercel.json`) |
 
-Two long-running routes (`app/api/p/route.ts`, `app/api/monitor/route.ts`) are given `maxDuration: 300s` in `vercel.json`; everything else uses the default. Crawl work itself is capped to `270s` (`crawler.PIPELINE_BUDGET_MS`) so there is time to write a clean `failed` state if the budget is exhausted.
+Three long-running routes (`app/api/p/route.ts`, `app/api/monitor/route.ts`, `app/api/worker/crawl/route.ts`) are given `maxDuration: 300s` in `vercel.json`; everything else uses the default. Crawl work itself is capped to `270s` (`crawler.PIPELINE_BUDGET_MS`) so there is time to write a clean `failed` state if the budget is exhausted.
 
 ---
 
@@ -151,12 +151,13 @@ All routes live under `/app/api`.
 
 Every new-crawl request lands here. The route:
 
-1. Parses and validates the URL (`≤ 2048` chars, http(s), canonicalized via a HEAD probe that is itself SSRF-validated).
+1. Parses and validates the URL (`≤ 2048` chars, http(s)).
 2. Looks up the principal: `user.id` if signed in, else the client IP. Consumes the **SUBMIT** token bucket — `AUTH_SUBMIT` (300/hr) or `ANON_SUBMIT` (60/hr) — a loose abuse floor charged on every POST. On miss, returns `429` with `reason: "submit_flood"`, `retryAfterSec`, and (for anon users) `signInPrompt: true`. Later, if the request branches into the new-crawl path, the tight **NEW_CRAWL** bucket — `AUTH_NEW_CRAWL` (10/hr) or `ANON_NEW_CRAWL` (3/hr) — is charged too; a denial at that point returns `429` with `reason: "new_crawl_quota"`. Cache-hit and in-flight-attach submissions *never* touch the new-crawl bucket, so a user whose new-crawl quota is exhausted can still reach already-cached URLs.
-3. Checks for an existing `pages.result` under 24 hours old (`crawler.PAGE_TTL_HOURS`). If fresh, returns the most recent terminal job id with `cached: true` — no new crawl.
-4. Checks for an in-flight job on the same URL. If one exists, returns its id with `cached: false`. This is what makes two users hitting the same URL simultaneously share one crawl.
-5. Otherwise, creates a new `jobs` row and calls `enqueueCrawl(jobId, url)` (`lib/jobQueue.ts`), which publishes to QStash if `QSTASH_TOKEN` is set and falls back to `waitUntil(runCrawlPipeline(...))` for local dev. Either way the HTTP response returns immediately; the actual crawl runs later in the worker (`app/api/worker/crawl/route.ts` for the QStash path, the caller's own Fluid Compute instance for the fallback).
-6. On all three branches (cache-hit, in-flight attach, new crawl), if the user is signed in, `upsertUserRequest` adds the URL to their dashboard history. The row is an upsert against `UNIQUE(user_id, page_url)` so re-submissions don't duplicate.
+3. **Pre-resolution cache check.** Most cached URLs are keyed under one of the two raw forms (with / without `www.`) of the submitted URL, so we try `tryServeAt(rawKey)` and `tryServeAt(altWwwKey)` first — a cache hit or in-flight attach here returns immediately without paying for a HEAD probe.
+4. **Canonical URL resolution.** If both raw forms miss, `resolveCanonicalUrl` (`lib/crawler/canonicalUrl.ts`) probes both www/non-www variants in parallel via SSRF-validated HEAD requests. If they resolve to the same final URL, we honor the server's preference; if they resolve independently, we strip `www.` as a dedup convention. `normalizeUrl` then strips tracking and per-request session / OAuth tokens (e.g. Google's `dsh` / `ifkv` / `osid`) so the cache key is stable across resubmissions.
+5. **Post-resolution cache check.** If the canonical URL differs from both raw forms we already tried (e.g. the server redirected to a different hostname), `tryServeAt(canonicalUrl)` gets one more shot at a cache hit.
+6. **New crawl.** Consumes the **NEW_CRAWL** bucket, then creates a new `jobs` row and calls `enqueueCrawl(jobId, url)` (`lib/jobQueue.ts`), which publishes to QStash if `QSTASH_TOKEN` is set and falls back to `waitUntil(runCrawlPipeline(...))` for local dev. Either way the HTTP response returns immediately; the actual crawl runs later in the worker (`app/api/worker/crawl/route.ts` for the QStash path, the caller's own Fluid Compute instance for the fallback).
+7. On all three branches (cache-hit, in-flight attach, new crawl), if the user is signed in, `upsertUserRequest` adds the URL to their dashboard history. The row is an upsert against `UNIQUE(user_id, page_url)` so re-submissions don't duplicate.
 
 ### `GET /api/p/[id]` — the poll target
 
@@ -387,7 +388,7 @@ Service-role key stays server-side (`lib/store.ts:17`). Client never sees it. RL
 
 `next.config.ts` sets on every response:
 
-- **Content-Security-Policy** — `default-src 'self'`, `script-src 'self' 'unsafe-inline' 'unsafe-eval'` (required for Next.js's RSC bootstrap and HMR — documented trade-off in the file's comment), `style-src 'self' 'unsafe-inline'`, `img-src 'self' data: blob: https:`, `font-src 'self' data: https://fonts.gstatic.com`, `connect-src 'self' https://*.supabase.co wss://*.supabase.co`, `frame-ancestors 'self'`, `form-action 'self'`, `base-uri 'self'`, `object-src 'none'`.
+- **Content-Security-Policy** — `default-src 'self'`, `script-src 'self' 'unsafe-inline' 'unsafe-eval'` (required for Next.js's RSC bootstrap and HMR — documented trade-off in the file's comment), `style-src 'self' 'unsafe-inline'`, `img-src 'self' data: blob: https:`, `font-src 'self' data: https://fonts.gstatic.com`, `connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.ingest.sentry.io https://*.sentry.io`, `worker-src 'self' blob:` (Sentry session-replay SDK runs a blob-backed worker), `frame-ancestors 'self'`, `form-action 'self'`, `base-uri 'self'`, `object-src 'none'`.
 - `X-Frame-Options: SAMEORIGIN`
 - `X-Content-Type-Options: nosniff`
 - `Referrer-Policy: strict-origin-when-cross-origin`
@@ -410,7 +411,7 @@ All tunable constants are in `/lib/config.ts`, grouped by domain. This is the si
 - **`crawler`** — `MAX_PAGES: 25`, `MAX_DEPTH: 2`, `CONCURRENCY: 5`, `POLITENESS_DELAY_MS: 300`, `PAGE_TTL_HOURS: 24`, `URLS_PER_PREFIX_CAP: 5`, `PREFIX_SEGMENT_DEPTH: 2`, `MAX_SITEMAP_URLS: 500`, `SITEMAP_MAX_BYTES: 10 MB`, `SITEMAP_TIMEOUT_MS: 10_000`, `HOMEPAGE_FETCH_TIMEOUT_MS: 8_000`, `RESPONSE_MAX_BYTES: 5 MB`, `MAX_REDIRECTS: 5`, `MAX_CRAWL_DELAY_MS: 10_000`, `EXCERPT_MAX_BYTES: 4 KB`, `PIPELINE_BUDGET_MS: 270_000`, `EXTERNAL_REFS_MAX_KEEP: 8`.
 - **`llm`** — `MODEL: claude-haiku-4-5-20251001`, `MAX_RETRIES: 5`, `CALL_TIMEOUT_MS: 60_000`, `ENRICH_BATCH_SIZE: 20`, `RANK_MAX_KEEP: 120`, `RANK_SKIP_BELOW: 10`, `DESCRIPTION_MAX_CHARS: 240`, `SECTION_MAX_CHARS: 30`.
 - **`api`** — `MAX_URL_LENGTH: 2048`, `PAGES_DEFAULT_LIMIT: 20`, `PAGES_MAX_LIMIT: 50`, `DOWNLOAD_MAX_ENTRIES: 500`.
-- **`rateLimit`** — `ANON_SUBMIT: { capacity: 60, refillPerSec: 60/3600 }`, `AUTH_SUBMIT: { capacity: 300, refillPerSec: 300/3600 }`, `ANON_NEW_CRAWL: { capacity: 3, refillPerSec: 3/3600 }`, `AUTH_NEW_CRAWL: { capacity: 10, refillPerSec: 10/3600 }`.
+- **`rateLimit`** — `ANON_SUBMIT: { capacity: 60, refillPerSec: 60/3600 }`, `AUTH_SUBMIT: { capacity: 300, refillPerSec: 300/3600 }`, `ANON_NEW_CRAWL: { capacity: 3, refillPerSec: 3/3600 }`, `AUTH_NEW_CRAWL: { capacity: 10, refillPerSec: 10/3600 }`, `CRON_MONITOR: { capacity: 12, refillPerSec: 12/3600 }` (anti-amplification bucket on `/api/monitor` — see [`SECURITY.md`](./SECURITY.md) §2).
 - **`monitor`** — `STALE_DAYS: 5`, `BATCH_SIZE: 200`, `SAME_HOST_DELAY_MS: 400`, `STUCK_JOB_AFTER_MS: 900_000`.
 - **`ui`** — `POLL_INTERVAL_MS: 1_500`, `MAX_POLL_FAILURES: 5`, `LIVE_MIN_STEP_DWELL_MS: 1_200`, `SIM_STEP_DURATIONS_MS: [1800, 1600, 1400, 1200]`, `MONITOR_STATUS_TICK_MS: 10_000`, `JOB_CACHE_MAX: 30`.
 
@@ -514,6 +515,7 @@ The following are out of scope for the current implementation. Each is plausible
     safeFetch.ts                     per-hop redirect validation
     fetchPage.ts                     main page fetcher
     readBounded.ts                   streaming body read with hard byte cap
+    canonicalUrl.ts                  dual www/non-www HEAD probe → canonical URL
     robots.ts                        robots.txt parse
     sitemap.ts                       sitemap fetch + parse
     spaCrawler.ts                    Puppeteer + SPA detection
@@ -534,8 +536,14 @@ The following are out of scope for the current implementation. Each is plausible
 
 /supabase/migration.sql              full schema (pages, jobs, user_requests, RLS)
 
+/instrumentation.ts                  Next.js register hook → loads Sentry server/edge init
+/instrumentation-client.ts           Sentry browser SDK init (on-error replay)
+/sentry.server.config.ts             Node runtime init + ignoreErrors filter
+/sentry.edge.config.ts               Edge runtime init (for middleware)
+/app/global-error.tsx                App Router root error boundary → Sentry
+
 /middleware.ts                       Supabase SSR session + /dashboard gate
-/next.config.ts                      CSP + security headers
+/next.config.ts                      CSP + security headers + withSentryConfig wrapper
 /vercel.json                         function duration + cron schedule
 /docs/SECURITY.md                    threat model + defenses
 ```

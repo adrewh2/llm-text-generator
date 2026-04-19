@@ -3,6 +3,25 @@ import { normalizeUrl, isSameDomain, shouldSkipUrl } from "./url"
 import { isBlockedByChallenge } from "./fetchPage"
 import { assertSafeUrl } from "./ssrf"
 
+// Block media-type subresources to save bandwidth; SSRF-check every
+// other request so navigation redirects and XHRs can't route the
+// browser into internal IP space (page.goto follows redirects without
+// re-entering the `assertSafeUrl` path that `safeFetch` uses).
+function installRequestInterceptor(page: Page): void {
+  page.on("request", async (req) => {
+    if (["image", "font", "media"].includes(req.resourceType())) {
+      req.abort().catch(() => {})
+      return
+    }
+    try {
+      await assertSafeUrl(req.url())
+      req.continue().catch(() => {})
+    } catch {
+      req.abort().catch(() => {})
+    }
+  })
+}
+
 /**
  * Returns true if the HTML looks like a JS-rendered SPA shell or a
  * bot-challenge page — i.e. there's no meaningful server-rendered content.
@@ -81,13 +100,7 @@ export class SpaBrowser {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       )
       await page.setRequestInterception(true)
-      page.on("request", (req) => {
-        if (["image", "font", "media"].includes(req.resourceType())) {
-          req.abort()
-        } else {
-          req.continue()
-        }
-      })
+      installRequestInterceptor(page)
 
       const response = await page.goto(url, { waitUntil: "load", timeout: 15000 })
       // Reject HTTP errors even when the server returns a styled HTML
@@ -126,13 +139,7 @@ export class SpaBrowser {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       )
       await page.setRequestInterception(true)
-      page.on("request", (req) => {
-        if (["image", "font", "media"].includes(req.resourceType())) {
-          req.abort()
-        } else {
-          req.continue()
-        }
-      })
+      installRequestInterceptor(page)
 
       const response = await page.goto(url, { waitUntil: "load", timeout: 15000 })
       if (response && !response.ok()) return { html: "", ok: false, links: [] }

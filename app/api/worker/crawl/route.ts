@@ -11,9 +11,20 @@ import { NextResponse } from "next/server"
 import { verifySignatureAppRouter } from "@upstash/qstash/nextjs"
 import { runCrawlPipeline } from "@/lib/crawler/pipeline"
 import { debugLog } from "@/lib/log"
+import { requireEnv } from "@/lib/env"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
+
+// Fail fast at import time if QStash is configured but the signing
+// keys aren't set. Without these, `verifySignatureAppRouter` silently
+// 401s every delivery — the queue looks healthy from our side but the
+// worker is dark. Only enforce when QSTASH_TOKEN is present since
+// local dev (no QStash) never reaches this route via QStash.
+if (process.env.QSTASH_TOKEN) {
+  requireEnv("QSTASH_CURRENT_SIGNING_KEY")
+  requireEnv("QSTASH_NEXT_SIGNING_KEY")
+}
 
 interface CrawlMessage {
   jobId?: string

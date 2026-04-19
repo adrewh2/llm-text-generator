@@ -35,6 +35,16 @@ export async function assertSafeUrl(url: string): Promise<void> {
     throw new UnsafeUrlError(url, "only http(s) URLs are allowed")
   }
 
+  // WHATWG URL normalises default ports (`http://x:80` → `http://x`)
+  // so `u.port` is "" when the default is in use. An explicit
+  // non-default port lets an attacker point our crawler at
+  // non-HTTP services on public IPs (Redis on 6379, memcached,
+  // SMTP, SSH banners, etc.) that might accept HTTP-looking bytes
+  // and leak state or mis-execute. Reject.
+  if (u.port !== "") {
+    throw new UnsafeUrlError(url, `non-default port not allowed (${u.port})`)
+  }
+
   const host = u.hostname
   if (!host) throw new UnsafeUrlError(url, "missing hostname")
 
@@ -81,6 +91,7 @@ function isForbiddenIpv4(ip: string): boolean {
 
   if (a === 0)                                    return true // 0.0.0.0/8
   if (a === 10)                                   return true // 10.0.0.0/8
+  if (a === 100 && b >= 64 && b <= 127)           return true // 100.64.0.0/10 CGNAT (RFC 6598)
   if (a === 127)                                  return true // loopback
   if (a === 169 && b === 254)                     return true // link-local + AWS metadata 169.254.169.254
   if (a === 172 && b >= 16 && b <= 31)            return true // 172.16.0.0/12

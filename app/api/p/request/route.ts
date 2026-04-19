@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
 import { removeUserRequest } from "@/lib/store"
 import { isValidHttpUrl } from "@/lib/crawler/url"
+import { isAllowedOrigin } from "@/lib/rateLimit"
 import { createClient } from "@/lib/supabase/server"
 
 export const runtime = "nodejs"
 
 export async function DELETE(req: NextRequest) {
+  if (!isAllowedOrigin(req)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+  }
+
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return new NextResponse(null, { status: 401 })
