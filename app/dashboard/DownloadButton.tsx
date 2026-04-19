@@ -120,8 +120,8 @@ export default function DownloadButton() {
       {confirmOpen && (
         <ConfirmDialog
           title="Download your history?"
-          body="You'll get a zip of up to your 500 most recently requested pages (one .txt per page)."
-          note="Limited to 1 download per 24 hours."
+          body="The zip will include up to 500 of your most recently requested pages (one .txt per page)."
+          note="Limited to 1 download every 24 hours."
           confirmLabel="Download"
           confirmVariant="primary"
           onConfirm={() => {

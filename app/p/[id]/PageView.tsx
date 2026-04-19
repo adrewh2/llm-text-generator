@@ -177,17 +177,12 @@ function PageViewInner({
 
   const visibleStatus = useVisibleStatus(job, simulatedStep !== null)
 
-  if (notFound) {
-    return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-zinc-500 mb-4">Page not found.</p>
-          <Link href="/" className="text-sm text-zinc-900 underline">Generate a new llms.txt</Link>
-        </div>
-      </div>
-    )
-  }
-
+  // Derive render data BEFORE any conditional early return — the
+  // useMemo below must not sit after a conditional `return`
+  // (React's rules-of-hooks). Each of these is cheap to compute on
+  // every render; only `validation` is memoised because regex-parsing
+  // the full llms.txt every poll tick would be wasteful.
+  //
   // Simulating → pass the raw status; live → clamp to visibleStatus
   // so fast transitions stay paced.
   const displayJob: ApiJob | null = job
@@ -204,13 +199,21 @@ function PageViewInner({
   // would trip "missing H1" on empty text. The store writes pages first,
   // so this is belt-and-suspenders.
   const result = showResult ? job?.result : undefined
-  // Re-validating on every render (polling tick, auth change, etc.)
-  // re-parses the whole result string; memoize so it only runs when
-  // the terminal result actually changes.
   const validation = useMemo(
     () => (result ? validateLlmsTxt(result) : null),
     [result],
   )
+
+  if (notFound) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-zinc-500 mb-4">Page not found.</p>
+          <Link href="/" className="text-sm text-zinc-900 underline">Generate a new llms.txt</Link>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="h-screen font-sans bg-white flex flex-col">

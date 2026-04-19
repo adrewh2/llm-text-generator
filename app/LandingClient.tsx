@@ -291,7 +291,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
       </section>
 
       {/* How it works */}
-      <section id="how-it-works" className="border-t border-zinc-100 bg-[#FAFAFA]">
+      <section id="how-it-works" className="scroll-mt-20 border-t border-zinc-100 bg-[#FAFAFA]">
         <div className="max-w-4xl mx-auto px-6 py-10">
           <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-[0.12em] text-center mb-8">
             How it works
