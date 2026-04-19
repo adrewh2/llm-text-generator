@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { randomUUID } from "crypto"
 import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, upsertUserRequest } from "@/lib/store"
-import { isValidHttpUrl, normalizeUrl } from "@/lib/crawler/url"
-import { safeFetch } from "@/lib/crawler/safeFetch"
+import { altWwwForm, isValidHttpUrl, normalizeUrl } from "@/lib/crawler/url"
+import { resolveCanonicalUrl } from "@/lib/crawler/canonicalUrl"
 import { clientIp, consumeRateLimit } from "@/lib/rateLimit"
 import { api, rateLimit } from "@/lib/config"
 import { enqueueCrawl } from "@/lib/jobQueue"
@@ -26,7 +26,8 @@ export async function POST(req: NextRequest) {
   if (url.length > api.MAX_URL_LENGTH) {
     return NextResponse.json({ error: "URL is too long" }, { status: 400 })
   }
-  if (!isValidHttpUrl(url.trim())) {
+  const trimmed = url.trim()
+  if (!isValidHttpUrl(trimmed)) {
     return NextResponse.json({ error: "Invalid URL — must be http:// or https://" }, { status: 400 })
   }
 
@@ -56,78 +57,48 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Resolve canonical URL. safeFetch enforces SSRF per-hop on the
-  // redirect chain; normalizeUrl strips per-request session/OAuth
-  // tokens (e.g. Google's dsh/ifkv/osid) so the cache key is stable
-  // across resubmissions.
-  //
-  // To unify `www.foo.com` and `foo.com`, we probe both forms:
-  // - If they resolve to the same URL, the server expressed a
-  //   preference (e.g. speedtest.net → www.speedtest.net); honor it.
-  // - If they resolve independently, no server preference exists
-  //   (e.g. speedtest.com); strip `www.` as dedup convention.
-  const probe = async (u: string): Promise<string> => {
-    try {
-      const res = await safeFetch(u, {
-        method: "HEAD",
-        signal: AbortSignal.timeout(5000),
-      })
-      return res.url || u
-    } catch {
-      return u
+  // Try to serve from cache / attach to an active job at `key`.
+  // Returns a response if handled, null if the caller should continue.
+  const tryServeAt = async (key: string): Promise<NextResponse | null> => {
+    const existing = await getPageByUrl(key)
+    if (existing && !existing.isStale) {
+      await bumpPageRequest(key)
+      if (user) await upsertUserRequest(user.id, key)
+      return NextResponse.json({ page_id: existing.jobId, cached: true }, { status: 200 })
     }
-  }
-  const altWwwForm = (u: string): string | null => {
-    try {
-      const parsed = new URL(u)
-      parsed.hostname = parsed.hostname.startsWith("www.")
-        ? parsed.hostname.slice(4)
-        : `www.${parsed.hostname}`
-      return parsed.toString()
-    } catch {
-      return null
+    const active = await getActiveJobForUrl(key)
+    if (active) {
+      await bumpPageRequest(key)
+      if (user) await upsertUserRequest(user.id, key)
+      return NextResponse.json({ page_id: active.jobId, cached: false }, { status: 200 })
     }
-  }
-  const stripWww = (u: string): string => {
-    try {
-      const parsed = new URL(u)
-      parsed.hostname = parsed.hostname.replace(/^www\./, "")
-      return parsed.toString()
-    } catch {
-      return u
-    }
+    return null
   }
 
-  const trimmed = url.trim()
-  let canonicalUrl = trimmed
-  const resolvedA = await probe(trimmed)
-  const alt = altWwwForm(trimmed)
-  if (alt) {
-    const resolvedB = await probe(alt)
-    const nA = normalizeUrl(resolvedA) || resolvedA
-    const nB = normalizeUrl(resolvedB) || resolvedB
-    canonicalUrl = nA === nB ? resolvedA : stripWww(resolvedA)
-  } else {
-    canonicalUrl = resolvedA
-  }
-  canonicalUrl = normalizeUrl(canonicalUrl) || canonicalUrl
-
-  // Check for an existing result
-  const existing = await getPageByUrl(canonicalUrl)
-
-  if (existing && !existing.isStale) {
-    // Fresh cached result — serve immediately with simulated animation
-    await bumpPageRequest(canonicalUrl)
-    if (user) await upsertUserRequest(user.id, canonicalUrl)
-    return NextResponse.json({ page_id: existing.jobId, cached: true }, { status: 200 })
+  // Pre-resolution cache check. Most cached URLs sit under one of the
+  // two raw www/non-www forms of what the user submitted, so we can
+  // usually serve cache hits without paying for the HEAD probes.
+  const rawKey = normalizeUrl(trimmed) || trimmed
+  const altKey = normalizeUrl(altWwwForm(trimmed)) || trimmed
+  const preKeys = rawKey === altKey ? [rawKey] : [rawKey, altKey]
+  for (const key of preKeys) {
+    const res = await tryServeAt(key)
+    if (res) return res
   }
 
-  // In-progress job already running for this URL — attach to it
-  const active = await getActiveJobForUrl(canonicalUrl)
-  if (active) {
-    await bumpPageRequest(canonicalUrl)
-    if (user) await upsertUserRequest(user.id, canonicalUrl)
-    return NextResponse.json({ page_id: active.jobId, cached: false }, { status: 200 })
+  // Miss on both raw forms — resolve the canonical URL via dual HEAD
+  // probe. safeFetch enforces SSRF per-hop on the redirect chain;
+  // normalizeUrl strips per-request session/OAuth tokens (e.g.
+  // Google's dsh/ifkv/osid) so the cache key is stable across
+  // resubmissions.
+  const canonicalUrl = normalizeUrl(await resolveCanonicalUrl(trimmed)) || trimmed
+
+  // Post-resolution cache check — only needed if the canonical URL
+  // differs from the raw forms we already tried (e.g. the server
+  // redirected to a different hostname like `auth.foo.com/login`).
+  if (!preKeys.includes(canonicalUrl)) {
+    const res = await tryServeAt(canonicalUrl)
+    if (res) return res
   }
 
   // About to dispatch a fresh crawl — this is the expensive path, so

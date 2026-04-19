@@ -58,6 +58,16 @@ export function normalizeUrl(url: string, base?: string): string | null {
   }
 }
 
+// Flips the `www.` prefix: `foo.com` ↔ `www.foo.com`. Assumes the
+// input already parses as a URL (callers validate via isValidHttpUrl).
+export function altWwwForm(urlStr: string): string {
+  const u = new URL(urlStr)
+  u.hostname = u.hostname.startsWith("www.")
+    ? u.hostname.slice(4)
+    : `www.${u.hostname}`
+  return u.toString()
+}
+
 export function isSameDomain(url: string, base: string): boolean {
   try {
     const u = new URL(url)
