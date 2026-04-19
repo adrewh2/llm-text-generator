@@ -48,9 +48,12 @@ export default function ResultPane({ job }: { job: ApiJob }) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-2.5 bg-zinc-50 border-b border-zinc-100 shrink-0">
-        <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest">Result</span>
-        <span className="text-zinc-200">·</span>
-        <span className="text-[10px] text-zinc-400 font-mono">llms.txt</span>
+        {/* RESULT · llms.txt label group is purely contextual —
+            collapse it on mobile so the three action buttons fit on
+            one row without "Copy link" wrapping. */}
+        <span className="hidden sm:inline text-[10px] font-semibold text-zinc-400 uppercase tracking-widest">Result</span>
+        <span className="hidden sm:inline text-zinc-200">·</span>
+        <span className="hidden sm:inline text-[10px] text-zinc-400 font-mono">llms.txt</span>
         <div className="ml-auto flex items-center gap-2">
           <button
             type="button"
