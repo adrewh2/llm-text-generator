@@ -12,14 +12,13 @@ export function scorePages(
     const pageType: PageType = enriched?.pageType ?? classifyPage(page.url, page.title)
 
     // Prefer LLM-generated description over extracted one
-    const description =
+    const llmDescription =
       enriched?.description && enriched.description !== page.description
-        ? enriched.description
-        : page.description
+        ? enriched
+        : null
+    const description = llmDescription?.description ?? page.description
     const descriptionProvenance =
-      enriched?.description && enriched.description !== page.description
-        ? enriched.descriptionProvenance
-        : page.descriptionProvenance
+      llmDescription?.descriptionProvenance ?? page.descriptionProvenance
 
     const enrichedPage = { ...page, description, descriptionProvenance }
 

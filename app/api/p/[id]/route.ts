@@ -11,28 +11,17 @@ export async function GET(
   const job = await getJob(id)
   if (!job) return NextResponse.json({ error: "Not found" }, { status: 404 })
 
-  // Viewing a page (including polling a mid-flight job) counts as
-  // "active use" of the URL — bump the request timestamp so the
-  // monitor sweeper keeps it. Skip only on `failed` — no point
-  // extending a page's monitored lifetime on failures.
-  // NOTE: we deliberately do NOT attach the page to the viewer's
-  // dashboard history here. History is owned by the user who submitted
-  // the URL via the landing form (see POST /api/p). Otherwise a
-  // stranger's UUID, once shared, would quietly land in any viewer's
-  // dashboard.
+  // Count a view as "active use" so the monitor sweeper keeps the page.
   if (job.status !== "failed") {
     await bumpPageRequest(job.url)
   }
 
-  // Terminal job shape is immutable until the monitor cron re-crawls
-  // this URL; at that point updateJob() calls revalidatePath() for
-  // every job id mapping to the URL, so a cached copy is correct
-  // until the next write. stale-while-revalidate is a safety net in
-  // case a revalidation signal is delayed or dropped.
+  // Terminal jobs are immutable until the next re-crawl, at which point
+  // updateJob() revalidates the path. The TTL is a safety net.
   const isTerminal =
     job.status === "complete" || job.status === "partial" || job.status === "failed"
   const cacheControl = isTerminal
-    ? "public, s-maxage=3600, stale-while-revalidate=86400"
+    ? "public, s-maxage=86400, stale-while-revalidate=604800"
     : "no-store"
 
   return NextResponse.json(

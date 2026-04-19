@@ -12,7 +12,7 @@ import { assembleFile } from "./assemble"
 import { detectGenre } from "./genre"
 import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix } from "./url"
 import { updateJob } from "../store"
-import type { ExtractedPage, JobStatus } from "./types"
+import type { ExtractedPage } from "./types"
 import { crawler } from "../config"
 import { assertSafeUrl, UnsafeUrlError } from "./ssrf"
 
@@ -37,14 +37,9 @@ export async function runCrawlPipeline(jobId: string, targetUrl: string): Promis
     if (err instanceof PipelineTimeoutError) {
       await updateJob(jobId, { status: "failed", error: "Exceeded time budget" })
     }
-    // runPipelineInner already writes its own failure states; nothing
-    // else to do here.
   } finally {
-    // Clear the timer once the race has settled. Without this, the
-    // timer keeps the Fluid Compute instance's event loop alive for
-    // up to 270s past a quick completion — the eventual rejection is
-    // a no-op on an already-settled Promise.race, but the handle
-    // reference pins the closure and delays GC.
+    // Clear the timer so it doesn't keep the Fluid Compute instance
+    // alive past a quick completion.
     if (timeoutHandle) clearTimeout(timeoutHandle)
   }
 }
@@ -53,7 +48,7 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
   const spaBrowser = new SpaBrowser()
 
   try {
-    await setStatus(jobId, "crawling")
+    await updateJob(jobId, { status: "crawling" })
 
     const baseUrl = normalizeUrl(targetUrl) || targetUrl
 
@@ -358,10 +353,6 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
   } finally {
     await spaBrowser.close()
   }
-}
-
-async function setStatus(jobId: string, status: JobStatus) {
-  await updateJob(jobId, { status })
 }
 
 function delay(ms: number): Promise<void> {
