@@ -218,9 +218,12 @@ function PageViewInner({
                 )}
               </>
             ) : job && !isDone ? (
-              <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400 shrink-0">
-                <Loader2 size={11} className="animate-spin" /> Generating…
-              </span>
+              <>
+                <span className="text-zinc-300 hidden sm:block">·</span>
+                <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400 shrink-0">
+                  <Loader2 size={11} className="animate-spin" /> Generating…
+                </span>
+              </>
             ) : null}
           </>
         }
