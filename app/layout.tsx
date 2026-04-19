@@ -1,7 +1,7 @@
 import type { Metadata } from "next"
 import { Geist, Geist_Mono, Newsreader } from "next/font/google"
 import { createClient } from "@/lib/supabase/server"
-import GlobalHeader from "./GlobalHeader"
+import GlobalHeader from "@/app/components/GlobalHeader"
 import "./globals.css"
 
 const geistSans = Geist({
