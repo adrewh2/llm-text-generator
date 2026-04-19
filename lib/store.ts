@@ -8,9 +8,7 @@ import { errorLog } from "./log"
 const { PAGE_TTL_HOURS } = crawler
 
 // Server-only store: uses the service role key so writes bypass RLS.
-// This key must never be exposed to the client. One client is lazily
-// created and reused for the process lifetime so we don't pay
-// connection / auth setup on every exported function call.
+// Must never be imported into client code. Lazy singleton.
 let cached: SupabaseClient | null = null
 function getClient(): SupabaseClient {
   if (cached) return cached
@@ -27,8 +25,7 @@ function getClient(): SupabaseClient {
 export async function createJob(id: string, url: string): Promise<void> {
   const supabase = getClient()
   // pages row must exist before the job (FK). monitored=true re-enables
-  // any URL the sweeper had retired; last_requested_at is bumped by
-  // the caller via bumpPageRequest.
+  // any URL the sweeper had retired.
   await supabase.from("pages").upsert(
     { url, monitored: true },
     { onConflict: "url" },
@@ -65,7 +62,7 @@ export async function getJob(id: string): Promise<CrawlJob | undefined> {
     genre: job.genre ?? undefined,
     siteName: job.site_name ?? undefined,
     result: pageResult?.result ?? undefined,
-    pages: (pageResult?.crawled_pages ?? undefined) as ScoredPage[] | undefined,
+    pages: pageResult?.crawled_pages ?? undefined,
     error: job.error ?? undefined,
     createdAt: new Date(job.created_at),
     updatedAt: new Date(job.updated_at),

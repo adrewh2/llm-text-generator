@@ -80,7 +80,7 @@ export function validateLlmsTxt(content: string): ValidationResult {
 
     if (/^## /.test(line)) {
       if (inSection && !sectionHasEntries) {
-        errors.push({ line: i, message: `Section "${currentSection}" has no list entries` })
+        errors.push({ line: i + 1, message: `Section "${currentSection}" has no list entries` })
       }
       currentSection = line.slice(3).trim()
       sectionHasEntries = false

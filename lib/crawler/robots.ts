@@ -91,7 +91,8 @@ export function isAllowed(url: string, disallowed: string[]): boolean {
   try {
     const path = new URL(url).pathname
     return !disallowed.some((rule) => {
-      if (!rule || rule === "/") return !!rule
+      if (rule === "") return false
+      if (rule === "/") return true
       return path.startsWith(rule)
     })
   } catch {
