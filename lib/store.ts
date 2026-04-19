@@ -1,7 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 import type { CrawlJob, ScoredPage } from "./crawler/types"
-import { crawler } from "./config"
+import { crawler, monitor } from "./config"
 import { requireEnv } from "./env"
 import { errorLog } from "./log"
 
@@ -164,11 +164,16 @@ export async function getPageByUrl(url: string): Promise<{ jobId: string; isStal
 
 export async function getActiveJobForUrl(url: string): Promise<{ jobId: string } | undefined> {
   const supabase = getClient()
+  // Ignore non-terminal jobs whose updated_at is older than the stuck-job
+  // cutoff — a pending job from a dead waitUntil() would otherwise trap
+  // every new submission for the URL until the daily monitor cron sweeps.
+  const freshCutoff = new Date(Date.now() - monitor.STUCK_JOB_AFTER_MS).toISOString()
   const { data: job } = await supabase
     .from("jobs")
     .select("id")
     .eq("page_url", url)
     .not("status", "in", '("failed","complete","partial")')
+    .gte("updated_at", freshCutoff)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()

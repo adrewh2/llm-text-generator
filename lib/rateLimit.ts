@@ -24,6 +24,23 @@ export interface LimitResult {
 
 // ─── Upstash path ────────────────────────────────────────────────────────────
 
+// Fail at import on Vercel if Upstash isn't fully configured. The
+// in-memory fallback resets on cold start — silently activating it in
+// prod means an attacker who can trigger cold starts bypasses rate
+// limits entirely. Same failure-fast pattern as QStash signing keys in
+// /api/worker/crawl.
+if (process.env.VERCEL === "1") {
+  const missing: string[] = []
+  if (!process.env.UPSTASH_REDIS_REST_URL) missing.push("UPSTASH_REDIS_REST_URL")
+  if (!process.env.UPSTASH_REDIS_REST_TOKEN) missing.push("UPSTASH_REDIS_REST_TOKEN")
+  if (missing.length > 0) {
+    throw new Error(
+      `[rateLimit] Missing required env vars on Vercel: ${missing.join(", ")}. ` +
+      `The in-memory fallback is not safe in production.`,
+    )
+  }
+}
+
 // Redis client is built once per Fluid Compute instance. Absent when
 // the env vars aren't set — callers fall back to the in-memory path.
 const redis: Redis | null = (() => {
@@ -158,4 +175,22 @@ export function clientIp(req: { headers: Headers }): string {
   const real = req.headers.get("x-real-ip")
   if (real) return real.trim()
   return "unknown"
+}
+
+/**
+ * Defense-in-depth CSRF check. Supabase SSR cookies default to
+ * SameSite=Lax so cross-origin POSTs are already blocked at the
+ * browser; this catches the case where that default changes or where
+ * the attacker reaches the route through a same-site subdomain.
+ * Requests with no `Origin` header (curl, server-to-server) are
+ * allowed — they're not CSRF vectors.
+ */
+export function isAllowedOrigin(req: { headers: Headers; nextUrl: { host: string } }): boolean {
+  const origin = req.headers.get("origin")
+  if (!origin) return true
+  try {
+    return new URL(origin).host === req.nextUrl.host
+  } catch {
+    return false
+  }
 }
