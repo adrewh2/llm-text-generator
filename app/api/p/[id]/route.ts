@@ -27,12 +27,13 @@ export async function GET(
   // Terminal job shape is immutable until the monitor cron re-crawls
   // this URL; at that point updateJob() calls revalidatePath() for
   // every job id mapping to the URL, so a cached copy is correct
-  // until the next write. stale-while-revalidate is a safety net in
-  // case a revalidation signal is delayed or dropped.
+  // until the next write. The 1-day / 7-day window is mostly a
+  // safety net — the worker-driven invalidation is what's actually
+  // keeping freshness in the common path.
   const isTerminal =
     job.status === "complete" || job.status === "partial" || job.status === "failed"
   const cacheControl = isTerminal
-    ? "public, s-maxage=3600, stale-while-revalidate=86400"
+    ? "public, s-maxage=86400, stale-while-revalidate=604800"
     : "no-store"
 
   return NextResponse.json(
