@@ -128,7 +128,7 @@ Sign-in goes through Supabase-hosted OAuth (GitHub, Google). The client never se
 | `GET /api/p/[id]` | none | The UUID is the access token; results are public by design |
 | `DELETE /api/p/request` | required | Validates user owns the row via `user_id` filter |
 | `GET /api/pages` | required | Filters `user_requests` by `user_id` |
-| `GET /api/pages/download` | required | Same |
+| `GET /api/pages/download` | required | Filters `user_requests` by `user_id` before assembling the zip — the archive only ever contains the caller's own history. Additionally gated by the `AUTH_ZIP_DOWNLOAD` bucket (1 / 24 h per `user.id`) so a compromised session can't be looped for amplification. |
 | `GET /api/monitor` | `CRON_SECRET` | Header check, timing-safe |
 | `GET /auth/callback` | OAuth handoff | `next` param sanitized (see §6) |
 
@@ -146,13 +146,17 @@ Our server code uses the service-role key (bypasses RLS), but we also explicitly
 
 ## 5. Secrets management
 
-Client bundle only sees `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Both are safe to expose — RLS gates what the anon key can read.
+Client bundle (safe to expose — Next.js ships any `NEXT_PUBLIC_*` var to the browser):
+- `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` — RLS gates what the anon key can read.
+- `NEXT_PUBLIC_SENTRY_DSN` — the Sentry ingest DSN is an ingest-only identifier, designed by Sentry to be exposed (it only grants event submission, not event reads). Absence means the SDK silently no-ops.
 
 Server-only secrets:
 - `SUPABASE_SERVICE_ROLE_KEY` — bypasses RLS, used by `lib/store.ts` only. Never shipped to the browser.
 - `ANTHROPIC_API_KEY` — used in `lib/crawler/llmEnrich.ts`.
 - `CRON_SECRET` — gates `/api/monitor`; comparison is timing-safe (`timingSafeEqual` with a length pre-check).
-- `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY` — QStash auth + delivery signature verification. The worker route (`app/api/worker/crawl/route.ts`) calls `requireEnv()` at import time for both signing keys when `QSTASH_TOKEN` is set, so a misconfigured prod deploy fails loudly at build rather than silently 401-ing every QStash delivery.
+- `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` — back the rate limiter state in `lib/rateLimit.ts`. Token leak lets an attacker write rate-limit state (bypass their own limits or grief others); `lib/rateLimit.ts` throws at module load when `VERCEL=1` and either var is unset, so a misconfigured prod deploy fails before serving a request.
+- `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY` — QStash auth + delivery signature verification. The worker route (`app/api/worker/crawl/route.ts`) calls `requireEnv()` at import time for both signing keys when `QSTASH_TOKEN` is set, so a misconfigured prod deploy fails loudly at build rather than silently 401-ing every QStash delivery. `QSTASH_URL` (region endpoint) and optional `QSTASH_WORKER_URL` (callback override) are configuration rather than secrets, but the Marketplace integration sets them alongside the signing keys.
+- `SENTRY_AUTH_TOKEN` — build-time only. Used by `withSentryConfig` in `next.config.ts` to upload source maps during the Vercel build. Leaking it lets an attacker upload bogus source maps to the Sentry project (issue-noise griefing, not a data read). `SENTRY_ORG` + `SENTRY_PROJECT` are slugs (not secret) but live in the same server-only env set.
 
 `.env` is in `.gitignore`. `.env.example` documents what's required. The `requireEnv()` helper in `lib/env.ts` throws a clear error when a required variable is missing instead of crashing with "Cannot read properties of undefined".
 
@@ -175,15 +179,18 @@ Anything else falls back to `/dashboard`.
 
 ## 7. HTTP security headers
 
-Served on every response via `next.config.ts`:
+Set on every response via `next.config.ts`. Each header closes a browser default that would otherwise be dangerous for our app.
 
-- `Content-Security-Policy` — `script-src 'self' 'unsafe-inline' 'unsafe-eval'` (required for Next.js's RSC bootstrap + HMR; see below), `style-src 'self' 'unsafe-inline'` (Next emits hashed `<style>`), `connect-src` confined to our origin, `*.supabase.co`, and `*.ingest.sentry.io` / `*.sentry.io` (Sentry event ingest + session replay), `worker-src 'self' blob:` (Sentry replay SDK runs a blob-backed worker), `frame-ancestors 'self'` (clickjacking), `object-src 'none'`.
-  - **Known trade-off**: `'unsafe-inline'`/`'unsafe-eval'` materially weaken script-src. The principled fix is per-request nonces wired through middleware — deferred for this project scope. `frame-ancestors` + `object-src 'none'` still mitigate the bulk of the CSP-relevant attacks (clickjacking, plugin-origin content).
-- `X-Frame-Options: SAMEORIGIN` — belt-and-suspenders for older browsers that ignore CSP.
-- `X-Content-Type-Options: nosniff` — blocks MIME-type confusion attacks.
-- `Referrer-Policy: strict-origin-when-cross-origin` — don't leak the full path on outbound navigations.
-- `Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()` — deny feature access we don't need + opt out of FLoC.
-- `Strict-Transport-Security` — set by Vercel by default on our domain.
+| Header | Why we set it |
+|---|---|
+| `Content-Security-Policy` | Stops injected or compromised scripts from reaching the network. We crawl arbitrary third-party HTML; if any of it ever slipped through escaping and rendered as active markup, CSP caps the blast radius — injected scripts can't fetch anywhere except Supabase + Sentry (`connect-src`), can't iframe our pages inside another origin (`frame-ancestors 'self'`), and can't load plugins (`object-src 'none'`). |
+| `X-Frame-Options: SAMEORIGIN` | Stops `evil.com` from embedding our `/dashboard` in an invisible iframe and clickjacking a signed-in user into pressing destructive buttons ("remove from history") thinking they clicked something else. Redundant with CSP `frame-ancestors 'self'`; kept for older browsers that ignore CSP. |
+| `X-Content-Type-Options: nosniff` | Stops sniff-happy browsers from seeing an attacker-controlled string in a JSON response body, deciding "this looks like HTML," and executing an embedded `<script>`. Our API responses contain attacker-controlled text (crawl errors, site names, URLs); the header forces the browser to honour the `Content-Type` we declared. |
+| `Referrer-Policy: strict-origin-when-cross-origin` | Stops `/p/{uuid}` from leaking to third parties via the `Referer` header when the user clicks an outbound link on a result page. The UUID **is** the access token — leaking it gives the destination site full read access to our page. Sends only the origin on cross-site navigation. |
+| `Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()` | Stops scripts — ours, a compromised dependency, or an injection — from silently turning on the camera, microphone, or geolocation. We don't use any of those APIs, so any invocation is a bug or attack. Also opts out of Google's FLoC cohort tracking. |
+| `Strict-Transport-Security` | Stops the first-request protocol downgrade on public Wi-Fi, where an on-path attacker intercepts an HTTP request before the redirect to HTTPS and captures the Supabase session cookie. HSTS tells the browser to auto-upgrade to HTTPS for our domain forever. Set automatically by Vercel on our domain. |
+
+**Known CSP trade-off:** `script-src` includes `'unsafe-inline'` and `'unsafe-eval'` because Next.js's RSC bootstrap requires them — both materially weaken protection against injected scripts. The principled fix is per-request nonces wired through middleware, deferred for this project's scope. `frame-ancestors`, `object-src`, and the restricted `connect-src` still do meaningful work without them.
 
 ---
 
@@ -193,9 +200,7 @@ Every user-supplied string is validated:
 
 - Submitted URLs are checked against `MAX_URL_LENGTH = 2048`, `isValidHttpUrl`, `assertSafeUrl`, and passed through `normalizeUrl` (strips userinfo, `utm_*`, locale params, OAuth flow params, Google session tokens — see `lib/crawler/url.ts`). Userinfo stripping matters: a submission of `https://alice:sekret@target.com` would otherwise forward credentials on every crawl fetch, land them in runtime logs + the QStash message body, and fork the cache key off the principal's secret.
 - Client-side UX guard: the landing page rejects non-http(s) schemes before the POST so the user doesn't eat a round-trip to see the error.
-- `DELETE /api/p/request` validates `pageUrl` via `isValidHttpUrl` before hitting the DB.
-- `/api/pages` offset/limit are clamped to `[0, ∞)` and `[1, 50]` respectively.
-- `/auth/callback` `next` param — sanitized above.
+- `/api/pages` clamps the caller-supplied `offset` to ≥ 0 and `limit` to 1–50 so a request like `?limit=1000000` can't force the server to load a user's entire history into one response.
 - LLM JSON output — every field validated (see §3).
 
 ---
@@ -212,7 +217,7 @@ Every user-supplied string is validated:
 
 `pages` is a **globally shared** cache keyed by canonical URL. Two consequences worth calling out:
 
-- **No cross-user result contamination**: every user who generates the same URL gets the same result. Fine by design.
+- **No cross-user result contamination**: every user who generates the same URL gets the same result. Fine by design. The result isn't frozen, though — once the 24 h `PAGE_TTL_HOURS` expires, or the monitor cron detects upstream content change, the next submission recomputes the result and overwrites `pages.result` for everyone. The "shared" guarantee is that two users reading the row at the same moment see the same bytes, not that those bytes never change.
 - **History is private**: `user_requests` is the per-user association table, protected by the RLS policy above. One user cannot see another user's history via the anon key.
 
 `pages` does not contain PII — it contains an llms.txt and scored crawl metadata for a publicly-crawlable URL. `user_requests` contains `user_id` (UUID) + `page_url`; email is stored by Supabase Auth in its own schema and is never joined.
@@ -240,7 +245,7 @@ Both helpers forward Error payloads to **Sentry** (`Sentry.captureException`) wi
 
 One call site bypasses both on purpose: `lib/rateLimit.ts` writes a `[rateLimit] Upstash call failed, FAILING OPEN: …` line with `console.warn` directly. A Redis misconfig silently disables rate limiting, which is worth seeing in Vercel logs but not worth paging on every transient blip.
 
-Full write-up — Sentry SDK layout, file-by-file role, what's filtered, where to look when something breaks — is in [`OBSERVABILITY.md`](./OBSERVABILITY.md).
+The full write-up — Sentry SDK layout, the role of each config file, what's filtered out, and where to look when something breaks — lives in [`OBSERVABILITY.md`](./OBSERVABILITY.md).
 
 Prompts + crawled content are sent to Anthropic under their default data retention policy. We do not opt into Zero Data Retention. For a regulated deployment this would be toggled on via Anthropic's account settings.
 
@@ -256,10 +261,3 @@ Listed in case a reviewer wonders:
 - **No structured audit log** of auth events or rate-limit denials.
 - **No CAPTCHA** on the landing page.
 - **No IP allowlist / blocklist** on our own API surface.
-- **~~Vercel Sandbox / Queue for crawl execution~~** — *addressed.* Crawls now publish to Upstash QStash (`lib/jobQueue.ts`) and land at the signed `/api/worker/crawl` route. QStash owns retry-on-failure and at-least-once delivery. In-process `waitUntil` is kept only as a local-dev fallback when `QSTASH_TOKEN` is absent.
-
----
-
-## 14. How to report a vulnerability
-
-For a real deployment, `security@<domain>`. For this repo, open a private GitHub Security Advisory.

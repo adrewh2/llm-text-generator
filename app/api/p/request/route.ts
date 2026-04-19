@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
 import { removeUserRequest } from "@/lib/store"
-import { isValidHttpUrl } from "@/lib/crawler/url"
 import { isAllowedOrigin } from "@/lib/rateLimit"
 import { createClient } from "@/lib/supabase/server"
 
@@ -17,9 +16,6 @@ export async function DELETE(req: NextRequest) {
 
   const pageUrl = new URL(req.url).searchParams.get("pageUrl")
   if (!pageUrl) return NextResponse.json({ error: "pageUrl required" }, { status: 400 })
-  if (!isValidHttpUrl(pageUrl)) {
-    return NextResponse.json({ error: "pageUrl must be a valid http(s) URL" }, { status: 400 })
-  }
 
   await removeUserRequest(user.id, pageUrl)
   return new NextResponse(null, { status: 204 })
