@@ -23,7 +23,7 @@ Paste a URL, the app discovers pages (sitemap → robots → link-following, wit
 **Output**
 - Spec-compliant `llms.txt` assembly with generated preamble and importance-ordered sections
 - Curated external references included in output
-- In-browser validator + editable result + copy / download
+- In-browser spec validator + read-only result view + copy / download
 
 **Accounts + shared cache**
 - Supabase OAuth sign-in (GitHub + Google)
