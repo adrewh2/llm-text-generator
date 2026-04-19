@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import Link from "next/link"
 import { FolderDown } from "lucide-react"
+import AppHeader from "../AppHeader"
 import NavAuth from "../NavAuth"
 import PageList, { type WirePage } from "./PageList"
 import { getUserPages } from "@/lib/store"
@@ -30,20 +30,7 @@ export default async function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-white font-sans">
-      {/* Shared header pattern with the landing page — sticky, blurred
-          white background, logo + NavAuth. NavAuth swaps its
-          "Dashboard" link for a "+ Generate" CTA based on pathname. */}
-      <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-sm border-b border-zinc-100">
-        <nav className="px-6 h-14 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2.5">
-            <div className="w-6 h-6 bg-zinc-950 rounded-[5px] flex items-center justify-center shrink-0">
-              <span className="text-white font-mono text-[9px] font-bold leading-none">{"//"}</span>
-            </div>
-            <span className="font-semibold text-zinc-950 text-sm tracking-tight">llms.txt</span>
-          </Link>
-          <NavAuth initialUser={user} />
-        </nav>
-      </header>
+      <AppHeader right={<NavAuth initialUser={user} />} />
 
       <main className="max-w-4xl mx-auto px-6 py-8">
         <div className="flex items-center justify-between mb-8">

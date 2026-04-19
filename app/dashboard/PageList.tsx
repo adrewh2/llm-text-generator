@@ -115,7 +115,7 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2.5 mb-0.5">
-                    <span className="font-medium text-zinc-900 text-sm truncate">
+                    <span className="text-zinc-900 text-sm truncate">
                       {page.siteName || hostname}
                     </span>
                     {page.latestJobStatus === "failed" && (

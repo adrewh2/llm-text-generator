@@ -6,6 +6,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import type { User } from "@supabase/supabase-js"
 import { clientValidateUrl } from "@/lib/crawler/url"
+import AppHeader from "./AppHeader"
 import NavAuth from "./NavAuth"
 
 const EXAMPLE_OUTPUT = `# FastHTML
@@ -143,23 +144,16 @@ export default function LandingClient({ initialUser }: { initialUser: User | nul
 
   return (
     <div className="min-h-screen bg-white font-sans">
-      {/* Navigation */}
-      <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-sm border-b border-zinc-100">
-        <nav className="px-6 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-6 h-6 bg-zinc-950 rounded-[5px] flex items-center justify-center shrink-0">
-              <span className="text-white font-mono text-[9px] font-bold leading-none">{"//"}</span>
-            </div>
-            <span className="font-semibold text-zinc-950 text-sm tracking-tight">llms.txt</span>
-          </div>
+      <AppHeader
+        right={
           <div className="flex items-center gap-6">
             <a href="#how-it-works" className="text-sm text-zinc-500 hover:text-zinc-900 transition-colors hidden sm:block">
               How it works
             </a>
             <NavAuth initialUser={initialUser} />
           </div>
-        </nav>
-      </header>
+        }
+      />
 
       {/* Hero */}
       <section className="relative overflow-hidden">
