@@ -63,18 +63,37 @@ function getUpstashLimiter(cfg: LimitConfig): Ratelimit | null {
   const cacheKey = `${cfg.capacity}:${cfg.refillPerSec}`
   let limiter = limiterCache.get(cacheKey)
   if (!limiter) {
-    // Upstash tokenBucket wants integer tokens-per-interval; we hold
-    // sub-1/sec rates, so convert to tokens-per-hour.
-    const perHour = Math.max(1, Math.round(cfg.refillPerSec * 3600))
+    // Upstash tokenBucket wants integer tokens per interval. Pick
+    // whichever unit gives a non-zero integer count: if the rate is
+    // at least 1/hour use per-hour, otherwise per-day, otherwise
+    // per-week. Previously we hardcoded "1 h" and Math.max(1, …)'d
+    // the count, which floored long-window caps (e.g. the zip
+    // download at 1/24h) to 1/hr — the effective window was an
+    // order of magnitude tighter than the config claimed.
+    const { count, interval } = pickInterval(cfg.refillPerSec)
     limiter = new Ratelimit({
       redis,
-      limiter: Ratelimit.tokenBucket(perHour, "1 h", cfg.capacity),
+      limiter: Ratelimit.tokenBucket(count, interval, cfg.capacity),
       prefix: "rl",
       analytics: false,
     })
     limiterCache.set(cacheKey, limiter)
   }
   return limiter
+}
+
+function pickInterval(refillPerSec: number): {
+  count: number
+  interval: `${number} ${"s" | "m" | "h" | "d"}`
+} {
+  const perHour = refillPerSec * 3600
+  if (perHour >= 1) return { count: Math.round(perHour), interval: "1 h" }
+  const perDay = refillPerSec * 86400
+  if (perDay >= 1) return { count: Math.round(perDay), interval: "1 d" }
+  // Extremely rare path — sub-weekly rates. One token every 7 days
+  // is the coarsest window Upstash handles cleanly; anything slower
+  // effectively disables the bucket anyway.
+  return { count: 1, interval: "7 d" }
 }
 
 // ─── In-memory fallback ──────────────────────────────────────────────────────

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { FolderDown, Loader2 } from "lucide-react"
+import ConfirmDialog from "@/app/components/ConfirmDialog"
 
 // Client-side download orchestration. Using a plain <a download>
 // here was a trap: on a 429 the browser happily wrote the JSON
@@ -13,6 +14,7 @@ export default function DownloadButton() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [fadingOut, setFadingOut] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   // Auto-dismiss an error after ~10s. Fade the opacity first so the
   // notice doesn't vanish abruptly, then null the state after the
@@ -37,7 +39,7 @@ export default function DownloadButton() {
     return `${hrs} hour${hrs === 1 ? "" : "s"}`
   }
 
-  const handleClick = async () => {
+  const runDownload = async () => {
     if (loading) return
     setError(null)
     setLoading(true)
@@ -91,7 +93,7 @@ export default function DownloadButton() {
     <div className="relative">
       <button
         type="button"
-        onClick={handleClick}
+        onClick={() => !loading && setConfirmOpen(true)}
         disabled={loading}
         title="Download all your llms.txt files as a zip"
         className="flex items-center gap-1.5 text-sm font-medium text-zinc-700 hover:text-zinc-900 px-3.5 py-2 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed transition-colors"
@@ -114,6 +116,20 @@ export default function DownloadButton() {
         >
           {error}
         </p>
+      )}
+      {confirmOpen && (
+        <ConfirmDialog
+          title="Download your history?"
+          body="You'll get a zip of up to your 500 most recently requested pages (one .txt per page)."
+          note="Limited to 1 download per 24 hours."
+          confirmLabel="Download"
+          confirmVariant="primary"
+          onConfirm={() => {
+            setConfirmOpen(false)
+            void runDownload()
+          }}
+          onCancel={() => setConfirmOpen(false)}
+        />
       )}
     </div>
   )

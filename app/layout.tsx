@@ -1,5 +1,6 @@
 import type { Metadata } from "next"
 import { Geist, Geist_Mono, Newsreader } from "next/font/google"
+import { Analytics } from "@vercel/analytics/next"
 import { createClient } from "@/lib/supabase/server"
 import GlobalHeader from "@/app/components/GlobalHeader"
 import "./globals.css"
@@ -41,6 +42,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       >
         <GlobalHeader initialUser={user} />
         {children}
+        <Analytics />
       </body>
     </html>
   )
