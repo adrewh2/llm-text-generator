@@ -49,38 +49,7 @@ function sanitizeDescription(raw: unknown, original: string | undefined): string
   if (typeof raw !== "string") return undefined
   const clean = neuter(raw).slice(0, MAX_DESCRIPTION_LEN).trim()
   if (clean.length < 10) return undefined
-  if (looksLikeRefusal(clean)) return undefined
   return clean === original ? original : clean
-}
-
-// Catches LLM-refusal / hedging / meta prose that we must never emit
-// into the generated llms.txt. Examples of what these patterns block:
-//   - "I don't have access to information about…"
-//   - "Could you share more information about this website?"
-//   - "To write an accurate description, I would need…"
-//   - "Based on the limited context…"
-//   - "As an AI, I…"
-// A missing preamble / description is always better than one of these.
-// The caller returns `undefined` so the assembler falls back to the
-// deterministic path (e.g. drop the preamble, keep the extracted
-// meta description) without surfacing any LLM meta-commentary.
-const REFUSAL_PATTERNS: readonly RegExp[] = [
-  /\bI (don'?t|do not|cannot|can'?t) (have|find|access|determine|identify|know|see)\b/i,
-  /\bI (would|will|do) need\b/i,
-  /\bI'?m (an AI|not sure|unable|uncertain)\b/i,
-  /\bas an AI\b/i,
-  /\b(could|would|can) you (share|provide|clarify|confirm|give|tell|explain)\b/i,
-  /\bplease (share|provide|clarify|confirm|give|tell|explain)\b/i,
-  /\bto (write|provide|generate) (a|an) (accurate|proper|meaningful|appropriate|better)\b/i,
-  /\bbased on the limited\b/i,
-  /\bwith (the )?limited (context|information)\b/i,
-  /\bwithout (more|additional|further) (context|information|details?)\b/i,
-  /\binsufficient (context|information|details?)\b/i,
-  /\?\s*$/, // A factual description never ends with a question mark.
-]
-
-function looksLikeRefusal(text: string): boolean {
-  return REFUSAL_PATTERNS.some((re) => re.test(text))
 }
 
 function getClient(): Anthropic | null {
@@ -235,38 +204,48 @@ export async function generateSitePreamble(
 
   const genreLabel = genre.replace(/_/g, " ")
 
-  const prompt = `Write a 2–3 sentence description of "${siteName}" (a ${genreLabel} site) for an LLM that has never heard of it. Write in the site's primary language "${primaryLang}".
+  const prompt = `You are writing a 2–3 sentence description of "${siteName}" (a ${genreLabel} site) for an LLM that has never heard of it. Write the description in the site's primary language "${primaryLang}".
 
-Cover: what the product or service is, what it does, and who uses it. Be specific and factual. No marketing language. No headings or bullet points.
-
-Do NOT reference the llms.txt file, do NOT say "this file covers" or "this index contains" or "this document" — write about the actual website and product only.
-
-IMPORTANT — if the page list below is too thin to write a confident, factual description without guessing, hedging, or asking for more information, reply with the single literal word SKIP on its own and nothing else. Do not apologize. Do not explain. Do not ask questions. A missing preamble is always better than a weak one; the caller will silently drop it and assemble the file without.
+Cover: what the product or service is, what it does, and who uses it. Be specific and factual. No marketing language. No headings or bullet points. Do NOT reference the llms.txt file, do NOT say "this file covers" or "this index contains" or "this document" — write about the actual website and product only.
 
 Context (pages on this site):
 ${pageLines}
 
-Return only the description text (or the single word SKIP if you can't write a confident one), nothing else.`
+Respond with a JSON object only — no prose outside the braces. The "confident" flag signals whether the page list above is informative enough to write a confident, factual description without guessing, hedging, or asking for more information. If the context is thin (one-pager, sparse crawl, personal portfolio with no explanatory text, etc.), set "confident": false and return an empty "description" — the caller will drop the preamble entirely rather than emit weak prose. Do not apologize, do not ask questions, do not explain what you'd need; just set the flag.
+
+{
+  "confident": true | false,
+  "reason": "one short English sentence explaining your choice",
+  "description": "<2–3 sentence description in ${primaryLang}, or empty string if not confident>"
+}`
 
   try {
     const message = await client.messages.create({
       model: MODEL,
-      max_tokens: 256,
+      max_tokens: 512,
       messages: [{ role: "user", content: prompt }],
     })
 
-    const text = message.content[0]?.type === "text" ? message.content[0].text.trim() : ""
-    if (text.length < 20) return undefined
-    // Explicit escape hatch — the model was told to emit SKIP when
-    // context is too thin. Allow some slack (leading quote, trailing
-    // punctuation) so minor tokenisation drift still triggers.
-    if (/^"?SKIP"?[.!]?$/i.test(text)) return undefined
-    // Last line of defence: reject any preamble that looks like
-    // refusal / hedging / question-asking prose. This catches the
-    // failure mode where the model ignores the SKIP instruction and
-    // answers in natural language like "I don't have access to…".
-    if (looksLikeRefusal(text)) return undefined
-    return text
+    const text = message.content[0]?.type === "text" ? message.content[0].text : ""
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) return undefined
+
+    let parsed: { confident?: unknown; description?: unknown }
+    try {
+      parsed = JSON.parse(jsonMatch[0])
+    } catch {
+      return undefined
+    }
+
+    // Hard gate: confident must be the literal boolean true. Treat
+    // anything else (missing, false, "true" string, etc.) as a skip
+    // signal — better to drop the preamble than risk emitting the
+    // refusal / hedging text that motivated the structured response.
+    if (parsed.confident !== true) return undefined
+    if (typeof parsed.description !== "string") return undefined
+    const description = parsed.description.trim()
+    if (description.length < 20) return undefined
+    return description
   } catch (err) {
     debugLog("llmEnrich.generateSitePreamble", err)
     return undefined
