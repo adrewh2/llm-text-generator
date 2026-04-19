@@ -142,8 +142,8 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
   if (pages.length === 0) {
     return (
       <div className="text-center py-24 border border-dashed border-zinc-200 rounded-2xl">
-        <p className="text-zinc-400 text-sm mb-4">No pages yet</p>
-        <Link href="/" className="text-sm font-medium text-zinc-900 underline underline-offset-2">
+        <p className="text-zinc-400 text-[15px] mb-4">No pages yet</p>
+        <Link href="/" className="text-[15px] font-medium text-zinc-900 underline underline-offset-2">
           Generate your first llms.txt
         </Link>
       </div>

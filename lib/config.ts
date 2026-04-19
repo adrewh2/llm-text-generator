@@ -160,7 +160,7 @@ export const rateLimit = {
   ANON_SUBMIT: { capacity: 60, refillPerSec: 60 / 3600 },
   AUTH_SUBMIT: { capacity: 300, refillPerSec: 300 / 3600 },
   ANON_NEW_CRAWL: { capacity: 3, refillPerSec: 3 / 3600 },
-  AUTH_NEW_CRAWL: { capacity: 10, refillPerSec: 10 / 3600 },
+  AUTH_NEW_CRAWL: { capacity: 50, refillPerSec: 50 / 3600 },
   /**
    * Cap on /api/monitor invocations, keyed globally (one bucket for
    * the whole cron). Legit load is 1 call/day from Vercel Cron; this
