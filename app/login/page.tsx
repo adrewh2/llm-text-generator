@@ -38,8 +38,8 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen bg-white flex flex-col">
-      <header className="border-b border-zinc-100">
-        <nav className="max-w-6xl mx-auto px-6 h-14 flex items-center">
+      <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-sm border-b border-zinc-100">
+        <nav className="px-6 h-14 flex items-center">
           <Link href="/" className="flex items-center gap-2.5">
             <div className="w-6 h-6 bg-zinc-950 rounded-[5px] flex items-center justify-center shrink-0">
               <span className="text-white font-mono text-[9px] font-bold leading-none">{"//"}</span>

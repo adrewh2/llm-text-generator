@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
-import { ChevronDown, LogOut } from "lucide-react"
+import { usePathname, useRouter } from "next/navigation"
+import { ChevronDown, LogOut, Plus } from "lucide-react"
 import type { User } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/client"
 
@@ -16,6 +16,8 @@ export default function NavAuth({ initialUser = null }: { initialUser?: User | n
   const menuRef = useRef<HTMLDivElement>(null)
   const supabase = useRef(createClient()).current
   const router = useRouter()
+  const pathname = usePathname()
+  const onDashboard = pathname?.startsWith("/dashboard") ?? false
 
   // Keep the client state in sync with live auth changes. We skip the
   // one-shot getUser() call here — initialUser from the server is the
@@ -50,6 +52,10 @@ export default function NavAuth({ initialUser = null }: { initialUser?: User | n
   const signOut = async () => {
     setOpen(false)
     await supabase.auth.signOut()
+    // Always land on the public landing page — otherwise a sign-out
+    // from /dashboard leaves the user on a page that's gated server-
+    // side and would bounce them to /login on refresh.
+    router.push("/")
     router.refresh()
   }
 
@@ -70,12 +76,22 @@ export default function NavAuth({ initialUser = null }: { initialUser?: User | n
 
   return (
     <div className="flex items-center gap-4">
-      <Link
-        href="/dashboard"
-        className="text-sm text-zinc-500 hover:text-zinc-900 transition-colors"
-      >
-        Dashboard
-      </Link>
+      {onDashboard ? (
+        <Link
+          href="/"
+          className="flex items-center gap-1.5 text-sm font-medium text-zinc-700 hover:text-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-colors"
+        >
+          <Plus size={14} className="text-zinc-400" />
+          Generate
+        </Link>
+      ) : (
+        <Link
+          href="/dashboard"
+          className="text-sm text-zinc-500 hover:text-zinc-900 transition-colors"
+        >
+          Dashboard
+        </Link>
+      )}
 
       <div className="relative" ref={menuRef}>
         <button
