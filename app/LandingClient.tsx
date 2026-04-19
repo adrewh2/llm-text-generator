@@ -1,10 +1,11 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import { ArrowRight, Globe, Zap, CheckCircle, RefreshCw, Loader2, BookMarked, FolderDown } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import type { User } from "@supabase/supabase-js"
+import { clientValidateUrl } from "@/lib/crawler/url"
 import NavAuth from "./NavAuth"
 
 const EXAMPLE_OUTPUT = `# FastHTML
@@ -39,6 +40,21 @@ export default function LandingClient({ initialUser }: { initialUser: User | nul
     // Auto-focus the URL input on every load — this page is a
     // single-input tool and typing should start without a click.
     inputRef.current?.focus()
+
+    // Re-focus if the user starts typing anywhere else on the page
+    // (e.g. after clicking a link/anchor and coming back). Only
+    // intercepts printable keys with no modifier so browser shortcuts
+    // (Cmd-R, Tab, shift-click, etc.) still work, and skips when
+    // another input already has focus.
+    const handleKeydown = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key.length !== 1) return // ignore Tab, Shift, arrows, etc.
+      const active = document.activeElement
+      if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || (active as HTMLElement).isContentEditable)) return
+      inputRef.current?.focus()
+    }
+    document.addEventListener("keydown", handleKeydown)
+    return () => document.removeEventListener("keydown", handleKeydown)
   }, [])
 
   const formatRetry = (seconds: number): string => {
@@ -58,13 +74,38 @@ export default function LandingClient({ initialUser }: { initialUser: User | nul
     return `https://${trimmed}`
   }
 
+  // Reactive client-side validation: mirrors the server's DNS-free
+  // SSRF checks so the Generate button can be disabled (and a hint
+  // shown) before the user submits. Empty input: no reason to nag.
+  const normalizedPreview = normalizeInput(url)
+  const validation = useMemo(() => {
+    if (!normalizedPreview) return { ok: true as const }
+    return clientValidateUrl(normalizedPreview)
+  }, [normalizedPreview])
+  const validationHint = !validation.ok ? validation.reason : null
+
   const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!url.trim() || loading) return
 
+    // Any error path below should refocus the input so the user can
+    // keep editing without reaching for the mouse — the submit-button
+    // click moves focus off the input by default. Focus is deferred
+    // to the next frame because the input is `disabled={loading}` and
+    // a disabled element cannot receive focus; setLoading(false) is
+    // async, so focus() synchronously after it runs on the still-
+    // disabled node and is silently dropped.
+    const failWith = (msg: string, signInHint = false) => {
+      setError(msg)
+      setShowSignInHint(signInHint)
+      setLoading(false)
+      requestAnimationFrame(() => inputRef.current?.focus())
+    }
+
     const normalized = normalizeInput(url)
-    if (!/^https?:\/\//i.test(normalized)) {
-      setError("Only http:// and https:// URLs are supported.")
+    const check = clientValidateUrl(normalized)
+    if (!check.ok) {
+      failWith(check.reason)
       return
     }
     setError("")
@@ -86,21 +127,17 @@ export default function LandingClient({ initialUser }: { initialUser: User | nul
           const prefix = data.reason === "new_crawl_quota"
             ? "You've hit your limit for generating new pages"
             : "Too many submissions — please slow down"
-          setError(`${prefix}. Try again in ${formatRetry(retryAfter)}.`)
-          setShowSignInHint(data.signInPrompt === true)
+          failWith(`${prefix}. Try again in ${formatRetry(retryAfter)}.`, data.signInPrompt === true)
         } else {
-          setError(data.error || "Something went wrong")
-          setShowSignInHint(false)
+          failWith(data.error || "Something went wrong")
         }
-        setLoading(false)
         return
       }
 
       router.push(`/p/${data.page_id}${data.cached ? "?simulate=1" : ""}`)
       // leave loading=true — component unmounts on redirect
     } catch {
-      setError("Network error — please try again")
-      setLoading(false)
+      failWith("Network error — please try again")
     }
   }
 
@@ -188,8 +225,8 @@ export default function LandingClient({ initialUser }: { initialUser: User | nul
               />
               <button
                 type="submit"
-                disabled={loading || !url.trim()}
-                className="flex items-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-4 py-2 rounded-[9px] hover:bg-zinc-800 active:scale-95 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+                disabled={loading || !url.trim() || !!validationHint}
+                className="flex items-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-4 py-2 rounded-[9px] hover:bg-zinc-800 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 transition-all whitespace-nowrap"
               >
                 {loading ? (
                   <><Loader2 size={13} className="animate-spin" /> Generating…</>
@@ -198,7 +235,7 @@ export default function LandingClient({ initialUser }: { initialUser: User | nul
                 )}
               </button>
             </div>
-            {error && (
+            {error ? (
               <p id="url-error" role="alert" className="text-xs text-red-500 mt-2 text-left">
                 {error}
                 {showSignInHint && (
@@ -211,7 +248,9 @@ export default function LandingClient({ initialUser }: { initialUser: User | nul
                   </>
                 )}
               </p>
-            )}
+            ) : validationHint ? (
+              <p className="text-xs text-zinc-500 mt-2 text-left">{validationHint}</p>
+            ) : null}
           </form>
         </div>
       </section>

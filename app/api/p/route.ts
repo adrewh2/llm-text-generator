@@ -3,6 +3,7 @@ import { randomUUID } from "crypto"
 import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, upsertUserRequest } from "@/lib/store"
 import { altWwwForm, isValidHttpUrl, normalizeUrl } from "@/lib/crawler/url"
 import { resolveCanonicalUrl } from "@/lib/crawler/canonicalUrl"
+import { assertSafeUrl, UnsafeUrlError } from "@/lib/crawler/ssrf"
 import { clientIp, consumeRateLimit, isAllowedOrigin } from "@/lib/rateLimit"
 import { api, rateLimit } from "@/lib/config"
 import { enqueueCrawl } from "@/lib/jobQueue"
@@ -33,6 +34,20 @@ export async function POST(req: NextRequest) {
   const trimmed = url.trim()
   if (!isValidHttpUrl(trimmed)) {
     return NextResponse.json({ error: "Invalid URL — must be http:// or https://" }, { status: 400 })
+  }
+
+  // Up-front SSRF + reachability check. resolveCanonicalUrl()'s probe
+  // swallows errors to fall back to the raw URL on flaky networks, so
+  // without this gate an UnsafeUrlError (loopback, metadata IPs, non-
+  // default ports, DNS-unresolvable hosts) silently leaks into the
+  // pages table as a valid row.
+  try {
+    await assertSafeUrl(trimmed)
+  } catch (err) {
+    if (err instanceof UnsafeUrlError) {
+      return NextResponse.json({ error: "URL is not reachable or not allowed." }, { status: 400 })
+    }
+    throw err
   }
 
   const supabase = await createClient()

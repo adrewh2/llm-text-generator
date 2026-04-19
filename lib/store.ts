@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 import type { CrawlJob, ScoredPage } from "./crawler/types"
 import { crawler, monitor } from "./config"
+import { assertSafeUrl } from "./crawler/ssrf"
 import { requireEnv } from "./env"
 import { errorLog } from "./log"
 
@@ -29,6 +30,15 @@ function getClient(): SupabaseClient {
  * the worker uses it to update row status; no URL references it.
  */
 export async function createJob(jobId: string, url: string): Promise<{ pageId: string }> {
+  // Defense-in-depth: every job-creation path (submit, monitor
+  // re-crawl, future callers) flows through here, so re-validate the
+  // URL even if the caller already did. Blocks loopback / private /
+  // metadata / non-default-port / DNS-unresolvable targets before we
+  // upsert a pages row or insert a jobs row — makes it impossible to
+  // persist a job for an unreachable or unsafe page. Throws
+  // UnsafeUrlError; callers at HTTP boundaries translate to 400.
+  await assertSafeUrl(url)
+
   const supabase = getClient()
   // pages row must exist before the job (FK). `DEFAULT gen_random_uuid()`
   // generates `id` on INSERT and leaves existing rows' ids untouched on
