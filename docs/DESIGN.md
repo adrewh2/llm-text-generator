@@ -209,7 +209,7 @@ resolveExternalReferences: homepage-only outbound anchors → LLM ranks
   down to crawler.EXTERNAL_REFS_MAX_KEEP (8) → each fetched once for
   metadata (no link discovery, depth 1 only) → merged into the page set
   ↓
-LLM enrich (enrichBatch, batches of 20): returns pageType, importance 1–10,
+LLM enrich (enrichBatch, batches of 20): returns importance 1–10,
   section hint, and a description where missing
   ↓
 scorePages: structural signal weights (description presence, .md availability,
@@ -279,14 +279,13 @@ Thresholds: primary ≥ 50, optional 15–49, excluded < 15. These are starting 
 Five call sites, all pinned to `claude-haiku-4-5-20251001`:
 
 1. **`rankCandidateUrls`** — given up to `llm.RANK_MAX_KEEP` (120) URLs plus the site name and homepage excerpt, return the list re-ordered by likely value. Skipped entirely for candidate lists below `llm.RANK_SKIP_BELOW` (10).
-2. **`enrichBatch`** (called from `llmEnrichPages`) — batches of `llm.ENRICH_BATCH_SIZE` (20) pages, run in parallel. Per page, returns `pageType`, `importance` (1–10), a `section` label, and a `description` (the LLM rewrites even when the page had one — replacement is kept only if it differs; provenance is then flipped to `llm`). The `section` value is the *primary* signal for primary pages (score ≥ 50); the path-regex inference runs only when the LLM didn't return a usable section. Pages with score < 50 are always placed into `Optional` regardless of what the LLM suggested.
+2. **`enrichBatch`** (called from `llmEnrichPages`) — batches of `llm.ENRICH_BATCH_SIZE` (20) pages, run in parallel. Per page, returns `importance` (1–10), a `section` label, and a `description` (the LLM rewrites even when the page had one — replacement is kept only if it differs; provenance is then flipped to `llm`). The `section` value is the *primary* signal for primary pages (score ≥ 50); the path-regex inference runs only when the LLM didn't return a usable section. Pages with score < 50 are always placed into `Optional` regardless of what the LLM suggested.
 3. **`rankExternalReferences`** — given homepage outbound anchors (URL + anchor text) plus the site name and homepage excerpt, return up to `crawler.EXTERNAL_REFS_MAX_KEEP` (8) curated references. Prompt is tuned to keep spec / upstream / related-project links and drop social media, tracking, hosting badges, and peripheral mentions. Skipped when there's nothing to prune (candidates ≤ `maxKeep`).
 4. **`llmSiteName`** — given deterministic candidates (`og:site_name`, `application-name`, JSON-LD `name`, `<title>`, first `<h1>`) plus the hostname, returns a clean 1–4-word brand name. Falls back to the deterministic result when the LLM is unavailable or returns something unusable (see `cleanSiteName` in `siteName.ts`).
 5. **`generateSitePreamble`** — given site name, genre, and the selected pages, returns a 1–3 sentence intro paragraph for the assembled file. If this call fails, the file is assembled without a preamble rather than faking one.
 
 ### What the LLM does *not* decide
 
-- **Page type enum.** The LLM returns one, but anything outside the allowed set (doc/api/example/blog/changelog/about/product/pricing/support/policy/program/news/project/other) falls back to the deterministic `classifyPage()` regex in `classify.ts`.
 - **Final link ordering inside a section.** Deterministic sort by score descending.
 - **File assembly.** `assembleFile()` is pure text construction given its inputs.
 - **Whether a page ends up in Optional.** Pages with a final score < 50 are always Optional (or excluded if < 15), regardless of what section the LLM suggested.
@@ -297,7 +296,7 @@ Everything else — which URLs get crawled under the 25-page cap, how each page'
 
 Every chunk of crawled content embedded in an LLM prompt is passed through `neuter()` before being inserted into the prompt. It strips tag-like constructs (`</?tag>`), strips `[[…]]` prompt-template guards, and collapses all newlines to single spaces (so an attacker can't break out of the `<untrusted_pages>` fence with line-start tricks). Prompts also wrap untrusted content in an explicit `<untrusted_pages>` block with a preamble telling the model to treat everything inside as data.
 
-On the output side, returned JSON is parsed and each field is re-validated before use: `pageType` must be in the whitelist (else `other`), `section` must match `[\p{L}\p{N} \-&/]+` and fit within `llm.SECTION_MAX_CHARS` (30), `description` is `neuter()`'d again and truncated to `llm.DESCRIPTION_MAX_CHARS` (240). Anything that doesn't match the expected shape is silently dropped so the deterministic fallback kicks in.
+On the output side, returned JSON is parsed and each field is re-validated before use: `section` must match `[\p{L}\p{N} \-&/]+` and fit within `llm.SECTION_MAX_CHARS` (30), `description` is `neuter()`'d again and truncated to `llm.DESCRIPTION_MAX_CHARS` (240), and `importance` is clamped to `[1, 10]`. Anything that doesn't match the expected shape is silently dropped so the path-based section inference in `group.ts` takes over.
 
 ---
 
@@ -525,7 +524,6 @@ The following are out of scope for the current implementation. Each is plausible
     markdownProbe.ts                 .md variant probing
     url.ts                           normalize, capByPathPrefix, skip heuristics
     urlLabel.ts                      URL → human-ish filename for zip export
-    classify.ts                      page-type classification
     genre.ts                         site genre detection
     score.ts                         scoring with LLM importance
     group.ts                         section assignment + selection

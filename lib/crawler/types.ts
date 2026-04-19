@@ -1,8 +1,3 @@
-export type PageType =
-  | "doc" | "api" | "example" | "blog" | "changelog"
-  | "about" | "product" | "pricing" | "support" | "policy"
-  | "program" | "news" | "project" | "other"
-
 export type SiteGenre =
   | "developer_docs" | "ecommerce" | "personal_site"
   | "institutional" | "blog_publication" | "generic"
@@ -26,7 +21,6 @@ export interface ExtractedPage {
 }
 
 export interface ScoredPage extends ExtractedPage {
-  pageType: PageType
   score: number
   section?: string
   llmSection?: string

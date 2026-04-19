@@ -1,5 +1,4 @@
-import type { ExtractedPage, ScoredPage, SiteGenre, PageType } from "./types"
-import { classifyPage } from "./classify"
+import type { ExtractedPage, ScoredPage, SiteGenre } from "./types"
 import type { EnrichmentMap } from "./llmEnrich"
 
 export function scorePages(
@@ -9,7 +8,6 @@ export function scorePages(
 ): ScoredPage[] {
   return pages.map((page) => {
     const enriched = enrichment?.get(page.url)
-    const pageType: PageType = enriched?.pageType ?? classifyPage(page.url, page.title)
 
     // Prefer LLM-generated description over extracted one
     const llmDescription =
@@ -44,6 +42,6 @@ export function scorePages(
 
     const isOptional = score >= 15 && score < 50
 
-    return { ...enrichedPage, pageType, score, isOptional, llmSection: enriched?.section }
+    return { ...enrichedPage, score, isOptional, llmSection: enriched?.section }
   })
 }

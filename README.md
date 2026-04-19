@@ -281,7 +281,7 @@ lib/
     canonicalUrl.ts               Dual www/non-www HEAD probe → canonical URL
     spaCrawler.ts                 Puppeteer fallback for JS-rendered sites
     extract.ts                    Cheerio-based metadata extraction
-    classify.ts, llmEnrich.ts     Claude-powered classification + descriptions
+    llmEnrich.ts                  Claude-powered descriptions + section / importance hints
     genre.ts, siteName.ts         Site-level inference
     score.ts, group.ts            Importance scoring + section grouping
     urlLabel.ts                   Human-friendly labels / filenames

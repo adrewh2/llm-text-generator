@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
-import type { ExtractedPage, PageType, ScoredPage, SiteGenre, DescriptionProvenance } from "./types"
+import type { ExtractedPage, ScoredPage, SiteGenre, DescriptionProvenance } from "./types"
 import { SECTION_HINTS, llm } from "../config"
 import { debugLog } from "../log"
 import { cleanSiteName } from "./siteName"
@@ -7,7 +7,6 @@ import { cleanSiteName } from "./siteName"
 const { MODEL, ENRICH_BATCH_SIZE, RANK_MAX_KEEP, RANK_SKIP_BELOW, DESCRIPTION_MAX_CHARS, SECTION_MAX_CHARS, MAX_RETRIES, CALL_TIMEOUT_MS } = llm
 
 interface EnrichedData {
-  pageType: PageType
   description?: string
   descriptionProvenance: DescriptionProvenance
   section?: string
@@ -15,12 +14,6 @@ interface EnrichedData {
 }
 
 export type EnrichmentMap = Map<string, EnrichedData>
-
-const VALID_PAGE_TYPES = new Set<PageType>([
-  "doc", "api", "example", "blog", "changelog",
-  "about", "product", "pricing", "support", "policy",
-  "program", "news", "project", "other",
-])
 
 const MAX_SECTION_LEN = SECTION_MAX_CHARS
 const MAX_DESCRIPTION_LEN = DESCRIPTION_MAX_CHARS
@@ -126,7 +119,6 @@ async function enrichBatch(
   const prompt = `You are preparing metadata for an llms.txt file — a machine-readable index that helps LLMs understand "${neuter(siteName)}" (a ${genreLabel} site).
 
 For each page, return a JSON object with:
-- "pageType": one of: doc, api, example, blog, changelog, about, product, pricing, support, policy, program, news, project, other
 - "section": a short section heading (1–4 words, letters / spaces / hyphens only, max 30 chars). Prefer these suggested sections when they fit naturally: ${SECTION_HINTS.join(", ")}. URL path segments are a strong signal: /docs/ or /documentation/ → "Docs", /api/ or /reference/ → "API", /examples/ or /cookbook/ → "Examples", /guides/ or /tutorials/ → "Guides", /blog/ or /posts/ → "Blog", /changelog/ or /releases/ → "Changelog", /about/ → "About", /pricing/ → "Pricing", /support/ or /help/ → "Support". Use different section names when the site's domain warrants it (e.g. a recipe site might use "Recipes" instead of "Docs"). Low-value pages (legal, generic marketing) should be "Optional".
 - "importance": integer 1–10. How useful is this page for an LLM trying to understand or use this site? (10 = essential reference, 1 = nearly irrelevant boilerplate)
 - "description": a clear, factual 1-sentence description (max 120 chars). If the existing description is good, return it verbatim. Write a better one if it's missing, vague, or marketing-speak.
@@ -151,23 +143,18 @@ Respond ONLY with a JSON array, one object per page, same order as input. No pro
     if (!jsonMatch) return results
 
     const parsed = JSON.parse(jsonMatch[0]) as Array<{
-      pageType: string
       section: string
       importance: number
       description: string
     }>
 
     // Tolerate a short LLM response — iterate to whichever bound is
-    // smaller and leave extra pages unenriched (they'll fall through
-    // to the deterministic classifier in score.ts).
+    // smaller and leave extra pages unenriched (they fall through to
+    // the path-based section inference in group.ts).
     const n = Math.min(pages.length, parsed.length)
     for (let i = 0; i < n; i++) {
       const item = parsed[i]
       if (!item) continue
-
-      const pageType = VALID_PAGE_TYPES.has(item.pageType as PageType)
-        ? (item.pageType as PageType)
-        : "other"
 
       const section = sanitizeSection(item.section)
 
@@ -178,7 +165,6 @@ Respond ONLY with a JSON array, one object per page, same order as input. No pro
       const description = sanitizeDescription(item.description, pages[i].description)
 
       results.set(pages[i].url, {
-        pageType,
         section,
         importance,
         description,
