@@ -170,7 +170,7 @@ Anything else falls back to `/dashboard`.
 
 Served on every response via `next.config.ts`:
 
-- `Content-Security-Policy` — `script-src 'self' 'unsafe-inline' 'unsafe-eval'` (required for Next.js's RSC bootstrap + HMR; see below), `style-src 'self' 'unsafe-inline'` (Next emits hashed `<style>`), `connect-src` confined to our origin and `*.supabase.co`, `frame-ancestors 'self'` (clickjacking), `object-src 'none'`.
+- `Content-Security-Policy` — `script-src 'self' 'unsafe-inline' 'unsafe-eval'` (required for Next.js's RSC bootstrap + HMR; see below), `style-src 'self' 'unsafe-inline'` (Next emits hashed `<style>`), `connect-src` confined to our origin, `*.supabase.co`, and `*.ingest.sentry.io` / `*.sentry.io` (Sentry event ingest + session replay), `worker-src 'self' blob:` (Sentry replay SDK runs a blob-backed worker), `frame-ancestors 'self'` (clickjacking), `object-src 'none'`.
   - **Known trade-off**: `'unsafe-inline'`/`'unsafe-eval'` materially weaken script-src. The principled fix is per-request nonces wired through middleware — deferred for this project scope. `frame-ancestors` + `object-src 'none'` still mitigate the bulk of the CSP-relevant attacks (clickjacking, plugin-origin content).
 - `X-Frame-Options: SAMEORIGIN` — belt-and-suspenders for older browsers that ignore CSP.
 - `X-Content-Type-Options: nosniff` — blocks MIME-type confusion attacks.

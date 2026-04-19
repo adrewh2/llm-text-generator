@@ -257,6 +257,7 @@ lib/
     fetchPage.ts, safeFetch.ts,   HTTP fetch with SSRF guard + size-capped streaming read + .md variant probe
       markdownProbe.ts, ssrf.ts,
       readBounded.ts
+    canonicalUrl.ts               Dual www/non-www HEAD probe → canonical URL
     spaCrawler.ts                 Puppeteer fallback for JS-rendered sites
     extract.ts                    Cheerio-based metadata extraction
     classify.ts, llmEnrich.ts     Claude-powered classification + descriptions

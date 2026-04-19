@@ -181,17 +181,23 @@ lib/
   crawler/
     pipeline.ts                  orchestration — the one function the worker calls
     {robots,sitemap,fetchPage,
-     safeFetch,readBounded,ssrf,
+     safeFetch,readBounded,
+     canonicalUrl,ssrf,
      spaCrawler,discover,extract,
      markdownProbe,classify,
      genre,score,group,
      llmEnrich,assemble,
      siteName,urlLabel,
      monitor,validate}.ts        individual pipeline stages
-  env.ts, log.ts                 env + logger helpers
+  env.ts, log.ts                 env + logger helpers (log.ts forwards Errors to Sentry)
 
+instrumentation.ts               Next.js register hook — loads Sentry server/edge init
+instrumentation-client.ts        Sentry browser SDK init (on-error replay)
+sentry.server.config.ts          Node runtime init + ignoreErrors filter
+sentry.edge.config.ts            Edge runtime init (for middleware)
+app/global-error.tsx             App Router root error boundary → Sentry
 supabase/migration.sql           full schema + RLS
 middleware.ts                    session refresh + /dashboard gate
-next.config.ts                   CSP + security headers
+next.config.ts                   CSP + security headers + withSentryConfig wrapper
 vercel.json                      function durations + cron schedule
 ```

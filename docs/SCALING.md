@@ -18,10 +18,11 @@ shape our design:
 - **`waitUntil`.** Continues async work after the HTTP response has
   been sent. We use it to dispatch `runCrawlPipeline` in the
   background from `POST /api/p` and `GET /api/monitor`.
-- **Default `maxDuration: 300s`.** The two long-running routes are
-  configured to this in `vercel.json`. Our crawl budget is
-  `PIPELINE_BUDGET_MS: 270_000` — the remaining 30s is headroom for
-  `updateJob` to write a clean `failed` state if the pipeline times out.
+- **Default `maxDuration: 300s`.** The three long-running routes
+  (`/api/p`, `/api/monitor`, `/api/worker/crawl`) are configured to
+  this in `vercel.json`. Our crawl budget is `PIPELINE_BUDGET_MS:
+  270_000` — the remaining 30s is headroom for `updateJob` to write a
+  clean `failed` state if the pipeline times out.
 - **Concurrency within an instance.** A single Fluid instance handles
   many concurrent requests. That's why our in-memory rate limiter is
   effective for any single user hitting us in quick succession — they
