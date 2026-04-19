@@ -137,7 +137,7 @@ sequenceDiagram
 ### Failure modes and retries
 
 - **`POST /api/p` returns 5xx** — browser shows an error; nothing enqueued, nothing lost.
-- **QStash publish fails** (network / auth / wrong region) — `lib/jobQueue.ts` catches and falls through to `waitUntil(runCrawlPipeline(...))`. Same Fluid Compute instance runs the crawl; no retry safety, but the crawl isn't dropped.
+- **QStash publish fails** (network / auth / wrong region) — `lib/upstash/jobQueue.ts` catches and falls through to `waitUntil(runCrawlPipeline(...))`. Same Fluid Compute instance runs the crawl; no retry safety, but the crawl isn't dropped.
 - **Worker returns non-2xx** — QStash redelivers with exponential backoff, up to `retries: 3`. The pipeline sets `job.status = crawling` at entry, so a retry overwrites rather than duplicates state.
 - **Anthropic 429 / 5xx** — the SDK's built-in retry handles it transparently. `lib/crawler/llmEnrich.ts` passes `maxRetries: llm.MAX_RETRIES` (5, up from the SDK default of 2) and `timeout: llm.CALL_TIMEOUT_MS` (60 s); exponential backoff and `Retry-After` honouring are the SDK defaults we rely on. 5 retries gives ~30 s of total backoff per call, still well inside the 270 s pipeline budget. If all 5 retries exhaust, the specific LLM step falls through to its deterministic fallback and the crawl still completes. A global LLM concurrency semaphore is the remaining follow-up called out in `SCALING.md` §3.
 - **Fluid Compute instance recycled mid-crawl** — worker never returns 200 → QStash treats as failure → redelivers. Crawl re-runs from scratch.

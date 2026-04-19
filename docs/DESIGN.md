@@ -159,7 +159,7 @@ Every new-crawl request lands here. The route:
 3. **Pre-resolution cache check.** Most cached URLs are keyed under one of the two raw forms (with / without `www.`) of the submitted URL, so we try `tryServeAt(rawKey)` and `tryServeAt(altWwwKey)` first — a cache hit or in-flight attach here returns immediately without paying for a HEAD probe.
 4. **Canonical URL resolution.** If both raw forms miss, `resolveCanonicalUrl` (`lib/crawler/canonicalUrl.ts`) probes both www/non-www variants in parallel via SSRF-validated HEAD requests. If they resolve to the same final URL, we honor the server's preference; if they resolve independently, we strip `www.` as a dedup convention. `normalizeUrl` then strips tracking and per-request session / OAuth tokens (e.g. Google's `dsh` / `ifkv` / `osid`) so the cache key is stable across resubmissions.
 5. **Post-resolution cache check.** If the canonical URL differs from both raw forms we already tried (e.g. the server redirected to a different hostname), `tryServeAt(canonicalUrl)` gets one more shot at a cache hit.
-6. **New crawl.** Consumes the **NEW_CRAWL** bucket, then creates a new `jobs` row and calls `enqueueCrawl(jobId, url)` (`lib/jobQueue.ts`), which publishes to QStash if `QSTASH_TOKEN` is set and falls back to `waitUntil(runCrawlPipeline(...))` for local dev. Either way the HTTP response returns immediately; the actual crawl runs later in the worker (`app/api/worker/crawl/route.ts` for the QStash path, the caller's own Fluid Compute instance for the fallback).
+6. **New crawl.** Consumes the **NEW_CRAWL** bucket, then creates a new `jobs` row and calls `enqueueCrawl(jobId, url)` (`lib/upstash/jobQueue.ts`), which publishes to QStash if `QSTASH_TOKEN` is set and falls back to `waitUntil(runCrawlPipeline(...))` for local dev. Either way the HTTP response returns immediately; the actual crawl runs later in the worker (`app/api/worker/crawl/route.ts` for the QStash path, the caller's own Fluid Compute instance for the fallback).
 7. On all three branches (cache-hit, in-flight attach, new crawl), if the user is signed in, `upsertUserRequest` adds the URL to their dashboard history. The row is an upsert against `UNIQUE(user_id, page_url)` so re-submissions don't duplicate.
 
 ### `GET /api/p/[id]` — the poll target
@@ -354,14 +354,14 @@ Full discussion in [`SECURITY.md`](./SECURITY.md). Summary:
 
 ### SSRF
 
-`lib/crawler/ssrf.ts` exports `assertSafeUrl(url)`, which:
+`lib/crawler/net/ssrf.ts` exports `assertSafeUrl(url)`, which:
 
 1. Accepts only `http:` and `https:`.
 2. Resolves DNS and validates *every* answer, not just the first.
 3. Blocks IPv4 RFC1918, loopback, link-local (including AWS metadata 169.254.169.254), multicast, unspecified, and benchmark ranges.
 4. Blocks IPv6 loopback, link-local, unique-local, multicast, unspecified, and validates the IPv4 tail of `::ffff:x.x.x.x`-mapped addresses.
 
-`lib/crawler/safeFetch.ts` is a manual-redirect fetch wrapper that re-runs `assertSafeUrl` on every hop (max `crawler.MAX_REDIRECTS = 5`). This is important: a redirect from `https://example.com` to `http://127.0.0.1` would pass an initial check but not a per-hop check.
+`lib/crawler/net/safeFetch.ts` is a manual-redirect fetch wrapper that re-runs `assertSafeUrl` on every hop (max `crawler.MAX_REDIRECTS = 5`). This is important: a redirect from `https://example.com` to `http://127.0.0.1` would pass an initial check but not a per-hop check.
 
 Both the crawl pipeline entry and the Puppeteer path call `assertSafeUrl` before any network I/O.
 
@@ -369,7 +369,7 @@ Known limitation: TOCTOU between `assertSafeUrl` and the actual fetch (DNS rebin
 
 ### Rate limiting
 
-Two token buckets per principal (principal = `user.id` when signed in, else client IP). Both live in `lib/rateLimit.ts`; both are backed by **Upstash Redis** (`@upstash/ratelimit`) in production, with an in-memory fallback for local dev.
+Two token buckets per principal (principal = `user.id` when signed in, else client IP). Both live in `lib/upstash/rateLimit.ts`; both are backed by **Upstash Redis** (`@upstash/ratelimit`) in production, with an in-memory fallback for local dev.
 
 | Bucket | Anon | Auth | Consumed when | Denial `reason` |
 |---|---|---|---|---|
@@ -444,7 +444,7 @@ Secrets come from environment variables: `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_
 
 ### Crawl execution backend
 
-*Trade-off:* The same `enqueueCrawl(jobId, url)` helper in `lib/jobQueue.ts` has two backends chosen at call time. *Why:* production (Vercel + `QSTASH_TOKEN` set) publishes to QStash, which then POSTs the signed job to `/api/worker/crawl`; the worker runs the pipeline synchronously so QStash's retry-on-non-2xx semantics buy us real mid-pipeline durability. Local dev (no `QSTASH_TOKEN`) keeps the pre-queue behaviour — `waitUntil(runCrawlPipeline(...))` in the caller's own Fluid Compute instance — so `npm run dev` works without a publicly reachable callback URL. The caller-side code path is one line in both cases (`await enqueueCrawl(id, url)`).
+*Trade-off:* The same `enqueueCrawl(jobId, url)` helper in `lib/upstash/jobQueue.ts` has two backends chosen at call time. *Why:* production (Vercel + `QSTASH_TOKEN` set) publishes to QStash, which then POSTs the signed job to `/api/worker/crawl`; the worker runs the pipeline synchronously so QStash's retry-on-non-2xx semantics buy us real mid-pipeline durability. Local dev (no `QSTASH_TOKEN`) keeps the pre-queue behaviour — `waitUntil(runCrawlPipeline(...))` in the caller's own Fluid Compute instance — so `npm run dev` works without a publicly reachable callback URL. The caller-side code path is one line in both cases (`await enqueueCrawl(id, url)`).
 
 ### Rate limiter backend
 
@@ -470,7 +470,7 @@ The following are out of scope for the current implementation. Each is plausible
 
 - **User-editable overrides.** No override versioning, no persistent per-user edits to the generated file, no merge policy on re-crawl. Users who want custom output copy the result and edit it locally.
 - **Update delivery.** No webhook HMAC, no email notifications, no hosted-file endpoint at `/files/:id/llms.txt`. Users are expected to host their own `/llms.txt`.
-- **Locale policy controls.** The crawler treats alternate-locale URLs like any other URL; the LLM tends to filter them naturally via the ranking step. Surface controls (prefer x-default, target one locale) would go in the `crawler` section of `lib/config.ts`.
+- **User-facing locale overrides.** The pipeline auto-detects the site's primary language from the homepage `<html lang>` attribute and prioritizes URLs in that language (locale-prefixed paths whose language differs are pre-filtered out of the crawl queue, and a score penalty demotes any off-primary pages that slip through). A caller-supplied override (e.g. "generate an English file for this Japanese site") isn't exposed — the auto-detected primary wins every time.
 - **Per-domain global throttle across jobs.** Within a single pipeline the crawler honors `robots.txt` `Crawl-delay` via a shared cross-worker clock (capped at `MAX_CRAWL_DELAY_MS` = 10 s). Between concurrent jobs against the same target, there is no cross-job coordination, so a popular URL burst could send workers from multiple pipelines at the same host. Mitigated in practice by the 24-hour cache hit on repeat requests.
 - **Test suite.** No unit, integration, or snapshot tests are wired up. This is the first thing to add if the project moves beyond a take-home demo.
 
@@ -481,11 +481,12 @@ The following are out of scope for the current implementation. Each is plausible
 ```
 /app
   page.tsx                           landing
-  layout.tsx                         root RSC shell
-  NavAuth.tsx                        header auth component
+  layout.tsx                         async root RSC shell — resolves auth, mounts GlobalHeader
+  LandingClient.tsx                  landing-page client interactions
   /api
     /p/route.ts                      POST: kick off / return-cached
     /p/[id]/route.ts                 GET:  poll job
+    /p/[id]/scrubError.ts            user-facing error sanitizer (shared with /p/[id] RSC)
     /p/request/route.ts              DELETE: remove from history
     /pages/route.ts                  GET:  paginated history
     /pages/download/route.ts         GET:  zip export
@@ -495,52 +496,65 @@ The following are out of scope for the current implementation. Each is plausible
   /login/page.tsx                    OAuth picker
   /dashboard
     page.tsx                         server-rendered initial list
-    PageList.tsx                     infinite-scroll client
+    PageList.tsx                     infinite-scroll client + live-refresh of running rows
     JobActions.tsx                   delete + confirm
     MonitorStatus.tsx                "Refreshed X ago"
-    SignOutButton.tsx
+    DownloadButton.tsx               fetch + blob + inline 429 handling
   /p/[id]
-    page.tsx                         result viewer (polling)
+    page.tsx                         RSC — seeds initial job + user into the client
+    PageView.tsx                     client — AppHeader + poll loop
     ProgressPane.tsx                 live crawl animation
     ResultPane.tsx                   markdown render + copy/download
     types.ts                         ApiJob
     useVisibleStatus.ts              status display state machine
-  /components/ConfirmDialog.tsx
+  /components
+    AppHeader.tsx                    sticky logo + nav shell (center + right slots)
+    GlobalHeader.tsx                 mounted once in root layout; hides on /p/{id}
+    NavAuth.tsx                      Dashboard ↔ Generate link swap + UserMenu
+    UserMenu.tsx                     avatar (OAuth picture → initials) + sign-out
+    ConfirmDialog.tsx                accessible confirm dialog
 
 /lib
   config.ts                          all tunable constants
   env.ts                             requireEnv()
   log.ts                             debugLog()
-  rateLimit.ts                       token bucket (Upstash Redis + in-memory fallback)
-  jobQueue.ts                        enqueueCrawl (QStash + waitUntil fallback)
   store.ts                           Supabase queries (service-role)
+  /upstash
+    rateLimit.ts                     token bucket (Upstash Redis + in-memory fallback)
+    jobQueue.ts                      enqueueCrawl (QStash + waitUntil fallback)
   /supabase
     client.ts                        browser client (anon)
     server.ts                        server SSR client (anon + cookie handling)
   /crawler
     pipeline.ts                      orchestration
-    types.ts                         ExtractedPage, ScoredPage, CrawlJob, JobStatus
-    ssrf.ts                          assertSafeUrl + forbidden ranges
-    safeFetch.ts                     per-hop redirect validation
-    fetchPage.ts                     main page fetcher
-    readBounded.ts                   streaming body read with hard byte cap
-    canonicalUrl.ts                  dual www/non-www HEAD probe → canonical URL
-    robots.ts                        robots.txt parse
-    sitemap.ts                       sitemap fetch + parse
-    spaCrawler.ts                    Puppeteer + SPA detection
-    discover.ts                      link extraction from HTML
-    extract.ts                       per-page metadata extraction
-    siteName.ts                      site-name cleaning + hostname fallback
-    markdownProbe.ts                 .md variant probing
-    url.ts                           normalize, capByPathPrefix, skip heuristics
-    urlLabel.ts                      URL → human-ish filename for zip export
-    genre.ts                         site genre detection
-    score.ts                         scoring with LLM importance
-    group.ts                         section assignment + selection
-    llmEnrich.ts                     rankCandidateUrls + enrichBatch + preamble
-    assemble.ts                      final markdown assembly
-    validate.ts                      spec compliance check (run in /p/[id])
     monitor.ts                       computeSignature + detectChange
+    types.ts                         ExtractedPage, ScoredPage, CrawlJob, JobStatus
+    /net
+      url.ts                         normalize, capByPathPrefix, skip heuristics, clientValidateUrl
+      urlLabel.ts                    URL → human-ish filename for zip export
+      canonicalUrl.ts                dual www/non-www HEAD probe → canonical URL
+      safeFetch.ts                   per-hop redirect validation
+      ssrf.ts                        assertSafeUrl + forbidden ranges
+      ipRanges.ts                    pure IP-range classifier (shared with browser)
+      readBounded.ts                 streaming body read with hard byte cap
+      language.ts                    primary-language detection + locale-path helpers
+    /discovery
+      sitemap.ts                     sitemap fetch + parse
+      robots.ts                      robots.txt parse
+      discover.ts                    link extraction from HTML
+      fetchPage.ts                   main page fetcher
+      spaCrawler.ts                  Puppeteer + SPA detection
+      markdownProbe.ts               .md variant probing
+    /enrich
+      extract.ts                     per-page metadata extraction
+      genre.ts                       site genre detection
+      siteName.ts                    site-name cleaning + hostname fallback
+      llmEnrich.ts                   rankCandidateUrls + enrichBatch + preamble
+      score.ts                       scoring with LLM importance + language penalty
+      group.ts                       section assignment + selection
+    /output
+      assemble.ts                    final markdown assembly
+      validate.ts                    spec compliance check (run in /p/[id])
 
 /supabase/migration.sql              full schema (pages, jobs, user_requests, RLS)
 

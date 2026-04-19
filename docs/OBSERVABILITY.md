@@ -53,9 +53,9 @@ new Sentry issues would drown out real signal.
 
 | Pattern | Source | Why ignored |
 |---|---|---|
-| `UnsafeUrlError` / `Unsafe URL (…)` / `forbidden IP range` | `lib/crawler/ssrf.ts` | User submitted a private / metadata / loopback URL. Product behaviour, not a bug. |
+| `UnsafeUrlError` / `Unsafe URL (…)` / `forbidden IP range` | `lib/crawler/net/ssrf.ts` | User submitted a private / metadata / loopback URL. Product behaviour, not a bug. |
 | `Bot challenge page` | `lib/crawler/fetchPage.ts` | Cloudflare / PerimeterX / similar WAF interstitial on the target site. Nothing we can fix. |
-| `Response too large` | `lib/crawler/readBounded.ts` | Target response exceeded the 5 MB / 10 MB cap. By design. |
+| `Response too large` | `lib/crawler/net/readBounded.ts` | Target response exceeded the 5 MB / 10 MB cap. By design. |
 | `^HTTP 4\d\d` | `lib/crawler/fetchPage.ts` | Target returned 4xx. User-provided URL; not our bug. |
 | `^Timeout$` | `lib/crawler/fetchPage.ts`, `lib/crawler/sitemap.ts`, etc. | Target site didn't respond within the per-fetch budget. |
 | `Exceeded time budget` | `lib/crawler/pipeline.ts` | Pipeline hit the 270 s cap. Already written as `status: "failed"` on the job row. |
@@ -81,12 +81,12 @@ timeouts from a specific target becoming a customer complaint).
 
 Two call sites skip Sentry on purpose:
 
-- **`lib/rateLimit.ts`** — the `console.warn` on Upstash fail-open
+- **`lib/upstash/rateLimit.ts`** — the `console.warn` on Upstash fail-open
   goes direct to stdout, not through `errorLog`. Rationale: we want
   it in the Vercel logs feed but don't want to page on every transient
   Redis blip. If a persistent Redis outage ever becomes a problem,
   wire `errorLog` in here so it promotes to a Sentry issue.
-- **`lib/jobQueue.ts`** — the `[enqueueCrawl] branch=…` info line is
+- **`lib/upstash/jobQueue.ts`** — the `[enqueueCrawl] branch=…` info line is
   `console.info` only. A sustained jump in `fallback:*` events would
   mean QStash state has drifted; worth re-examining the routing
   strategy, not worth alerting on every occurrence.
@@ -137,8 +137,8 @@ independent bonus of the same upgrade.
 
 | Signal | Where it lives today | Value of Axiom capturing it |
 |---|---|---|
-| `[rateLimit] Upstash call failed, FAILING OPEN: …` | `lib/rateLimit.ts`, `console.warn` | Trend: is Redis intermittently flaky, or did we silently disable rate limiting platform-wide? Sentry skips it by design (not an Error). |
-| `[enqueueCrawl] branch=qstash\|fallback:*` | `lib/jobQueue.ts`, `console.info` | Alert when `fallback:*` rate spikes — means QStash state has drifted, queue is quietly not getting used. |
+| `[rateLimit] Upstash call failed, FAILING OPEN: …` | `lib/upstash/rateLimit.ts`, `console.warn` | Trend: is Redis intermittently flaky, or did we silently disable rate limiting platform-wide? Sentry skips it by design (not an Error). |
+| `[enqueueCrawl] branch=qstash\|fallback:*` | `lib/upstash/jobQueue.ts`, `console.info` | Alert when `fallback:*` rate spikes — means QStash state has drifted, queue is quietly not getting used. |
 | `[pipeline]` step durations / success rates | `lib/store.ts` updates + implicit from status transitions | P50 / P95 crawl duration, % hitting `partial`, deterministic-fallback rate on LLM calls. Sentry traces show slices of this but aren't a time-series tool. |
 | Successful crawls + cache-hit counts | `api/p` response paths, no dedicated log line | Answers "how many unique URLs today", "cache-hit ratio over the week" — not possible without an aggregated log stream. |
 
