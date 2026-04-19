@@ -25,23 +25,26 @@ Paste a URL, the app discovers pages (sitemap → robots → link-following, wit
 - Curated external references included in output
 - In-browser spec validator + read-only result view + copy / download
 
-**Accounts + shared cache**
-- Supabase OAuth sign-in (GitHub + Google)
-- Globally-shared page cache: one canonical result per URL, reused across users
-- 24-hour TTL — stale pages trigger a fresh crawl; old result is preserved until the new one succeeds
-- Per-user dashboard of every page you've generated with infinite scroll, remove-from-history action, and bulk ZIP download
-- Row-Level Security on every table; service-role key used only server-side
-- Two-bucket rate limiter on `POST /api/p` — a loose **SUBMIT** floor (60/hr anon, 300/hr auth) on every POST, and a tight **NEW_CRAWL** quota (3/hr anon, 10/hr auth) charged only when a submission dispatches a fresh pipeline run. Keyed by user id when signed in, by client IP when not. Upstash Redis state in production, in-memory fallback for local dev.
+**Shared cache**
+- Globally-shared page cache: one canonical result per URL, reused across all users — anon and signed-in alike
+- 24-hour TTL (configurable) — POSTs to stale pages trigger a fresh crawl
+- In-flight attach: two submissions of the same URL during an active crawl share one job rather than kicking off a duplicate
+
+**Accounts**
+- Supabase OAuth sign-in (GitHub + Google); anonymous access to the generate + view paths remains fully supported
+- Per-user dashboard of every page they requested, with infinite scroll, remove-from-history action, and bulk ZIP download
+- Row-Level Security on every table; service-role key used only server-side — one user cannot read another user's history even with the anon key
+- Two-bucket rate limiter on `POST /api/p` — a loose **SUBMIT** floor (60/hr anon, 300/hr auth by default) on every POST, and a tight **NEW_CRAWL** quota (3/hr anon, 10/hr auth by default) charged only when a submission dispatches a fresh pipeline run. Keyed by user id when signed in, by client IP when not. Upstash Redis state in production, in-memory fallback for local dev.
 
 **Durable queue + observability**
 - Crawl dispatch via **Upstash QStash** — signed webhook POSTs to `/api/worker/crawl`, retry-on-non-2xx up to 3 tries, `waitUntil(runCrawlPipeline(...))` fallback for local dev
 - **Sentry** error tracking with on-error session replay, grouped by `context` tag; expected failures (SSRF, bot-challenge, timeouts, budget-exhaust) filtered from issue noise
 
 **Monitoring**
-- Every generated page is monitored by default — the dashboard shows a passive "Checked X ago" status
+- Every generated page is monitored by default — the dashboard shows a passive "Refreshed X ago" status
 - Two refresh paths:
   - **Daily cron** — Vercel Cron (midnight UTC) computes a signature over each monitored site's sitemap + homepage; on mismatch, a full re-crawl is dispatched and `pages.result` is refreshed. Daily is the Vercel Hobby-plan ceiling; the schedule string in `vercel.json` can be tightened to hourly (`0 * * * *`) on a Pro plan.
-  - **Request-driven TTL** — when anyone requests a URL whose cached result is older than 24h (`PAGE_TTL_HOURS` in `lib/config.ts`), a fresh crawl is triggered on the spot. The old `pages.result` is preserved until the new one completes, so no request is ever served an empty result.
+  - **Request-driven TTL** — when anyone requests a URL through POST whose cached result is older than 24h (`PAGE_TTL_HOURS` in `lib/config.ts`), a fresh crawl is triggered on the spot. The old `pages.result` is preserved until the new one completes, so no request is ever served an empty result.
 - Cron also sweeps: jobs wedged in a non-terminal status for more than 15 minutes (`STUCK_JOB_AFTER_MS`) are force-failed so they don't block future submissions; pages not requested in the last 5 days are quietly un-monitored
 - Re-crawl fan-out runs through the QStash queue (`waitUntil` fallback in dev) — see `app/api/monitor/route.ts`
 
@@ -50,20 +53,35 @@ Paste a URL, the app discovers pages (sitemap → robots → link-following, wit
 - **Node.js ≥ 20** (see `engines` in `package.json`)
 - A **Supabase** project (free tier is fine) — [supabase.com](https://supabase.com)
 - An **Anthropic API key** — [console.anthropic.com](https://console.anthropic.com)
-- For production: a **Vercel** account linked to the repo plus (all one-click Vercel Marketplace integrations)
+- For production: a **Vercel** account linked to the repo plus three one-click Vercel Marketplace integrations:
   - **Upstash Redis** — rate-limiter state
   - **Upstash QStash** — durable crawl queue
-  - **Sentry** (via the Vercel Integrations Marketplace) — error tracking
+  - **Sentry** — error tracking
 
 For **local development** the Upstash / QStash / Sentry pieces are optional: `rateLimit.ts` falls back to in-memory buckets, `jobQueue.ts` falls back to `waitUntil` in-process, and the Sentry SDK no-ops without a DSN. You can run end-to-end with just Supabase + Anthropic.
 
 ## Running locally
 
+The dev server won't be functional until the Supabase project and env
+vars below are in place — Supabase is the hard dependency (schema,
+auth, session cookie). Walk through this in order:
+
+1. Clone + install (below).
+2. [Create the Supabase project](#1-create-the-supabase-project) — provision it, run the schema migration, copy the keys.
+3. [Configure OAuth providers](#2-configure-oauth-providers) — needed only if you want to test the signed-in flow locally. The anon path works without it.
+4. [Fill in `.env.local`](#3-fill-in-envlocal) — with the Supabase keys from step 2 (and an Anthropic API key so LLM enrichment actually runs; the app falls back to deterministic defaults if you skip it).
+5. Start the dev server (below).
+
 ```bash
-git clone <this-repo>
+# Step 1 — clone + install
+git clone https://github.com/hanstah/llm-text-generator.git
 cd llm-text-generator
 npm install
-cp .env.example .env.local   # fill in the values — see below
+
+# Steps 2–4 — complete the numbered sections below, then:
+cp .env.example .env.local   # fill in from steps 2 and 4
+
+# Step 5 — run
 npm run dev
 ```
 
@@ -85,9 +103,11 @@ The app uses GitHub + Google OAuth via Supabase. In **Authentication → Provide
 - **GitHub** — create an OAuth app at [github.com/settings/developers](https://github.com/settings/developers). Authorization callback URL must be `https://<your-project>.supabase.co/auth/v1/callback`.
 - **Google** — create OAuth credentials in [Google Cloud Console](https://console.cloud.google.com/apis/credentials). Authorized redirect URI: `https://<your-project>.supabase.co/auth/v1/callback`.
 
-In **Authentication → URL Configuration**, set:
+Still in the Supabase dashboard, open **Authentication → URL Configuration** (this is Supabase's own allowlist, separate from the provider-side redirect URIs above). Set:
 - **Site URL**: `http://localhost:3000` (dev) or your production origin
 - **Redirect URLs**: add both `http://localhost:3000/auth/callback` and `https://<your-prod-domain>/auth/callback`
+
+The full redirect chain is: browser → GitHub/Google (which has the Supabase callback in its allowlist) → Supabase (which has our `/auth/callback` in its allowlist) → app. Each hop needs its own allowlist entry.
 
 ### 3. Fill in `.env.local`
 
@@ -101,14 +121,14 @@ In **Authentication → URL Configuration**, set:
 | `SUPABASE_SERVICE_ROLE_KEY` | server | Bypasses RLS for store writes — **never expose to the client** |
 | `NEXT_PUBLIC_SUPABASE_URL` | browser | Same URL, exposed for the browser Supabase client |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser | Anon key exposed to the browser |
-| `CRON_SECRET` | server | Secret Vercel injects as `Authorization: Bearer …` on cron-invoked calls to `/api/monitor`. Route fails closed if unset. Generate with `openssl rand -hex 32`. |
+| `CRON_SECRET` | server | A random string you generate yourself (e.g. `openssl rand -hex 32`) and set as an env var in Vercel. On every scheduled run, Vercel Cron reads this value and sends it as an `Authorization: Bearer <secret>` header on the request to `/api/monitor`; the route does a timing-safe compare against the same env var and returns `401` on any mismatch. If `CRON_SECRET` is unset the route fails closed (rejects every call), which also means `/api/monitor` is unreachable until you set one. |
 
 **Required in production, optional locally** (all auto-injected by the respective Vercel Marketplace integrations — see [Deploying to Vercel §2](#2-provision-marketplace-integrations)):
 
 | Variable | Where | Purpose |
 |---|---|---|
-| `UPSTASH_REDIS_REST_URL` | server | Upstash Redis REST endpoint. Backs the production rate limiter. If unset, `lib/rateLimit.ts` falls back to per-instance in-memory token buckets — fine for `npm run dev`, *not fit for production* (a cold start or autoscale event gives the attacker a fresh bucket). |
-| `UPSTASH_REDIS_REST_TOKEN` | server | Token pair for the URL above. |
+| `UPSTASH_REDIS_REST_URL` | server | Upstash Redis REST endpoint. Backs the production rate limiter. **Required on Vercel deploys** — `lib/rateLimit.ts` throws at module load time if either this or `UPSTASH_REDIS_REST_TOKEN` is missing and `VERCEL=1` is set. The fail-fast is deliberate: silently falling back to per-instance in-memory buckets in production would let an attacker bypass rate limits by triggering cold starts or autoscale events. Only the local dev path (no `VERCEL` env) keeps the in-memory fallback. |
+| `UPSTASH_REDIS_REST_TOKEN` | server | Token pair for the URL above. Same boot-time requirement on Vercel. |
 | `QSTASH_TOKEN` | server | Authenticates publishes to Upstash QStash from `lib/jobQueue.ts`. If absent, the publisher falls back to `waitUntil(runCrawlPipeline(...))` — same instance runs the crawl, no mid-pipeline retry safety. |
 | `QSTASH_URL` | server | QStash region-specific base URL (e.g. `https://qstash-us-east-1.upstash.io`). **Required** alongside `QSTASH_TOKEN` for accounts outside `eu-central-1` — without it the SDK silently publishes to the wrong region and messages never land. The Marketplace integration sets this automatically. |
 | `QSTASH_CURRENT_SIGNING_KEY` | server | Verifies incoming QStash webhook signatures at `/api/worker/crawl`. |

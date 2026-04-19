@@ -5,7 +5,7 @@
 
 import { Ratelimit } from "@upstash/ratelimit"
 import { Redis } from "@upstash/redis"
-import { debugLog } from "./log"
+import { debugLog, errorLog } from "./log"
 
 interface LimitConfig {
   /** Max burst size. */
@@ -138,11 +138,11 @@ export async function consumeRateLimit(
       // Fail open on Upstash errors. A transient Redis outage
       // shouldn't take down all signups / crawls; better to permit
       // the request and revisit if it becomes frequent. Route through
-      // console.warn directly (not the debugLog trace channel) so a
-      // persistent misconfig — which *silently disables* rate limiting
-      // platform-wide — is visible in the Vercel logs feed.
+      // errorLog so Sentry groups the event — a persistent misconfig
+      // *silently disables* rate limiting platform-wide, which is a
+      // security concern that warrants alerting, not just a log line.
       const message = err instanceof Error ? err.message : String(err)
-      console.warn(`[rateLimit] Upstash call failed, FAILING OPEN: ${message}`)
+      errorLog("rateLimit.upstash", `Upstash call failed, FAILING OPEN: ${message}`)
       return { allowed: true, retryAfterSec: 0, remaining: cfg.capacity }
     }
   }

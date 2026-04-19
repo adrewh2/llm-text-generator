@@ -8,18 +8,19 @@ import { Client } from "@upstash/qstash"
 import { waitUntil } from "@vercel/functions"
 import { runCrawlPipeline } from "./crawler/pipeline"
 import { crawler } from "./config"
-import { debugLog } from "./log"
+import { debugLog, errorLog } from "./log"
 
 const qstash: Client | null = (() => {
   if (!process.env.QSTASH_TOKEN) return null
   // QSTASH_URL is region-specific. SDK defaults to eu-central-1 and
   // silently 404s for accounts hosted elsewhere (no exception, no
-  // visible error — message never lands).
+  // visible error — message never lands). Route through errorLog so
+  // Sentry groups the misconfig as an issue — otherwise it buries in
+  // the Vercel log feed and durable queuing is silently disabled.
   if (!process.env.QSTASH_URL) {
-    console.warn(
-      "[jobQueue] QSTASH_TOKEN is set but QSTASH_URL is not — " +
-      "publishes will go to the SDK default (eu-central-1) and " +
-      "may silently fail if the account is hosted elsewhere.",
+    errorLog(
+      "jobQueue.clientInit",
+      "QSTASH_TOKEN is set but QSTASH_URL is not — publishes will go to the SDK default (eu-central-1) and may silently fail if the account is hosted elsewhere.",
     )
   }
   try {
