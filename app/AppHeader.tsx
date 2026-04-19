@@ -5,7 +5,7 @@ import type { ReactNode } from "react"
 // Dashboard) across every page — keeps size, padding, and icon
 // alignment consistent so navigation doesn't cause visible jumps.
 export const HEADER_BUTTON_CLASS =
-  "flex items-center gap-1.5 text-sm font-medium text-zinc-700 hover:text-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-colors"
+  "flex items-center gap-1.5 text-sm text-zinc-700 hover:text-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-colors"
 
 // Shared top nav across landing, dashboard, login, and /p/{id}. The
 // logo is locked to the left `px-6` edge so it sits in the same spot
