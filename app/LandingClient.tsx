@@ -80,8 +80,13 @@ export default function LandingClient({ initialUser }: { initialUser: User | nul
 
       if (!res.ok) {
         if (res.status === 429) {
-          const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10)
-          setError(`Too many requests — try again in ${formatRetry(retryAfter)}.`)
+          const retryAfter = typeof data.retryAfterSec === "number"
+            ? data.retryAfterSec
+            : parseInt(res.headers.get("Retry-After") ?? "60", 10)
+          const prefix = data.reason === "new_crawl_quota"
+            ? "You've hit your limit for generating new pages"
+            : "Too many submissions — please slow down"
+          setError(`${prefix}. Try again in ${formatRetry(retryAfter)}.`)
           setShowSignInHint(data.signInPrompt === true)
         } else {
           setError(data.error || "Something went wrong")

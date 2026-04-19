@@ -20,7 +20,7 @@ These have wildly different resource costs, so "how many can we serve" has three
 
 | Metric | What it means | Capped by |
 |---|---|---|
-| **Total `POST /api/p` RPS** | Any submission, including cache hits. The user-visible throughput. | Rate-limiter Redis (2-3 commands per POST) + one indexed Postgres read |
+| **Total `POST /api/p` RPS** | Any submission, including cache hits. The user-visible throughput. | Rate-limiter Redis (2–3 commands per cache-hit POST, 4–6 on a new-crawl POST — two buckets, see §2) + one indexed Postgres read |
 | **Cache-hit RPS** | Repeat submissions of URLs already crawled (24 h TTL). No LLM, no network out. | Same as above — dominated by Postgres read latency |
 | **New-crawl RPS** | Cache-miss submissions that actually run the pipeline. LLM-gated. | Anthropic TPM / RPM |
 
@@ -50,7 +50,7 @@ Per cache-miss crawl (pipeline runs end-to-end), rough accounting:
 | Anthropic tokens | ~18 K input + ~3 K output ≈ **21 K total** |
 | Supabase writes | ~10 (status transitions + progress updates + final `pages` write) |
 | Supabase reads | ~5 (cache lookup, polling by client) |
-| Upstash Redis commands | 2–3 (rate-limit bucket check on the initial POST) |
+| Upstash Redis commands | 4–6 (two bucket checks: SUBMIT + NEW_CRAWL on the initial POST) |
 | QStash messages | 1 |
 | Vercel function time | ~30–60 s wall clock, much less active CPU (mostly I/O-wait) |
 | Vercel memory | ~50–100 MB non-SPA, ~500 MB when Puppeteer fires |
@@ -61,7 +61,7 @@ Per cache-hit request (fast path):
 |---|---|
 | Supabase reads | 1 (existing `pages.result` lookup by primary key) |
 | Supabase writes | 1 (`bumpPageRequest` + `upsertUserRequest` if signed-in) |
-| Upstash Redis commands | 2–3 (rate limiter) |
+| Upstash Redis commands | 2–3 (SUBMIT bucket check only — cache-hit path skips the NEW_CRAWL bucket) |
 | Anthropic calls | **0** |
 | QStash messages | **0** |
 | Vercel function time | <100 ms |
@@ -76,7 +76,7 @@ The contrast is the point — cache hits are ~1000× cheaper than new crawls, an
 
 1. **QStash free: 500 messages/day.** Every new crawl = 1 message. The day cap is the tightest constraint by far — ~20/hour sustained if perfectly spaced.
 2. **Anthropic Haiku Tier 1: ~60 RPM / ~50 K TPM.** 4 LLM calls per crawl → ~15 crawls/min before 429s. The SDK's default `maxRetries: 2` (with exponential backoff and `Retry-After` honoured) absorbs brief overshoot; if retries exhaust, each enrichment step has a deterministic fallback so the crawl still completes.
-3. **Upstash Redis free: 500 K commands/month.** Every `POST /api/p` uses 2–3 commands for the rate-limit bucket. ~70 POSTs/sec sustained before overage — **not** a real constraint at free-tier traffic.
+3. **Upstash Redis free: 500 K commands/month.** Every `POST /api/p` uses 2–3 commands for the SUBMIT bucket, plus another 2–3 on the cache-miss branch for the NEW_CRAWL bucket. At a realistic ~90 % cache-hit mix that averages ≲3 commands/POST — still ~60 POSTs/sec sustained before overage and **not** a real constraint at free-tier traffic.
 4. **Vercel Hobby:** soft invocation cap; not close at demo traffic.
 5. **Supabase free: 500 MB DB, 60-connection pool.** Our workload uses ~1 connection per Fluid instance; not close.
 

@@ -30,7 +30,7 @@ flowchart TB
 
     subgraph Upstash["Upstash — Vercel Marketplace"]
         direction LR
-        Redis[("Redis<br/>rate-limit buckets")]
+        Redis[("Redis<br/>SUBMIT + NEW_CRAWL<br/>rate-limit buckets")]
         QStash[("QStash<br/>durable job queue")]
     end
 
@@ -45,7 +45,7 @@ flowchart TB
     Browser -- any request --> MW
     MW -- getUser --> Supa
 
-    APIP -- consumeRateLimit --> Redis
+    APIP -- "consume SUBMIT (always)<br/>+ NEW_CRAWL (on cache miss)" --> Redis
     APIP -- createJob + upsertUserRequest --> Supa
     APIP -- publishJSON --> QStash
     APIPID -- getJob --> Supa
@@ -65,7 +65,7 @@ flowchart TB
 ### How to read it
 
 - **Browser** routes only reach Vercel Fluid Compute. They never touch Upstash / Anthropic / target sites directly.
-- **`POST /api/p`** is the fast path: validate → rate-limit → check cache → enqueue → return 201. It never runs the crawl itself.
+- **`POST /api/p`** is the fast path: validate → charge SUBMIT bucket → canonicalize URL → check `pages` cache → attach-to-in-flight → charge NEW_CRAWL bucket → enqueue → return 201. The NEW_CRAWL charge only happens on the cache-miss branch, so repeat hits on popular URLs don't erode the tight Anthropic/Puppeteer budget guard. It never runs the crawl itself.
 - **`POST /api/worker/crawl`** is where the actual work happens. Every arrow from the worker to an external service (`Supa`, `Web`, `Claude`) is inside one ~30–60 s function invocation.
 - **`GET /api/monitor`** is a separate entrypoint that fans out into the same queue. The worker doesn't know whether a job came from a user submission or from the cron.
 - **Upstash services** are provisioned through the Vercel Marketplace, so the env vars are auto-injected into Production + Preview. No secrets in the codebase.
@@ -89,10 +89,12 @@ sequenceDiagram
     participant A as Anthropic
 
     U->>P: { url }
-    P->>R: consumeRateLimit(user.id or IP)
+    P->>R: consume SUBMIT bucket (60/hr anon, 300/hr auth)
     R-->>P: allowed
     P->>DB: SELECT from pages WHERE url = ?
     DB-->>P: miss or stale
+    P->>R: consume NEW_CRAWL bucket (3/hr anon, 10/hr auth)
+    R-->>P: allowed
     P->>DB: INSERT job (pending) + upsertUserRequest
     P->>Q: publishJSON({ jobId, url })
     Q-->>P: ack
@@ -173,7 +175,7 @@ app/
 lib/
   config.ts                      all tunable constants
   store.ts                       Supabase access layer
-  rateLimit.ts                   Upstash Redis + in-memory fallback
+  rateLimit.ts                   two-bucket (SUBMIT + NEW_CRAWL) Upstash Redis + in-memory fallback
   jobQueue.ts                    QStash publish + waitUntil fallback
   supabase/{client,server}.ts    Supabase client factories
   crawler/
