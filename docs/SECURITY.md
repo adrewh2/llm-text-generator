@@ -44,6 +44,10 @@ Consumers: `fetchPage`, `sitemap.fetchSitemapUrls`, `robots.fetchRobots`, `markd
 
 Puppeteer can't be routed through `safeFetch`, so `spaCrawler.ts` calls `assertSafeUrl(url)` directly before every `page.goto(url)`.
 
+### Deployment environment
+
+The service runs on Vercel Fluid Compute, which is itself a sandboxed runtime with no private-network access to our own infrastructure — Supabase, Upstash, and QStash are all reached over the public internet with API tokens, not via an internal VPC. So if an SSRF defence were to fail closed, an attacker couldn't reach "our" internal services because there isn't an "inside" to reach. This is defence-in-depth we inherit from the platform; not code we maintain, but worth citing.
+
 ### Known gap: TOCTOU / DNS rebinding
 
 The DNS lookup in `assertSafeUrl` and the DNS lookup performed internally by `fetch` are two separate resolutions. A malicious authoritative server can answer the first one with a public IP and the second with a private one (DNS rebinding). Closing this would require piping `fetch` through a custom `undici` dispatcher that forces the resolved IP into the socket connect. We document it (in `safeFetch.ts`) rather than implement it — out of scope for the take-home.
