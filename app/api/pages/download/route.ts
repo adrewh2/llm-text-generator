@@ -2,9 +2,9 @@ import { NextResponse } from "next/server"
 import JSZip from "jszip"
 import { getUserPageResults } from "@/lib/store"
 import { createClient } from "@/lib/supabase/server"
-import { urlToFilename } from "@/lib/crawler/urlLabel"
+import { urlToFilename } from "@/lib/crawler/net/urlLabel"
 import { api, rateLimit } from "@/lib/config"
-import { consumeRateLimit } from "@/lib/rateLimit"
+import { consumeRateLimit } from "@/lib/upstash/rateLimit"
 
 export const runtime = "nodejs"
 

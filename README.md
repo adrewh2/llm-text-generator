@@ -12,8 +12,9 @@ Paste a URL, the app discovers pages (sitemap → robots → link-following, wit
 - Markdown-variant probing (prefers `.md` links per the spec)
 - SPA detection + headless-Chrome fallback via `puppeteer` (local) / `@sparticuz/chromium` (Vercel)
 - Worker-pool concurrency with a default politeness delay; honors `robots.txt` `Crawl-delay` as a shared cross-worker clock, capped at 10 s
-- SSRF-hardened: every outbound fetch resolves DNS and rejects RFC1918 / CGNAT / loopback / link-local / metadata IPs and non-default ports (`lib/crawler/ssrf.ts`)
-- Streaming body reads with hard byte caps so a server that omits or lies about `Content-Length` can't OOM us (`lib/crawler/readBounded.ts`)
+- SSRF-hardened: every outbound fetch resolves DNS and rejects RFC1918 / CGNAT / loopback / link-local / metadata IPs and non-default ports (`lib/crawler/net/ssrf.ts`). Also enforced up-front at `POST /api/p` and in `createJob` so no unsafe URL ever reaches the DB.
+- Streaming body reads with hard byte caps so a server that omits or lies about `Content-Length` can't OOM us (`lib/crawler/net/readBounded.ts`)
+- **Primary-language prioritization** — the homepage's `<html lang>` attribute picks the site's primary language (defaults to `en`). URLs whose path locale differs from that (e.g. `/ar/` or `/ja-jp/` on an English-primary site) are filtered before the LLM ranker runs, and pages whose `lang` attr diverges from primary take a scoring penalty. The same `primaryLang` is passed to the LLM prompts so descriptions and preamble come back in the site's own language — a Japanese-primary site still generates a coherent Japanese `llms.txt`. See `lib/crawler/net/language.ts`.
 
 **LLM enrichment**
 - Per-page classification (`doc`, `api`, `example`, `blog`, `changelog`, `about`, …) via Claude
@@ -248,13 +249,27 @@ Finally, open the site, sign in with GitHub or Google, generate a URL, and check
 
 ```
 app/
-  page.tsx, LandingClient.tsx     Landing page / URL input
-  p/[id]/page.tsx                 Result + simulated-progress view
+  layout.tsx, page.tsx,           Root shell + landing page. layout.tsx is async,
+    LandingClient.tsx             resolves auth, renders the persistent GlobalHeader.
+  components/                     Cross-route UI chrome
+    AppHeader.tsx                 Sticky logo + nav shell (center + right slots)
+    GlobalHeader.tsx              Mounted once in root layout; hides itself on /p/{id}
+    NavAuth.tsx                   Dashboard ↔ Generate link swap + UserMenu
+    UserMenu.tsx                  Avatar (OAuth picture → initials fallback) + sign-out
+    ConfirmDialog.tsx             Accessible confirm dialog (used by JobActions)
+  p/[id]/                         Result viewer
+    page.tsx                      RSC — fetches job + user, streams initial state
+    PageView.tsx                  Client — AppHeader + poll loop + ProgressPane / ResultPane
+    ProgressPane.tsx, ResultPane.tsx
+    types.ts, useVisibleStatus.ts
   dashboard/                      Per-user page history + monitor status
+    page.tsx, PageList.tsx,       Server list + infinite-scroll client + live-refresh
+    MonitorStatus.tsx,            for any row whose latest job is still running
+    JobActions.tsx, DownloadButton.tsx
   login/                          OAuth sign-in (GitHub / Google)
   auth/callback/                  Supabase auth callback
   api/p/                          POST create a crawl
-  api/p/[id]/                     GET job status
+  api/p/[id]/                     GET page status by pages.id UUID + scrubError helper
   api/p/request/                  DELETE remove URL from user's history
   api/pages/                      GET paginated user history (dashboard)
   api/pages/download/             GET bulk-download history as a zip
@@ -266,28 +281,37 @@ lib/
   config.ts                       Tunable constants (TTLs, limits, rate limits, retries)
   env.ts                          Typed env-var access with fail-fast checks
   log.ts                          debugLog + errorLog — forward Errors to Sentry
-  rateLimit.ts                    Two-bucket token limiter (SUBMIT + NEW_CRAWL), Upstash Redis + in-memory fallback
-  jobQueue.ts                     QStash publish + waitUntil fallback
   store.ts                        Supabase-backed page + job + user-request store
+  upstash/
+    rateLimit.ts                  Two-bucket token limiter (SUBMIT + NEW_CRAWL), Upstash Redis + in-memory fallback
+    jobQueue.ts                   QStash publish + waitUntil fallback
   supabase/                       Browser + SSR client factories
   crawler/
     pipeline.ts                   Orchestrates crawl → enrich → score → assemble
     monitor.ts                    Signature + change detection for cron
-    discover.ts, sitemap.ts,      URL discovery
-      robots.ts
-    fetchPage.ts, safeFetch.ts,   HTTP fetch with SSRF guard + size-capped streaming read + .md variant probe
-      markdownProbe.ts, ssrf.ts,
-      readBounded.ts
-    canonicalUrl.ts               Dual www/non-www HEAD probe → canonical URL
-    spaCrawler.ts                 Puppeteer fallback for JS-rendered sites
-    extract.ts                    Cheerio-based metadata extraction
-    llmEnrich.ts                  Claude-powered descriptions + section / importance hints
-    genre.ts, siteName.ts         Site-level inference
-    score.ts, group.ts            Importance scoring + section grouping
-    urlLabel.ts                   Human-friendly labels / filenames
-    assemble.ts                   Final llms.txt string assembly
-    validate.ts                   Spec validator
-    url.ts, types.ts              Shared URL utils + types
+    types.ts                      Shared pipeline types
+    net/                          URL + HTTP primitives
+      url.ts, urlLabel.ts,        Normalize / cap / skip + filename helpers
+      canonicalUrl.ts             Dual www/non-www HEAD probe → canonical URL
+      safeFetch.ts, ssrf.ts,      SSRF-guarded fetch with per-hop redirect validation
+      ipRanges.ts                 Shared (browser+server) forbidden-IP classifier
+      readBounded.ts              Streaming body read with hard byte cap
+      language.ts                 Primary-language detection + locale-path helpers
+    discovery/                    Where pages come from
+      sitemap.ts, robots.ts,      sitemap.xml + robots.txt parse
+      discover.ts                 Link extraction from HTML
+      fetchPage.ts                Main page fetcher
+      spaCrawler.ts               Puppeteer fallback for JS-rendered sites
+      markdownProbe.ts            .md variant probing
+    enrich/                       Per-page processing
+      extract.ts                  Cheerio-based metadata extraction
+      genre.ts, siteName.ts       Site-level inference
+      llmEnrich.ts                Claude-powered descriptions, ranking, preamble
+      score.ts                    Importance scoring with LLM + language signals
+      group.ts                    Section assignment + selection
+    output/
+      assemble.ts                 Final llms.txt string assembly
+      validate.ts                 Spec validator
 
 instrumentation.ts                Next.js hook — loads sentry.{server,edge}.config by runtime
 instrumentation-client.ts         Sentry browser SDK init (on-error replay)

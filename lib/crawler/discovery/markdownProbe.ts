@@ -1,4 +1,4 @@
-import { safeFetch } from "./safeFetch"
+import { safeFetch } from "../net/safeFetch"
 import { USER_AGENT } from "./fetchPage"
 
 export async function probeMarkdown(url: string): Promise<string | null> {

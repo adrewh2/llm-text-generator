@@ -1,9 +1,11 @@
-import type { ExtractedPage, ScoredPage, SiteGenre } from "./types"
+import type { ExtractedPage, ScoredPage, SiteGenre } from "../types"
+import { isOffPrimaryLanguage } from "../net/language"
 import type { EnrichmentMap } from "./llmEnrich"
 
 export function scorePages(
   pages: ExtractedPage[],
   genre: SiteGenre,
+  primaryLang: string,
   enrichment?: EnrichmentMap
 ): ScoredPage[] {
   return pages.map((page) => {
@@ -33,6 +35,16 @@ export function scorePages(
     if (/[?&]page=\d+|\/page\/\d+/.test(page.url)) score -= 15
     if (/\/(print|export)\//.test(page.url)) score -= 20
     if (/\/(tag|category|archive|author)\//.test(page.url)) score -= 25
+
+    // Off-primary-language penalty — preference, not a filter.
+    // Enough to push a localized duplicate below its primary-language
+    // twin (which usually clears the 50-point primary/optional
+    // threshold). On apple.com the primary is en, so /ar/iphone sinks
+    // beneath /iphone; on nikkei.com the primary is ja, so /en/ pages
+    // are the ones that get penalized.
+    if (isOffPrimaryLanguage(page.url, page.lang, primaryLang)) {
+      score -= 20
+    }
 
     // LLM importance is the primary relevance signal.
     // Map 1–10 to an integer modifier in [-23, +23] via (x − 5.5) × 5.

@@ -5,7 +5,7 @@
 // it requires a custom undici dispatcher; out of scope.
 
 import { assertSafeUrl } from "./ssrf"
-import { crawler } from "../config"
+import { crawler } from "../../config"
 
 const { MAX_REDIRECTS } = crawler
 

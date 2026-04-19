@@ -1,20 +1,21 @@
-import { fetchRobots, isAllowed, hasFullDisallow } from "./robots"
-import { fetchSitemapUrls } from "./sitemap"
-import { fetchPage } from "./fetchPage"
-import { extractMetadata, extractSiteName, extractSiteNameCandidates } from "./extract"
-import { probeMarkdown } from "./markdownProbe"
-import { extractLinksFromHtml, extractExternalLinksFromHtml } from "./discover"
-import { isSpaHtml, SpaBrowser } from "./spaCrawler"
-import { scorePages } from "./score"
-import { llmEnrichPages, generateSitePreamble, rankCandidateUrls, rankExternalReferences, llmSiteName } from "./llmEnrich"
-import { assignSections, filterAndSelectPages } from "./group"
-import { assembleFile } from "./assemble"
-import { detectGenre } from "./genre"
-import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix } from "./url"
+import { fetchRobots, isAllowed, hasFullDisallow } from "./discovery/robots"
+import { fetchSitemapUrls } from "./discovery/sitemap"
+import { fetchPage } from "./discovery/fetchPage"
+import { extractMetadata, extractSiteName, extractSiteNameCandidates } from "./enrich/extract"
+import { probeMarkdown } from "./discovery/markdownProbe"
+import { extractLinksFromHtml, extractExternalLinksFromHtml } from "./discovery/discover"
+import { isSpaHtml, SpaBrowser } from "./discovery/spaCrawler"
+import { scorePages } from "./enrich/score"
+import { llmEnrichPages, generateSitePreamble, rankCandidateUrls, rankExternalReferences, llmSiteName } from "./enrich/llmEnrich"
+import { baseLangCode, urlLocaleCode } from "./net/language"
+import { assignSections, filterAndSelectPages } from "./enrich/group"
+import { assembleFile } from "./output/assemble"
+import { detectGenre } from "./enrich/genre"
+import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix } from "./net/url"
 import { updateJob } from "../store"
 import type { ExtractedPage } from "./types"
 import { crawler } from "../config"
-import { assertSafeUrl, UnsafeUrlError } from "./ssrf"
+import { assertSafeUrl, UnsafeUrlError } from "./net/ssrf"
 
 const {
   MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS,
@@ -168,10 +169,37 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
     // survives only as a tiebreaker below.
     const siteName0 = extractSiteName(homepageHtml, new URL(baseUrl).hostname)
     const homepageExcerpt = homepageMeta.bodyExcerpt || ""
+    // Site's primary language comes from the homepage's <html lang>
+    // attribute. Defaults to "en" when the site didn't bother setting
+    // one — most such sites are English. Passed to scoring and LLM
+    // prompts so prioritization reflects the site being generated
+    // from, not a hardcoded assumption.
+    const primaryLang = baseLangCode(homepageMeta.lang) ?? "en"
+
+    // Hard filter: drop URLs whose path locale indicates a language
+    // other than primary. apple.com's sitemap exposes /ae-ar/* and
+    // /ja-jp/* alongside the English pages, and the score penalty
+    // alone isn't enough to keep them out of the output because the
+    // optional-section cap (10 slots) fills up with whatever's left
+    // after primary. Removing them here means they never reach the
+    // LLM ranker and never get crawled at all. URLs without a locale
+    // prefix pass through — they're usually the primary-language
+    // pages. Safety floor: if this would leave the queue empty (a
+    // site that's ONLY locale-prefixed URLs), skip the filter so we
+    // still produce some output.
+    const preFiltered = queue.filter((q) => {
+      const locale = urlLocaleCode(q.url)
+      return !locale || locale === primaryLang
+    })
+    if (preFiltered.length > 0 && preFiltered.length < queue.length) {
+      queue.splice(0, queue.length, ...preFiltered)
+    }
+
     const rankedUrls = await rankCandidateUrls(
       queue.map((q) => q.url),
       siteName0,
       homepageExcerpt,
+      primaryLang,
     )
     const urlToItem = new Map(queue.map((q) => [q.url, q]))
     const reordered = rankedUrls
@@ -290,15 +318,21 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
 
     // External references: homepage outbound anchors, LLM-ranked,
     // each fetched once for metadata only — never followed further.
-    const externalRefs = await resolveExternalReferences(
-      homepageHtml, baseUrl, siteName, homepageMeta.bodyExcerpt || "",
-    )
+    // Budget stays within MAX_PAGES: whatever slots the internal
+    // crawl didn't use, external refs can fill. At worst the cap is
+    // hit by internals alone and no externals are fetched.
+    const externalBudget = Math.max(0, MAX_PAGES - internalSuccessful.length)
+    const externalRefs = externalBudget > 0
+      ? await resolveExternalReferences(
+          homepageHtml, baseUrl, siteName, homepageMeta.bodyExcerpt || "", externalBudget,
+        )
+      : []
 
     const successful = [...internalSuccessful, ...externalRefs]
 
     // LLM enrichment: classify pages and generate missing descriptions
     await updateJob(jobId, { status: "enriching", genre, siteName })
-    const enrichment = await llmEnrichPages(successful, siteName, genre)
+    const enrichment = await llmEnrichPages(successful, siteName, genre, primaryLang)
 
     await updateJob(jobId, { status: "scoring" })
 
@@ -308,7 +342,7 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
         ? homepageMeta.description
         : undefined
 
-    const scored = scorePages(successful, genre, enrichment)
+    const scored = scorePages(successful, genre, primaryLang, enrichment)
     const withSections = assignSections(scored)
     const { primary, optional } = filterAndSelectPages(withSections, baseUrl)
 
@@ -322,7 +356,7 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
 
     await updateJob(jobId, { status: "assembling" })
 
-    const preamble = await generateSitePreamble(siteName, genre, primary, optional)
+    const preamble = await generateSitePreamble(siteName, genre, primary, optional, primaryLang)
     const robotsNotice = robotsFullBlock
       ? "Note: This site's robots.txt disallows all crawling (Disallow: /). Only the homepage could be indexed; the full site structure may not be represented here."
       : undefined
@@ -373,12 +407,15 @@ async function resolveExternalReferences(
   baseUrl: string,
   siteName: string,
   homepageExcerpt: string,
+  budget: number = EXTERNAL_REFS_MAX_KEEP,
 ): Promise<ExtractedPage[]> {
+  if (budget <= 0) return []
   const candidates = extractExternalLinksFromHtml(homepageHtml, baseUrl)
   if (candidates.length === 0) return []
 
+  const maxKeep = Math.min(budget, EXTERNAL_REFS_MAX_KEEP)
   const kept = await rankExternalReferences(
-    candidates, siteName, homepageExcerpt, EXTERNAL_REFS_MAX_KEEP,
+    candidates, siteName, homepageExcerpt, maxKeep,
   )
   if (kept.length === 0) return []
 

@@ -1,3 +1,5 @@
+import { isForbiddenIpv4, isForbiddenIpv6 } from "./ipRanges"
+
 // Query params that don't affect which *structural* page is shown.
 // Stripping them at normalization time collapses same-page variants
 // like /privacy?hl=en vs /privacy?hl=en-US into one.
@@ -177,4 +179,58 @@ export function isValidHttpUrl(url: string): boolean {
   } catch {
     return false
   }
+}
+
+// Client-safe URL validation. Mirrors the DNS-independent subset of
+// the server's SSRF guard (lib/crawler/ssrf.ts#assertSafeUrl) so the
+// Landing form can disable the Generate button and surface a hint
+// before any request is sent. Cannot detect DNS-level failures
+// (hostnames that don't resolve) — the server remains authoritative.
+export function clientValidateUrl(raw: string):
+  | { ok: true }
+  | { ok: false; reason: string } {
+  let u: URL
+  try {
+    u = new URL(raw)
+  } catch {
+    return { ok: false, reason: "Enter a valid URL" }
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    return { ok: false, reason: "URL must start with http:// or https://" }
+  }
+  if (u.port !== "") {
+    return { ok: false, reason: "Custom ports aren't allowed" }
+  }
+  const host = u.hostname
+  if (!host) return { ok: false, reason: "Enter a valid hostname" }
+
+  const lowered = host.toLowerCase()
+  if (lowered === "localhost" || lowered.endsWith(".localhost")) {
+    return { ok: false, reason: "localhost URLs aren't allowed" }
+  }
+
+  // IPv6 literals — `new URL()` strips the surrounding brackets on
+  // `hostname`. Detect via colon and validate against the shared
+  // ranges module.
+  if (lowered.includes(":")) {
+    if (isForbiddenIpv6(lowered)) {
+      return { ok: false, reason: "Private or reserved IP ranges aren't allowed" }
+    }
+    return { ok: true }
+  }
+  // IPv4 literal
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(lowered)) {
+    if (isForbiddenIpv4(lowered)) {
+      return { ok: false, reason: "Private or reserved IP ranges aren't allowed" }
+    }
+    return { ok: true }
+  }
+
+  // Regular hostname — require at least one dot so single-word typos
+  // (e.g. `asfpskdafj`) don't fall through to a DNS lookup on the
+  // server that we already know will fail.
+  if (!lowered.includes(".")) {
+    return { ok: false, reason: "Enter a full domain (e.g. example.com)" }
+  }
+  return { ok: true }
 }

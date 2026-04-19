@@ -1,5 +1,5 @@
-import type { ScoredPage } from "./types"
-import { toLabel, urlPathSegments, urlToLabel } from "./urlLabel"
+import type { ScoredPage } from "../types"
+import { toLabel, urlPathSegments, urlToLabel } from "../net/urlLabel"
 
 export function assembleFile(
   siteName: string,
@@ -172,11 +172,22 @@ function groupBySection(pages: ScoredPage[]): {
     else map.set(section, [page])
   }
 
-  // Sections with only 1 page get dissolved into Optional
+  // Heuristic for dissolving singleton sections:
+  //   - If >= 2 sections have >= 2 pages, the LLM did a reasonable
+  //     grouping job — keep the singletons as their own sections.
+  //     A legitimate "Pricing" or "About" section with one page
+  //     deserves its own header rather than being flattened.
+  //   - If 0-1 sections have >= 2 pages, the LLM fragmented too
+  //     aggressively (typical symptom: small commerce sites where
+  //     every page gets a unique label). Dissolve all singletons
+  //     into Optional so the file reads coherently.
+  const multiPageCount = [...map.values()].filter((ps) => ps.length >= 2).length
+  const shouldDissolve = multiPageCount < 2
+
   const overflow: ScoredPage[] = []
   const valid = new Map<string, ScoredPage[]>()
   for (const [section, ps] of map) {
-    if (ps.length < 2) overflow.push(...ps)
+    if (shouldDissolve && ps.length < 2) overflow.push(...ps)
     else valid.set(section, ps)
   }
 

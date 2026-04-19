@@ -1,4 +1,4 @@
-import { safeFetch } from "./safeFetch"
+import { safeFetch } from "../net/safeFetch"
 import { USER_AGENT as FETCH_USER_AGENT } from "./fetchPage"
 
 // Name used when matching `User-agent:` directives in robots.txt.

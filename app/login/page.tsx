@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
-import { Github } from "lucide-react"
+import { ArrowLeft, Github } from "lucide-react"
 import Link from "next/link"
 
 export default function LoginPage() {
@@ -17,7 +17,7 @@ export default function LoginPage() {
   // but accidentally navigate back to /login.
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
-      if (data.user) router.replace("/dashboard")
+      if (data.user) router.replace("/")
     })
   }, [supabase, router])
 
@@ -38,40 +38,38 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen bg-white flex flex-col">
-      <header className="border-b border-zinc-100">
-        <nav className="max-w-6xl mx-auto px-6 h-14 flex items-center">
-          <Link href="/" className="flex items-center gap-2.5">
-            <div className="w-6 h-6 bg-zinc-950 rounded-[5px] flex items-center justify-center shrink-0">
-              <span className="text-white font-mono text-[9px] font-bold leading-none">{"//"}</span>
-            </div>
-            <span className="font-semibold text-zinc-950 text-sm tracking-tight">llms.txt</span>
-          </Link>
-        </nav>
-      </header>
+      <div className="px-6 pt-6">
+        <Link
+          href="/"
+          className="inline-flex items-center gap-2 text-base text-zinc-600 hover:text-zinc-900 transition-colors"
+        >
+          <ArrowLeft size={18} />
+          Back
+        </Link>
+      </div>
 
       <div className="flex-1 flex items-center justify-center px-6">
         <div className="w-full max-w-sm">
           <div className="text-center mb-8">
-            <h1 className="text-2xl font-semibold text-zinc-950 tracking-tight mb-2">Sign in</h1>
-            <p className="text-sm text-zinc-500">Save your analyses and access your dashboard</p>
+            <h1 className="text-2xl font-semibold text-zinc-950 tracking-tight">Sign in</h1>
           </div>
 
           <div className="space-y-3">
             <button
               onClick={() => signIn("github")}
               disabled={!!loading}
-              className="w-full flex items-center justify-center gap-3 bg-zinc-950 text-white text-sm font-medium px-4 py-2.5 rounded-xl hover:bg-zinc-800 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+              className="w-full flex items-center justify-center gap-3 bg-zinc-950 text-white text-base font-medium px-5 py-3 rounded-xl hover:bg-zinc-800 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
             >
-              <Github size={16} />
+              <Github size={20} />
               {loading === "github" ? "Redirecting…" : "Continue with GitHub"}
             </button>
 
             <button
               onClick={() => signIn("google")}
               disabled={!!loading}
-              className="w-full flex items-center justify-center gap-3 bg-white text-zinc-900 text-sm font-medium px-4 py-2.5 rounded-xl border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+              className="w-full flex items-center justify-center gap-3 bg-white text-zinc-900 text-base font-medium px-5 py-3 rounded-xl border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24">
+              <svg width="20" height="20" viewBox="0 0 24 24">
                 <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
                 <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
                 <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
@@ -83,7 +81,7 @@ export default function LoginPage() {
 
           {error && <p className="text-xs text-red-500 mt-4 text-center">{error}</p>}
 
-          <p className="text-xs text-zinc-400 text-center mt-8">
+          <p className="text-sm text-zinc-500 text-center mt-8">
             No account needed to generate — sign in to save your history.
           </p>
         </div>

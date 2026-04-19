@@ -1,9 +1,9 @@
 import { load } from "cheerio"
-import { normalizeUrl } from "./url"
-import { safeFetch } from "./safeFetch"
-import { readBoundedText } from "./readBounded"
+import { normalizeUrl } from "../net/url"
+import { safeFetch } from "../net/safeFetch"
+import { readBoundedText } from "../net/readBounded"
 import { USER_AGENT } from "./fetchPage"
-import { crawler } from "../config"
+import { crawler } from "../../config"
 
 const { MAX_SITEMAP_URLS, SITEMAP_TIMEOUT_MS, SITEMAP_MAX_BYTES } = crawler
 

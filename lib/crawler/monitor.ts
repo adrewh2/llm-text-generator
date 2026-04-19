@@ -14,10 +14,10 @@
 // 2 HTTP requests per page, no Puppeteer.
 
 import { createHash } from "crypto"
-import { fetchSitemapUrls } from "./sitemap"
-import { safeFetch } from "./safeFetch"
-import { readBoundedText } from "./readBounded"
-import { USER_AGENT } from "./fetchPage"
+import { fetchSitemapUrls } from "./discovery/sitemap"
+import { safeFetch } from "./net/safeFetch"
+import { readBoundedText } from "./net/readBounded"
+import { USER_AGENT } from "./discovery/fetchPage"
 import { crawler } from "../config"
 
 const { HOMEPAGE_FETCH_TIMEOUT_MS, RESPONSE_MAX_BYTES } = crawler

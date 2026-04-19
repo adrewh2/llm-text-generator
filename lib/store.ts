@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 import type { CrawlJob, ScoredPage } from "./crawler/types"
 import { crawler, monitor } from "./config"
+import { assertSafeUrl } from "./crawler/net/ssrf"
 import { requireEnv } from "./env"
 import { errorLog } from "./log"
 
@@ -22,47 +23,82 @@ function getClient(): SupabaseClient {
 
 // ─── Jobs ────────────────────────────────────────────────────────────────────
 
-export async function createJob(id: string, url: string): Promise<void> {
+/**
+ * Upsert the page row (FK target, monitoring re-enabled) and insert a
+ * new crawl job against it. Returns the page's UUID — the user-facing
+ * identifier that /p/{pageId} routes against. `jobId` stays internal:
+ * the worker uses it to update row status; no URL references it.
+ */
+export async function createJob(jobId: string, url: string): Promise<{ pageId: string }> {
+  // Defense-in-depth: every job-creation path (submit, monitor
+  // re-crawl, future callers) flows through here, so re-validate the
+  // URL even if the caller already did. Blocks loopback / private /
+  // metadata / non-default-port / DNS-unresolvable targets before we
+  // upsert a pages row or insert a jobs row — makes it impossible to
+  // persist a job for an unreachable or unsafe page. Throws
+  // UnsafeUrlError; callers at HTTP boundaries translate to 400.
+  await assertSafeUrl(url)
+
   const supabase = getClient()
-  // pages row must exist before the job (FK). monitored=true re-enables
-  // any URL the sweeper had retired.
-  await supabase.from("pages").upsert(
-    { url, monitored: true },
-    { onConflict: "url" },
-  )
-  const { error } = await supabase.from("jobs").insert({
-    id,
+  // pages row must exist before the job (FK). `DEFAULT gen_random_uuid()`
+  // generates `id` on INSERT and leaves existing rows' ids untouched on
+  // conflict — one page URL maps to exactly one UUID for its lifetime.
+  const { data: page, error: pageErr } = await supabase
+    .from("pages")
+    .upsert({ url, monitored: true }, { onConflict: "url" })
+    .select("id")
+    .single()
+  if (pageErr || !page) throw new Error(pageErr?.message ?? "failed to upsert page")
+
+  const { error: jobErr } = await supabase.from("jobs").insert({
+    id: jobId,
     page_url: url,
     status: "pending",
     progress: { discovered: 0, crawled: 0, failed: 0 },
   })
-  if (error) throw new Error(error.message)
+  if (jobErr) throw new Error(jobErr.message)
+
+  return { pageId: page.id }
 }
 
-export async function getJob(id: string): Promise<CrawlJob | undefined> {
+/**
+ * Primary lookup for /api/p/[id]. Resolves a user-facing page UUID to
+ * the page's current state — the latest job's status/progress/error,
+ * plus the page's cached result when the job is terminal. The
+ * returned `id` is the page id (matches the param), not any job id.
+ */
+export async function getPageById(pageId: string): Promise<CrawlJob | undefined> {
   const supabase = getClient()
-  const { data: job } = await supabase.from("jobs").select("*").eq("id", id).maybeSingle()
+  const { data: page } = await supabase
+    .from("pages")
+    .select("id, url, result, crawled_pages, site_name, genre")
+    .eq("id", pageId)
+    .maybeSingle()
+  if (!page) return undefined
+
+  // Latest job for this URL — any status. A monitor-triggered re-crawl
+  // in flight should surface as a non-terminal status even if the page
+  // already has a cached result, so the UI can show "Refreshing…".
+  const { data: job } = await supabase
+    .from("jobs")
+    .select("*")
+    .eq("page_url", page.url)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
   if (!job) return undefined
 
-  let pageResult: { result: string; crawled_pages: ScoredPage[] | null } | null = null
-  if (job.status === "complete" || job.status === "partial") {
-    const { data: page } = await supabase
-      .from("pages")
-      .select("result, crawled_pages")
-      .eq("url", job.page_url)
-      .maybeSingle()
-    pageResult = page ?? null
-  }
+  const isTerminal = job.status === "complete" || job.status === "partial"
 
   return {
-    id: job.id,
-    url: job.page_url,
+    id: page.id,
+    url: page.url,
     status: job.status,
     progress: job.progress,
-    genre: job.genre ?? undefined,
-    siteName: job.site_name ?? undefined,
-    result: pageResult?.result ?? undefined,
-    pages: pageResult?.crawled_pages ?? undefined,
+    genre: (job.genre ?? page.genre) ?? undefined,
+    siteName: (job.site_name ?? page.site_name) ?? undefined,
+    result: isTerminal ? page.result ?? undefined : undefined,
+    pages: isTerminal ? (page.crawled_pages as ScoredPage[] | null) ?? undefined : undefined,
     error: job.error ?? undefined,
     createdAt: new Date(job.created_at),
     updatedAt: new Date(job.updated_at),
@@ -115,15 +151,15 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
         throw new Error(pagesErr.message)
       }
 
-      // All job ids for this URL share pages.result, so re-crawls
-      // must invalidate every sibling's /api/p/:id cache entry.
-      const { data: siblings } = await supabase
-        .from("jobs")
+      // /api/p/:pageId is 1:1 with this page row now (page id stays
+      // stable across re-crawls), so a single revalidation covers the
+      // terminal-response cache.
+      const { data: pageRow } = await supabase
+        .from("pages")
         .select("id")
-        .eq("page_url", job.page_url)
-      for (const s of siblings ?? []) {
-        revalidatePath(`/api/p/${s.id}`)
-      }
+        .eq("url", job.page_url)
+        .maybeSingle()
+      if (pageRow) revalidatePath(`/api/p/${pageRow.id}`)
     }
   }
 
@@ -137,11 +173,17 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
 // ─── Pages ───────────────────────────────────────────────────────────────────
 
 
-export async function getPageByUrl(url: string): Promise<{ jobId: string; isStale: boolean } | undefined> {
+/**
+ * Returns the page's UUID (user-facing id) plus TTL staleness for a
+ * given canonical URL, or undefined if no terminal result exists yet.
+ * Callers use `pageId` to build the `/p/{id}` redirect and `isStale`
+ * to decide whether to dispatch a fresh crawl.
+ */
+export async function getPageByUrl(url: string): Promise<{ pageId: string; isStale: boolean } | undefined> {
   const supabase = getClient()
   const { data: page } = await supabase
     .from("pages")
-    .select("url, updated_at")
+    .select("id, updated_at")
     .eq("url", url)
     .not("result", "is", null)
     .maybeSingle()
@@ -149,24 +191,21 @@ export async function getPageByUrl(url: string): Promise<{ jobId: string; isStal
 
   const ageHours = (Date.now() - new Date(page.updated_at).getTime()) / 3_600_000
   const isStale = ageHours >= PAGE_TTL_HOURS
-
-  const { data: job } = await supabase
-    .from("jobs")
-    .select("id")
-    .eq("page_url", url)
-    .in("status", ["complete", "partial"])
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  return job ? { jobId: job.id, isStale } : undefined
+  return { pageId: page.id, isStale }
 }
 
-export async function getActiveJobForUrl(url: string): Promise<{ jobId: string } | undefined> {
+/**
+ * Returns the page's UUID if a crawl is in flight for that URL (no
+ * terminal status, updated within the stuck-job window). Used by
+ * POST /api/p to attach a new submission to an existing run instead
+ * of kicking off a duplicate. Returns undefined otherwise.
+ *
+ * Ignores stale non-terminal jobs (updated_at older than
+ * STUCK_JOB_AFTER_MS) so a dead waitUntil() doesn't trap future
+ * submissions until the daily monitor sweep force-fails the row.
+ */
+export async function getActiveJobForUrl(url: string): Promise<{ pageId: string } | undefined> {
   const supabase = getClient()
-  // Ignore non-terminal jobs whose updated_at is older than the stuck-job
-  // cutoff — a pending job from a dead waitUntil() would otherwise trap
-  // every new submission for the URL until the daily monitor cron sweeps.
   const freshCutoff = new Date(Date.now() - monitor.STUCK_JOB_AFTER_MS).toISOString()
   const { data: job } = await supabase
     .from("jobs")
@@ -177,7 +216,14 @@ export async function getActiveJobForUrl(url: string): Promise<{ jobId: string }
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
-  return job ? { jobId: job.id } : undefined
+  if (!job) return undefined
+
+  const { data: page } = await supabase
+    .from("pages")
+    .select("id")
+    .eq("url", url)
+    .maybeSingle()
+  return page ? { pageId: page.id } : undefined
 }
 
 // ─── Monitoring ──────────────────────────────────────────────────────────────
@@ -287,10 +333,10 @@ export async function removeUserRequest(userId: string, pageUrl: string): Promis
 
 export interface UserPageEntry {
   pageUrl: string
+  pageId: string | null
   siteName: string | null
   genre: string | null
   requestedAt: Date
-  latestJobId: string | null
   latestJobStatus: string | null
   monitored: boolean
   lastCheckedAt: Date | null
@@ -352,41 +398,39 @@ export async function getUserPages(
 
   const pageUrls = data.map((r) => r.page_url)
 
-  // Fetch page metadata
+  // Fetch page metadata — `id` is the dashboard-row link target.
   const { data: pages } = await supabase
     .from("pages")
-    .select("url, site_name, genre, monitored, last_checked_at")
+    .select("id, url, site_name, genre, monitored, last_checked_at")
     .in("url", pageUrls)
 
-  // Fetch the latest job per page_url regardless of status. A row can
-  // land on the dashboard before any of its jobs is terminal — POST
-  // /api/p upserts user_requests on every branch — and a monitor-
-  // triggered re-crawl should surface as "Refreshing…" against the
-  // running job, so both need the non-terminal status to reach the UI.
+  // Fetch the latest job status per page_url (any status). A monitor-
+  // triggered re-crawl should surface as "Refreshing…" on the row
+  // even while the page still has a cached terminal result, so we
+  // look at the newest job, not just terminal ones.
   const { data: jobs } = await supabase
     .from("jobs")
-    .select("id, page_url, status, created_at")
+    .select("page_url, status, created_at")
     .in("page_url", pageUrls)
     .order("created_at", { ascending: false })
 
   const pageMap = new Map((pages ?? []).map((p) => [p.url, p]))
-  // Keep the most recent job per page_url. `jobs` was ordered by
-  // created_at DESC, so the first one seen per url wins the slot.
-  const jobMap = new Map<string, { id: string; status: string }>()
+  // Keep only the most recent job's status per page_url. `jobs` was
+  // ordered created_at DESC, so the first one seen per url wins.
+  const statusMap = new Map<string, string>()
   for (const j of (jobs ?? [])) {
-    if (!jobMap.has(j.page_url)) jobMap.set(j.page_url, { id: j.id, status: j.status })
+    if (!statusMap.has(j.page_url)) statusMap.set(j.page_url, j.status)
   }
 
   return data.map((r) => {
     const page = pageMap.get(r.page_url)
-    const job = jobMap.get(r.page_url)
     return {
       pageUrl: r.page_url,
+      pageId: page?.id ?? null,
       siteName: page?.site_name ?? null,
       genre: page?.genre ?? null,
       requestedAt: new Date(r.created_at),
-      latestJobId: job?.id ?? null,
-      latestJobStatus: job?.status ?? null,
+      latestJobStatus: statusMap.get(r.page_url) ?? null,
       monitored: page?.monitored ?? false,
       lastCheckedAt: page?.last_checked_at ? new Date(page.last_checked_at) : null,
     }

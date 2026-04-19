@@ -33,11 +33,11 @@ export default function MonitorStatus({ monitored, lastCheckedAt, running }: Pro
   return (
     <span
       title="We re-check this site's sitemap and homepage on a schedule and refresh the llms.txt when it changes"
-      // Fixed narrow width + justify-start so the Eye icon aligns
-      // vertically across rows but sits close to the trash/chevron on
-      // the right. Truncate so the longest label ("less than a minute
-      // ago") ellipsizes rather than spilling into the next element.
-      className="hidden md:inline-flex w-36 items-center gap-1.5 text-xs font-medium text-zinc-600 overflow-hidden"
+      // Fixed width wide enough for "Refreshed N hours/minutes ago"
+      // without truncation. justify-end right-aligns short labels so
+      // they hug the trash/chevron column instead of leaving a visible
+      // gap between the label and the row's right edge.
+      className="hidden md:inline-flex w-52 justify-end items-center gap-1.5 text-xs font-medium text-zinc-600 overflow-hidden"
     >
       <Eye size={12} className="text-emerald-500 shrink-0" />
       <span className="truncate">{label}</span>

@@ -1,4 +1,4 @@
-import type { ScoredPage } from "./types"
+import type { ScoredPage } from "../types"
 
 function normalizeForComparison(url: string): string {
   try {

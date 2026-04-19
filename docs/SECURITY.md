@@ -23,7 +23,7 @@ This is the biggest surface and the one most talked-through in code comments.
 
 ### The guard
 
-`lib/crawler/ssrf.ts` exports `assertSafeUrl(url)`. It:
+`lib/crawler/net/ssrf.ts` exports `assertSafeUrl(url)`. It:
 
 - Rejects any scheme other than `http:` / `https:`.
 - Rejects any **non-default port** (anything except the implicit `:80` for `http:` and `:443` for `https:`). WHATWG URL normalises defaults away, so this amounts to `u.port === ""`. Closes a class of attack where an attacker points the crawler at a non-HTTP service on a public IP — Redis 6379, memcached 11211, SSH 22, SMTP 25 — that might accept HTTP-looking bytes, leak state in its error banner, or mis-execute.
@@ -33,7 +33,7 @@ This is the biggest surface and the one most talked-through in code comments.
 
 ### Where the guard runs
 
-It is **not enough** to call it once at the top of the pipeline — redirects can ship you elsewhere after the initial check. So every outbound fetch on the crawler side goes through a single wrapper, `lib/crawler/safeFetch.ts`, that:
+It is **not enough** to call it once at the top of the pipeline — redirects can ship you elsewhere after the initial check. So every outbound fetch on the crawler side goes through a single wrapper, `lib/crawler/net/safeFetch.ts`, that:
 
 1. Validates the target URL before the call.
 2. Issues the fetch with `redirect: "manual"`.
@@ -62,7 +62,7 @@ An unauthenticated HTTP client can POST any URL to `/api/p` and trigger up to 25
 
 ### The control
 
-`lib/rateLimit.ts` — two token buckets per principal (principal = `user.id` when signed in, else client IP). IP detection reads `x-vercel-forwarded-for` first — Vercel's edge sets this header and rejects client-supplied attempts to override it — then falls back to `X-Forwarded-For` / `X-Real-IP` for non-Vercel environments. This closes an XFF-spoofing bypass where a client could submit `X-Forwarded-For: 1.2.3.4` to unlock a fresh rate-limit bucket per fake IP. Both buckets are backed by **Upstash Redis** (`@upstash/ratelimit`) in production, with an in-memory fallback for local dev. Keys are prefixed per-bucket (`submit:…` / `newcrawl:…`) so the two limiters never share Redis state.
+`lib/upstash/rateLimit.ts` — two token buckets per principal (principal = `user.id` when signed in, else client IP). IP detection reads `x-vercel-forwarded-for` first — Vercel's edge sets this header and rejects client-supplied attempts to override it — then falls back to `X-Forwarded-For` / `X-Real-IP` for non-Vercel environments. This closes an XFF-spoofing bypass where a client could submit `X-Forwarded-For: 1.2.3.4` to unlock a fresh rate-limit bucket per fake IP. Both buckets are backed by **Upstash Redis** (`@upstash/ratelimit`) in production, with an in-memory fallback for local dev. Keys are prefixed per-bucket (`submit:…` / `newcrawl:…`) so the two limiters never share Redis state.
 
 `/api/monitor` has its own bucket on top of the `CRON_SECRET` bearer check — a global `cron:monitor` key with `capacity: 12 / hr`. One invocation processes at most `monitor.BATCH_SIZE` monitored pages (currently 200, tunable in `lib/config.ts`) — oldest-checked first — so fan-out per tick is bounded no matter how many URLs are in the table. At ~4 Anthropic calls per re-crawl that's ≈800 LLM calls of worst-case spend per invocation, so the 12/hr cron cap bounds the hourly ceiling at ~9,600 calls.
 
@@ -84,7 +84,7 @@ Upper-bound inputs are also limited independently. All constants live in `lib/co
 - `api.MAX_URL_LENGTH = 2048` — rejected at the top of `POST /api/p` before any parsing / probing.
 - `crawler.MAX_PAGES = 25`, `crawler.MAX_DEPTH = 2`, `crawler.CONCURRENCY = 5` — cap the crawler itself.
 - `crawler.MAX_SITEMAP_URLS = 500` (enforced in `lib/crawler/sitemap.ts`) — cap on sitemap entries parsed.
-- `crawler.SITEMAP_MAX_BYTES = 10 MB` and `crawler.RESPONSE_MAX_BYTES = 5 MB` — byte-level caps enforced via `lib/crawler/readBounded.ts`, which streams the response and aborts once the cumulative byte count crosses the cap. A server that omits or lies about `Content-Length` can't fill memory past the cap.
+- `crawler.SITEMAP_MAX_BYTES = 10 MB` and `crawler.RESPONSE_MAX_BYTES = 5 MB` — byte-level caps enforced via `lib/crawler/net/readBounded.ts`, which streams the response and aborts once the cumulative byte count crosses the cap. A server that omits or lies about `Content-Length` can't fill memory past the cap.
 - `crawler.PIPELINE_BUDGET_MS = 270_000` (enforced in `lib/crawler/pipeline.ts`) — `Promise.race` against a 270-second timer, then fail the job cleanly.
 - `monitor.STUCK_JOB_AFTER_MS = 900_000` (15 min) — the monitor cron force-fails any job wedged in a non-terminal status past this window so a Fluid Compute crash past QStash's retry limit doesn't leave a phantom "in-flight" row blocking future submissions.
 - `api.DOWNLOAD_MAX_ENTRIES = 500` on the zip endpoint in `app/api/pages/download/route.ts` — prevents `getUserPageResults` from loading a user's entire history into function memory.
@@ -92,7 +92,7 @@ Upper-bound inputs are also limited independently. All constants live in `lib/co
 
 ### Fail-fast on Vercel without Upstash
 
-`lib/rateLimit.ts` throws at module load when `VERCEL === "1"` and either `UPSTASH_REDIS_REST_URL` or `UPSTASH_REDIS_REST_TOKEN` is unset. The deploy fails before it can serve a request, so the in-memory fallback is unreachable in production — an attacker can't get a fresh bucket per cold start or autoscale event because every production instance is Upstash-backed. The in-memory path exists only so `npm run dev` doesn't require a Redis dependency.
+`lib/upstash/rateLimit.ts` throws at module load when `VERCEL === "1"` and either `UPSTASH_REDIS_REST_URL` or `UPSTASH_REDIS_REST_TOKEN` is unset. The deploy fails before it can serve a request, so the in-memory fallback is unreachable in production — an attacker can't get a fresh bucket per cold start or autoscale event because every production instance is Upstash-backed. The in-memory path exists only so `npm run dev` doesn't require a Redis dependency.
 
 ---
 
@@ -136,9 +136,9 @@ Sign-in goes through Supabase-hosted OAuth (GitHub, Google). The client never se
 
 `supabase/migration.sql` enables RLS on every table. Policies:
 
-- `pages`: `SELECT` allowed for all (the llms.txt is the product).
-- `jobs`: `SELECT` allowed for all (you need the UUID to find it).
-- `user_requests`: `auth.uid() = user_id` for every operation — **one user can't read another user's history even with the anon key**.
+- `pages`: `SELECT` allowed for all — the `llms.txt` output is the product and deliberately shareable by link. Every `/p/{id}` URL in the browser is a `pages.id` UUID; that v4 is the access token, unguessable per row.
+- `jobs`: `SELECT` allowed for all. Job rows carry crawl-execution state (status, progress, timestamps, error) with no user identity. Not referenced by any user-facing URL — `/p/{id}` routes through `pages.id`, and the worker's internal `jobs.id` lookups go through the service-role key. The policy matters only for direct anon-key queries against Supabase, which return rows with no new information beyond "someone crawled this URL."
+- `user_requests`: `auth.uid() = user_id` for every operation — **one user can't read another user's history even with the anon key**. This is the privacy-sensitive table: the person→URLs mapping lives only here.
 
 Our server code uses the service-role key (bypasses RLS), but we also explicitly filter by `user_id` in every query. Two-layer defense.
 
@@ -154,7 +154,7 @@ Server-only secrets:
 - `SUPABASE_SERVICE_ROLE_KEY` — bypasses RLS, used by `lib/store.ts` only. Never shipped to the browser.
 - `ANTHROPIC_API_KEY` — used in `lib/crawler/llmEnrich.ts`.
 - `CRON_SECRET` — gates `/api/monitor`; comparison is timing-safe (`timingSafeEqual` with a length pre-check).
-- `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` — back the rate limiter state in `lib/rateLimit.ts`. Token leak lets an attacker write rate-limit state (bypass their own limits or grief others); `lib/rateLimit.ts` throws at module load when `VERCEL=1` and either var is unset, so a misconfigured prod deploy fails before serving a request.
+- `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` — back the rate limiter state in `lib/upstash/rateLimit.ts`. Token leak lets an attacker write rate-limit state (bypass their own limits or grief others); `lib/upstash/rateLimit.ts` throws at module load when `VERCEL=1` and either var is unset, so a misconfigured prod deploy fails before serving a request.
 - `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY` — QStash auth + delivery signature verification. The worker route (`app/api/worker/crawl/route.ts`) calls `requireEnv()` at import time for both signing keys when `QSTASH_TOKEN` is set, so a misconfigured prod deploy fails loudly at build rather than silently 401-ing every QStash delivery. `QSTASH_URL` (region endpoint) and optional `QSTASH_WORKER_URL` (callback override) are configuration rather than secrets, but the Marketplace integration sets them alongside the signing keys.
 - `SENTRY_AUTH_TOKEN` — build-time only. Used by `withSentryConfig` in `next.config.ts` to upload source maps during the Vercel build. Leaking it lets an attacker upload bogus source maps to the Sentry project (issue-noise griefing, not a data read). `SENTRY_ORG` + `SENTRY_PROJECT` are slugs (not secret) but live in the same server-only env set.
 
@@ -198,7 +198,7 @@ Set on every response via `next.config.ts`. Each header closes a browser default
 
 Every user-supplied string is validated:
 
-- Submitted URLs are checked against `MAX_URL_LENGTH = 2048`, `isValidHttpUrl`, `assertSafeUrl`, and passed through `normalizeUrl` (strips userinfo, `utm_*`, locale params, OAuth flow params, Google session tokens — see `lib/crawler/url.ts`). Userinfo stripping matters: a submission of `https://alice:sekret@target.com` would otherwise forward credentials on every crawl fetch, land them in runtime logs + the QStash message body, and fork the cache key off the principal's secret.
+- Submitted URLs are checked against `MAX_URL_LENGTH = 2048`, `isValidHttpUrl`, `assertSafeUrl`, and passed through `normalizeUrl` (strips userinfo, `utm_*`, locale params, OAuth flow params, Google session tokens — see `lib/crawler/net/url.ts`). Userinfo stripping matters: a submission of `https://alice:sekret@target.com` would otherwise forward credentials on every crawl fetch, land them in runtime logs + the QStash message body, and fork the cache key off the principal's secret.
 - Client-side UX guard: the landing page rejects non-http(s) schemes before the POST so the user doesn't eat a round-trip to see the error.
 - `/api/pages` clamps the caller-supplied `offset` to ≥ 0 and `limit` to 1–50 so a request like `?limit=1000000` can't force the server to load a user's entire history into one response.
 - LLM JSON output — every field validated (see §3).
@@ -243,7 +243,7 @@ The only notable supply-chain surface is `puppeteer` + `@sparticuz/chromium` —
 
 Both helpers forward Error payloads to **Sentry** (`Sentry.captureException`) with a `context` tag for grouping. `errorLog` additionally promotes string payloads to `Sentry.captureMessage`. Expected failures (SSRF rejections, bot-challenge pages, `Response too large`, 4xx from target sites, timeouts, pipeline-budget exhaust) are filtered by `ignoreErrors` in `sentry.server.config.ts` so they don't flood the dashboard.
 
-One call site bypasses both on purpose: `lib/rateLimit.ts` writes a `[rateLimit] Upstash call failed, FAILING OPEN: …` line with `console.warn` directly. A Redis misconfig silently disables rate limiting, which is worth seeing in Vercel logs but not worth paging on every transient blip.
+One call site bypasses both on purpose: `lib/upstash/rateLimit.ts` writes a `[rateLimit] Upstash call failed, FAILING OPEN: …` line with `console.warn` directly. A Redis misconfig silently disables rate limiting, which is worth seeing in Vercel logs but not worth paging on every transient blip.
 
 The full write-up — Sentry SDK layout, the role of each config file, what's filtered out, and where to look when something breaks — lives in [`OBSERVABILITY.md`](./OBSERVABILITY.md).
 

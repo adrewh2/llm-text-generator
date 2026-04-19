@@ -1,4 +1,4 @@
-import type { SiteGenre } from "./types"
+import type { SiteGenre } from "../types"
 
 // Regex-only detection on homepage HTML + URL list. Runs once per
 // crawl after the homepage fetch; total cost is tens of ms on a

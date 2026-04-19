@@ -6,9 +6,9 @@
 
 import { Client } from "@upstash/qstash"
 import { waitUntil } from "@vercel/functions"
-import { runCrawlPipeline } from "./crawler/pipeline"
-import { crawler } from "./config"
-import { debugLog, errorLog } from "./log"
+import { runCrawlPipeline } from "../crawler/pipeline"
+import { crawler } from "../config"
+import { debugLog, errorLog } from "../log"
 
 const qstash: Client | null = (() => {
   if (!process.env.QSTASH_TOKEN) return null

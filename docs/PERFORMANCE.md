@@ -12,8 +12,8 @@ a reviewer asking "crawls per second".
 
 Every `POST /api/p` takes one of three paths:
 
-- **Cache hit** — URL was crawled within the last 24 h. Return the existing job id.
-- **In-flight attach** — an active crawl for this URL already exists. Return its job id.
+- **Cache hit** — URL was crawled within the last 24 h. Return the existing page UUID.
+- **In-flight attach** — an active crawl for this URL already exists. Return its page UUID.
 - **New crawl** — schedule a fresh pipeline run via QStash.
 
 These have wildly different resource costs, so "how many can we serve" has three answers:
@@ -195,7 +195,7 @@ Even with unlimited budget:
 ## 8. If we had to scale 10× (in priority order)
 
 1. **Upgrade Anthropic tier.** Tier 1 → Tier 3 is ~50× RPM; the single biggest lever.
-2. ~~**Edge-cache terminal `/p/[id]` responses.**~~ *Shipped.* Terminal polls serve from Vercel's CDN; `updateJob` calls `revalidatePath` for every sibling job id when a terminal result is written, so monitor re-crawls invalidate historical job ids immediately. Postgres reads on the polling path drop to near-zero for completed crawls.
+2. ~~**Edge-cache terminal `/p/[id]` responses.**~~ *Shipped.* Terminal polls serve from Vercel's CDN; `updateJob` calls `revalidatePath('/api/p/{pageId}')` when a terminal result is written, so a monitor re-crawl invalidates the CDN entry immediately (one page = one URL now that routing is page-keyed). Postgres reads on the polling path drop to near-zero for completed crawls.
 3. **QStash Queues with parallelism cap.** Smooths bursts into Anthropic without retry storms.
 4. **Supabase jobs-table cleanup cron** (delete old `jobs` rows where a newer terminal exists). Keeps DB size bounded.
 5. **Browserless offload for Puppeteer** if SPA-heavy traffic becomes a meaningful share.

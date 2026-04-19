@@ -108,12 +108,28 @@ export const llm = {
 /**
  * Suggested section names for the LLM to consider when grouping pages.
  * Hints, not constraints — the LLM may use them, adapt them, or
- * choose different names if they better fit the site's domain.
+ * choose different names if they better fit the site's domain. The
+ * list intentionally covers both technical/docs sites (Docs, API,
+ * Guides) and consumer / corporate / commerce sites (Products,
+ * Services, Support) so the LLM has a ready label instead of
+ * inventing a unique per-page name that later gets dissolved into
+ * Optional by the single-page-section collapse.
  */
 export const SECTION_HINTS: readonly string[] = [
   "Docs",
   "API",
+  "Guides",
   "Examples",
+  "Reference",
+  "Tutorials",
+  "Products",
+  "Services",
+  "Support",
+  "Business",
+  "Pricing",
+  "About",
+  "Blog",
+  "Resources",
   "Optional",
 ]
 

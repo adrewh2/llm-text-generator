@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
 import { randomUUID } from "crypto"
 import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, upsertUserRequest } from "@/lib/store"
-import { altWwwForm, isValidHttpUrl, normalizeUrl } from "@/lib/crawler/url"
-import { resolveCanonicalUrl } from "@/lib/crawler/canonicalUrl"
-import { clientIp, consumeRateLimit, isAllowedOrigin } from "@/lib/rateLimit"
+import { altWwwForm, isValidHttpUrl, normalizeUrl } from "@/lib/crawler/net/url"
+import { resolveCanonicalUrl } from "@/lib/crawler/net/canonicalUrl"
+import { assertSafeUrl, UnsafeUrlError } from "@/lib/crawler/net/ssrf"
+import { clientIp, consumeRateLimit, isAllowedOrigin } from "@/lib/upstash/rateLimit"
 import { api, rateLimit } from "@/lib/config"
-import { enqueueCrawl } from "@/lib/jobQueue"
+import { enqueueCrawl } from "@/lib/upstash/jobQueue"
 import { createClient } from "@/lib/supabase/server"
 
 export const runtime = "nodejs"
@@ -33,6 +34,20 @@ export async function POST(req: NextRequest) {
   const trimmed = url.trim()
   if (!isValidHttpUrl(trimmed)) {
     return NextResponse.json({ error: "Invalid URL — must be http:// or https://" }, { status: 400 })
+  }
+
+  // Up-front SSRF + reachability check. resolveCanonicalUrl()'s probe
+  // swallows errors to fall back to the raw URL on flaky networks, so
+  // without this gate an UnsafeUrlError (loopback, metadata IPs, non-
+  // default ports, DNS-unresolvable hosts) silently leaks into the
+  // pages table as a valid row.
+  try {
+    await assertSafeUrl(trimmed)
+  } catch (err) {
+    if (err instanceof UnsafeUrlError) {
+      return NextResponse.json({ error: "URL is not reachable or not allowed." }, { status: 400 })
+    }
+    throw err
   }
 
   const supabase = await createClient()
@@ -63,18 +78,20 @@ export async function POST(req: NextRequest) {
 
   // Try to serve from cache / attach to an active job at `key`.
   // Returns a response if handled, null if the caller should continue.
+  // `page_id` in the response is the pages.id UUID — stable across
+  // re-crawls, so two users of the same URL land on the same /p/{id}.
   const tryServeAt = async (key: string): Promise<NextResponse | null> => {
     const existing = await getPageByUrl(key)
     if (existing && !existing.isStale) {
       await bumpPageRequest(key)
       if (user) await upsertUserRequest(user.id, key)
-      return NextResponse.json({ page_id: existing.jobId, cached: true }, { status: 200 })
+      return NextResponse.json({ page_id: existing.pageId, cached: true }, { status: 200 })
     }
     const active = await getActiveJobForUrl(key)
     if (active) {
       await bumpPageRequest(key)
       if (user) await upsertUserRequest(user.id, key)
-      return NextResponse.json({ page_id: active.jobId, cached: false }, { status: 200 })
+      return NextResponse.json({ page_id: active.pageId, cached: false }, { status: 200 })
     }
     return null
   }
@@ -130,12 +147,13 @@ export async function POST(req: NextRequest) {
   // the enqueue has been handed off so an enqueue that silently falls
   // back to the in-process path (or fails entirely) doesn't mark the
   // URL as "actively requested" for sweep purposes when nothing is
-  // actually running.
-  const id = randomUUID()
-  await createJob(id, canonicalUrl)
+  // actually running. The returned `page_id` is the pages.id UUID —
+  // stable across every future re-crawl of this URL.
+  const jobId = randomUUID()
+  const { pageId } = await createJob(jobId, canonicalUrl)
   if (user) await upsertUserRequest(user.id, canonicalUrl)
-  await enqueueCrawl(id, canonicalUrl)
+  await enqueueCrawl(jobId, canonicalUrl)
   await bumpPageRequest(canonicalUrl)
 
-  return NextResponse.json({ page_id: id, cached: false }, { status: 201 })
+  return NextResponse.json({ page_id: pageId, cached: false }, { status: 201 })
 }

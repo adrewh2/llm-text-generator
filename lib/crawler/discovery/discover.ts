@@ -1,5 +1,5 @@
 import { load } from "cheerio"
-import { normalizeUrl, isSameDomain, shouldSkipUrl } from "./url"
+import { normalizeUrl, isSameDomain, shouldSkipUrl } from "../net/url"
 
 export function extractLinksFromHtml(html: string, baseUrl: string): string[] {
   const $ = load(html)

@@ -2,8 +2,15 @@
 -- This file reflects the actual database state — do not re-run it blindly.
 
 -- pages: one globally-shared result per URL
+--
+-- `id` is the user-facing identifier. The app routes every page view
+-- through /p/{id} where id is this UUID — one page, one URL, across
+-- every re-crawl. `url` stays PRIMARY KEY because it's the canonical
+-- dedup key for the crawl pipeline and the FK target for jobs +
+-- user_requests.
 CREATE TABLE pages (
   url TEXT PRIMARY KEY,
+  id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
   result TEXT,                   -- nullable until job completes
   site_name TEXT,
   genre TEXT,
