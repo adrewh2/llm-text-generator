@@ -68,7 +68,7 @@ An unauthenticated HTTP client can POST any URL to `/api/p` and trigger up to 25
 
 | Bucket | Anon | Auth | Consumed when |
 |---|---|---|---|
-| **SUBMIT** (abuse floor) | 60 /hr | 300 /hr | Every `POST /api/p` — bounds the cheap path (URL validation + HEAD probe + two DB lookups). Normal users will never hit it. |
+| **SUBMIT** (abuse floor) | 60 /hr | 300 /hr | Every `POST /api/p` — bounds the cheap path (URL validation + up to 3 DB lookups + optional dual HEAD probe on a full cache miss). Normal users will never hit it. |
 | **NEW_CRAWL** (budget guard) | 3 /hr | 10 /hr | Only when the submission actually dispatches a fresh crawl (cache miss + no in-flight attach). Protects Anthropic tokens, Puppeteer memory, and function-time. |
 
 The split means a user repeatedly loading *already-cached* URLs (their own prior submissions, popular third-party URLs in the globally-shared cache) never runs down the tight new-crawl quota — they only see the "you've hit your limit for generating new pages" message when they try to crawl a URL that isn't cached or in flight.
