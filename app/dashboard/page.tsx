@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { FolderDown } from "lucide-react"
+import DownloadButton from "./DownloadButton"
 import PageList, { type WirePage } from "./PageList"
 import { getUserPages } from "@/lib/store"
 
@@ -34,17 +34,7 @@ export default async function DashboardPage() {
             <h1 className="text-2xl font-semibold text-zinc-950 tracking-tight">Dashboard</h1>
             <p className="text-sm text-zinc-500 mt-1">Your requested pages</p>
           </div>
-          {initial.length > 0 && (
-            <a
-              href="/api/pages/download"
-              download
-              title="Download all your llms.txt files as a zip"
-              className="flex items-center gap-1.5 text-sm font-medium text-zinc-700 hover:text-zinc-900 px-3.5 py-2 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-colors"
-            >
-              <FolderDown size={14} className="text-zinc-400" />
-              Download
-            </a>
-          )}
+          {initial.length > 0 && <DownloadButton />}
         </div>
         <PageList
           initialPages={initial}
