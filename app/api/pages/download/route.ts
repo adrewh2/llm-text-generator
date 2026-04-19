@@ -3,7 +3,8 @@ import JSZip from "jszip"
 import { getUserPageResults } from "@/lib/store"
 import { createClient } from "@/lib/supabase/server"
 import { urlToFilename } from "@/lib/crawler/urlLabel"
-import { api } from "@/lib/config"
+import { api, rateLimit } from "@/lib/config"
+import { consumeRateLimit } from "@/lib/rateLimit"
 
 export const runtime = "nodejs"
 
@@ -13,6 +14,17 @@ export async function GET() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return new NextResponse(null, { status: 401 })
+
+  // One zip per user per 24h. Zipping + shipping up to 500 page
+  // results is our most expensive authenticated read; bound it so a
+  // signed-in attacker can't loop the endpoint.
+  const rate = await consumeRateLimit(`zip:${user.id}`, rateLimit.AUTH_ZIP_DOWNLOAD)
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "Download limit reached. Try again later.", retryAfterSec: rate.retryAfterSec },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
+    )
+  }
 
   const pages = await getUserPageResults(user.id, { limit: MAX_DOWNLOAD_ENTRIES })
   if (pages.length === 0) {

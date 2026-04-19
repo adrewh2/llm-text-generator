@@ -153,6 +153,15 @@ export const rateLimit = {
    * QStash spend (~800 LLM calls per invocation).
    */
   CRON_MONITOR: { capacity: 12, refillPerSec: 12 / 3600 },
+  /**
+   * /api/pages/download per-user cap. Zipping + delivering up to
+   * DOWNLOAD_MAX_ENTRIES (500) page results is the most expensive
+   * authenticated read we expose — in-memory JSZip build + a large
+   * response body. One token / 24 h is plenty for real use (the user
+   * already has the zip locally) and blocks a signed-in attacker from
+   * looping the endpoint for amplification.
+   */
+  AUTH_ZIP_DOWNLOAD: { capacity: 1, refillPerSec: 1 / 86400 },
 }
 
 // ─── Monitoring cron ────────────────────────────────────────────────────────

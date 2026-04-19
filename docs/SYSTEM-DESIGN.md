@@ -119,7 +119,7 @@ sequenceDiagram
     end
 
     W->>A: enrichBatch × ceil(pages/20)
-    A-->>W: pageType · importance · section · description
+    A-->>W: importance · section · description
     W->>A: llmSiteName + generateSitePreamble
     A-->>W: brand + preamble
 
