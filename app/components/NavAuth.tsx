@@ -45,12 +45,12 @@ export default function NavAuth({ initialUser = null }: { initialUser?: User | n
       {onDashboard ? (
         <Link href="/" className={HEADER_BUTTON_CLASS} aria-label="Generate">
           <Plus size={14} className="text-zinc-400" />
-          <span className="hidden sm:inline">Generate</span>
+          <span>Generate</span>
         </Link>
       ) : (
         <Link href="/dashboard" className={HEADER_BUTTON_CLASS} aria-label="Dashboard">
           <LayoutDashboard size={14} className="text-zinc-400" />
-          <span className="hidden sm:inline">Dashboard</span>
+          <span>Dashboard</span>
         </Link>
       )}
       <UserMenu user={user} />
