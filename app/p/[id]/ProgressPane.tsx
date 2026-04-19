@@ -151,7 +151,13 @@ function bottomLabel(job: ApiJob, simulatedStep: number | undefined, domain: str
   }
   switch (job.status) {
     case "pending":    return "Starting crawl…"
-    case "crawling":   return `Crawling ${domain}…`
+    case "crawling":
+      // The browser path routes every fetch through a single Chromium
+      // instance and renders pages one at a time — worth calling out
+      // so the extra latency isn't mistaken for a stall.
+      return job.progress.mode === "browser"
+        ? `Crawling ${domain} with Chromium — one page at a time…`
+        : `Crawling ${domain}…`
     case "enriching":  return "Summarizing pages with AI…"
     case "scoring":    return "Scoring and ranking pages…"
     case "assembling": return "Assembling llms.txt…"

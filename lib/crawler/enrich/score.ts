@@ -52,8 +52,24 @@ export function scorePages(
       score += Math.round((enriched.importance - 5.5) * 5)
     }
 
-    const isOptional = score >= 15 && score < 50
+    const isOptional = score >= 15 && score < PRIMARY_SCORE_THRESHOLD
 
     return { ...enrichedPage, score, isOptional, llmSection: enriched?.section }
   })
 }
+
+/**
+ * Pages with `score >= PRIMARY_SCORE_THRESHOLD` land in primary
+ * (under their LLM-assigned section heading); anything in
+ * `[INCLUDE_SCORE_THRESHOLD, PRIMARY_SCORE_THRESHOLD)` lands in
+ * Optional; below that gets dropped.
+ *
+ * 40 is deliberate: base quality signals cap at ~45 for a typical
+ * subpage (description + headings + long excerpt + no mdUrl +
+ * no json_ld), so a threshold of 50 demanded either LLM importance
+ * ≥ 7 or the mdUrl bonus (+20). On a normal corporate site that
+ * left most real sub-pages stuck at 48 → Optional even when the
+ * LLM had clearly classified them as Products / Support / etc.
+ */
+export const PRIMARY_SCORE_THRESHOLD = 40
+export const INCLUDE_SCORE_THRESHOLD = 15

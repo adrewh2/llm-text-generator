@@ -152,6 +152,20 @@ async function runPipelineInner(
       return
     }
 
+    // Surface the crawl mode to the progress UI. This is the first
+    // point at which we know whether the rest of the crawl will go
+    // through plain fetch (N workers in parallel) or Puppeteer
+    // (single Chromium, serial). The ProgressPane's terminal line
+    // reads this to explain why the browser path takes longer.
+    await updateJob(jobId, {
+      progress: {
+        discovered: discoveredUrls.size,
+        crawled: 0,
+        failed: 0,
+        mode: needsBrowser ? "browser" : "http",
+      },
+    })
+
     const [homepageMdUrl] = await Promise.all([probeMarkdown(baseUrl)])
     const pages: ExtractedPage[] = [
       { ...homepageMeta, mdUrl: homepageMdUrl || undefined, fetchStatus: "ok" },
@@ -223,8 +237,9 @@ async function runPipelineInner(
       .filter((q): q is { url: string; depth: number } => !!q)
     queue.splice(0, queue.length, ...reordered)
 
+    const mode: "http" | "browser" = needsBrowser ? "browser" : "http"
     await updateJob(jobId, {
-      progress: { discovered: discoveredUrls.size, crawled, failed },
+      progress: { discovered: discoveredUrls.size, crawled, failed, mode },
     })
 
     // robots.txt Crawl-delay: gated through a shared `nextSlot`
@@ -257,7 +272,7 @@ async function runPipelineInner(
       const now = Date.now()
       if (!force && now - lastProgressAt < PROGRESS_MIN_INTERVAL_MS) return
       lastProgressAt = now
-      await updateJob(jobId, { progress: { discovered: discoveredUrls.size, crawled, failed } })
+      await updateJob(jobId, { progress: { discovered: discoveredUrls.size, crawled, failed, mode } })
     }
 
     // Worker pool: pull-based, no batch sync (JS sync code is atomic).
@@ -321,23 +336,25 @@ async function runPipelineInner(
       }
     }
 
+    // Site-name LLM call only needs the homepage's extracted
+    // candidates — no dependency on crawled subpages — so kick it off
+    // in parallel with the worker pool. Recovers ~5-10s on typical
+    // sites where the LLM rate-limited or responded slowly.
+    const hostname = new URL(baseUrl).hostname
+    const deterministicName = extractSiteName(homepageHtml, hostname)
+    const nameCandidates = extractSiteNameCandidates(homepageHtml, hostname)
+    const siteNamePromise = llmSiteName(nameCandidates, hostname, deterministicName)
+
     await Promise.all(Array.from({ length: needsBrowser ? 1 : CONCURRENCY }, () => worker()))
     // Final flush so the UI sees the last batch's counts even when
     // they arrived inside the min-interval window.
     await flushProgress(true)
 
-    // Detect genre + site name. The deterministic extractor gives us
-    // a cheap best-guess; the LLM then picks the actual brand out of
-    // all the raw candidates (og:site_name, title, h1, JSON-LD) —
-    // otherwise we end up storing things like
-    // "Uber Eats | Food & Grocery Delivery | Order Groceries…" or a
-    // cheerio-concatenated nav-icon mess as the dashboard label. If
-    // the LLM is unavailable the deterministic guess is returned as-is.
-    const hostname = new URL(baseUrl).hostname
+    // Genre needs the crawled URL set, so it runs after the worker
+    // pool. `llmSiteName` may still be in flight at this point —
+    // awaiting it costs only whatever time it hasn't already spent.
     const genre = detectGenre(homepageHtml, [...discoveredUrls])
-    const deterministicName = extractSiteName(homepageHtml, hostname)
-    const nameCandidates = extractSiteNameCandidates(homepageHtml, hostname)
-    const siteName = await llmSiteName(nameCandidates, hostname, deterministicName)
+    const siteName = await siteNamePromise
 
     // Strip pages whose description exactly matches the generic homepage tagline
     const homepageDesc = homepageMeta.description?.trim()
