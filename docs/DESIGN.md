@@ -51,6 +51,7 @@ Three tables, all in `supabase/migration.sql`. RLS is enabled on all of them; th
 
 ```sql
 url                TEXT PRIMARY KEY
+id                 UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE
 result             TEXT                        -- final llms.txt, nullable until complete
 site_name          TEXT
 genre              TEXT
@@ -63,9 +64,11 @@ created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 ```
 
+Two identifiers live here, on purpose: `url` is the canonical dedup key (FK target for `jobs` and `user_requests`, and how the crawl pipeline keys its cache); `id` is the user-facing UUID that every `/p/{id}` URL in the product routes through. Stable across re-crawls — a monitor-triggered refresh overwrites `result` on the same `id`, so bookmarked / shared URLs keep working.
+
 Every page is **monitored by default**. The monitor cron unsets that flag on pages nobody has touched in the last 5 days, to keep the daily sweep bounded.
 
-Policy: `pages_public_read` — `SELECT USING (true)`. Any client can read any completed `llms.txt`; this is intentional (share-by-link).
+Policy: `pages_public_read` — `SELECT USING (true)`. Any client can read any completed `llms.txt`; this is intentional (share-by-link). The page UUID is the access token — v4, not enumerable without the full table.
 
 ### `jobs` — one row per crawl execution
 
@@ -83,9 +86,9 @@ updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 
 Status transitions: `pending → crawling → enriching → scoring → assembling → {complete | partial | failed}`. The enum is enforced by a `CHECK` constraint so a typo in client code can't corrupt the state machine.
 
-`jobs` is a history, not a cache. Every crawl — first request, user-triggered re-crawl, monitor-triggered re-crawl — creates a new row. The *result* lives on the matching `pages` row.
+`jobs` is a history, not a cache. Every crawl — first request, user-triggered re-crawl, monitor-triggered re-crawl — creates a new row. The *result* lives on the matching `pages` row. `jobs.id` is **internal to the crawl pipeline** — the worker uses it to update row status, and the monitor cron passes it through QStash message bodies. Nothing user-facing references it; `/p/{id}` routes against `pages.id`.
 
-Policy: `jobs_public_read` — `SELECT USING (true)`. A bare job id is a bearer token (UUID v4, not enumerable).
+Policy: `jobs_public_read` — `SELECT USING (true)`. Job rows carry crawl-execution state (status, progress, timestamps, error) and no user-identifying data; they're safe to expose at the policy layer even though the app accesses them exclusively through the service-role key.
 
 Index `idx_jobs_page_status_created(page_url, status, created_at DESC)` backs the dashboard's "latest terminal job per page" lookup.
 
@@ -138,7 +141,7 @@ All routes live under `/app/api`.
 
 | Method & path | Auth | Purpose |
 |---|---|---|
-| `POST /api/p` | Optional | Kick off a crawl, or return an existing job id if one is already running / cached. |
+| `POST /api/p` | Optional | Kick off a crawl, or return the page's UUID if one is already running / cached. Response body: `{ page_id, cached }` where `page_id` is the `pages.id` UUID — `/p/{page_id}` is always the same URL for the same canonical page. |
 | `GET /api/p/[id]` | Public | Poll a job's status and fetch its result. |
 | `DELETE /api/p/request?pageUrl=…` | Required | Remove a page from the signed-in user's history. |
 | `GET /api/pages?offset&limit` | Required | Paginated dashboard list. |
@@ -388,7 +391,7 @@ See §7. Neutering before injection + schema-validated output + hard length caps
 
 ### RLS
 
-Service-role key stays server-side (`lib/store.ts:17`). Client never sees it. RLS policies are the last line of defense: even if the anon key is exfiltrated, a direct Supabase query cannot read another user's `user_requests` rows. `pages` and `jobs` are deliberately world-readable — a job id is a non-enumerable UUID v4, and the point of the product is that the `llms.txt` output is shareable.
+Service-role key stays server-side (`lib/store.ts:17`). Client never sees it. RLS policies are the last line of defense: even if the anon key is exfiltrated, a direct Supabase query cannot read another user's `user_requests` rows. `pages` and `jobs` are deliberately world-readable — the page UUID is a non-enumerable UUID v4, and the point of the product is that the `llms.txt` output is shareable by link.
 
 ### Headers
 
@@ -447,9 +450,9 @@ Secrets come from environment variables: `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_
 
 *Trade-off:* The same module has an in-memory path (dev) and a Redis path (prod) selected by env. *Why:* local dev shouldn't require a network dependency, and the interface is identical in both paths so callers are unaffected. Upstash is the production target because Vercel KV is deprecated and Upstash Redis is the Marketplace-recommended replacement; the `@upstash/ratelimit` library wraps the right Lua-atomic token-bucket primitives.
 
-### Public `jobs` reads
+### Public `pages` reads + page UUID as access token
 
-*Trade-off:* Anyone with a job id can see a job's status and, if terminal, its result. *Why:* a job id is a non-enumerable UUID, and shareable result URLs are a feature, not a leak. The *history* — which URLs a user has asked for — is still private via RLS on `user_requests`.
+*Trade-off:* Anyone with a page UUID can see that page's current `llms.txt` result and the latest crawl's status. *Why:* the UUID is v4 and non-enumerable, and shareable result URLs are a feature of the product. The *history* — which URLs a given user has asked for — stays private via RLS on `user_requests`.
 
 ### LLM ranks + deterministic thresholds
 

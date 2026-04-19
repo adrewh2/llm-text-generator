@@ -98,16 +98,17 @@ export async function GET(req: NextRequest) {
 /**
  * Attach to an in-flight job if one exists — avoids a duplicate
  * crawl when a prior cron tick or a user submission is still
- * running. Otherwise create a new job and enqueue it.
+ * running. Otherwise create a new job and enqueue it. Returns the
+ * page's UUID (the user-facing id) for inclusion in the cron summary.
  */
 async function dispatchRecrawl(pageUrl: string): Promise<string> {
   const active = await getActiveJobForUrl(pageUrl)
-  if (active) return active.jobId
+  if (active) return active.pageId
 
   const jobId = randomUUID()
-  await createJob(jobId, pageUrl)
+  const { pageId } = await createJob(jobId, pageUrl)
   await enqueueCrawl(jobId, pageUrl)
-  return jobId
+  return pageId
 }
 
 function isAuthorized(req: NextRequest): boolean {

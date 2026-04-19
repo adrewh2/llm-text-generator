@@ -63,18 +63,20 @@ export async function POST(req: NextRequest) {
 
   // Try to serve from cache / attach to an active job at `key`.
   // Returns a response if handled, null if the caller should continue.
+  // `page_id` in the response is the pages.id UUID — stable across
+  // re-crawls, so two users of the same URL land on the same /p/{id}.
   const tryServeAt = async (key: string): Promise<NextResponse | null> => {
     const existing = await getPageByUrl(key)
     if (existing && !existing.isStale) {
       await bumpPageRequest(key)
       if (user) await upsertUserRequest(user.id, key)
-      return NextResponse.json({ page_id: existing.jobId, cached: true }, { status: 200 })
+      return NextResponse.json({ page_id: existing.pageId, cached: true }, { status: 200 })
     }
     const active = await getActiveJobForUrl(key)
     if (active) {
       await bumpPageRequest(key)
       if (user) await upsertUserRequest(user.id, key)
-      return NextResponse.json({ page_id: active.jobId, cached: false }, { status: 200 })
+      return NextResponse.json({ page_id: active.pageId, cached: false }, { status: 200 })
     }
     return null
   }
@@ -130,12 +132,13 @@ export async function POST(req: NextRequest) {
   // the enqueue has been handed off so an enqueue that silently falls
   // back to the in-process path (or fails entirely) doesn't mark the
   // URL as "actively requested" for sweep purposes when nothing is
-  // actually running.
-  const id = randomUUID()
-  await createJob(id, canonicalUrl)
+  // actually running. The returned `page_id` is the pages.id UUID —
+  // stable across every future re-crawl of this URL.
+  const jobId = randomUUID()
+  const { pageId } = await createJob(jobId, canonicalUrl)
   if (user) await upsertUserRequest(user.id, canonicalUrl)
-  await enqueueCrawl(id, canonicalUrl)
+  await enqueueCrawl(jobId, canonicalUrl)
   await bumpPageRequest(canonicalUrl)
 
-  return NextResponse.json({ page_id: id, cached: false }, { status: 201 })
+  return NextResponse.json({ page_id: pageId, cached: false }, { status: 201 })
 }

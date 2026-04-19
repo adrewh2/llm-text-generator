@@ -10,10 +10,10 @@ import MonitorStatus from "./MonitorStatus"
 // are ISO strings across the JSON boundary.
 export interface WirePage {
   pageUrl: string
+  pageId: string | null
   siteName: string | null
   genre: string | null
   requestedAt: string
-  latestJobId: string | null
   latestJobStatus: string | null
   monitored: boolean
   lastCheckedAt: string | null
@@ -92,7 +92,7 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
     <>
       <div className="divide-y divide-zinc-100 border border-zinc-200 rounded-2xl overflow-hidden">
         {pages.map((page) => {
-          const href = page.latestJobId ? `/p/${page.latestJobId}` : "/"
+          const href = page.pageId ? `/p/${page.pageId}` : "/"
           const hostname = (() => { try { return new URL(page.pageUrl).hostname } catch { return page.pageUrl } })()
           // A job is "running" when it exists but hasn't reached any
           // terminal state. That drives both the "Refreshing…" label

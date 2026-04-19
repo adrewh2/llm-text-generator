@@ -254,7 +254,7 @@ app/
   login/                          OAuth sign-in (GitHub / Google)
   auth/callback/                  Supabase auth callback
   api/p/                          POST create a crawl
-  api/p/[id]/                     GET job status
+  api/p/[id]/                     GET page status by pages.id UUID
   api/p/request/                  DELETE remove URL from user's history
   api/pages/                      GET paginated user history (dashboard)
   api/pages/download/             GET bulk-download history as a zip

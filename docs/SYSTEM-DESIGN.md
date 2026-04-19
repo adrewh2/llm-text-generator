@@ -131,7 +131,7 @@ sequenceDiagram
         U->>DB: GET /api/p/[id] every 1.5 s
     end
 
-    note over U: After terminal — Vercel's edge CDN serves<br/>repeat polls from Cache-Control. updateJob<br/>revalidates sibling job ids on re-crawl.
+    note over U: After terminal — Vercel's edge CDN serves<br/>repeat polls from Cache-Control. updateJob<br/>revalidates the page's /api/p/{pageId}<br/>path on re-crawl.
 ```
 
 ### Failure modes and retries

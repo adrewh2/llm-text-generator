@@ -136,9 +136,9 @@ Sign-in goes through Supabase-hosted OAuth (GitHub, Google). The client never se
 
 `supabase/migration.sql` enables RLS on every table. Policies:
 
-- `pages`: `SELECT` allowed for all (the llms.txt is the product).
-- `jobs`: `SELECT` allowed for all (you need the UUID to find it).
-- `user_requests`: `auth.uid() = user_id` for every operation — **one user can't read another user's history even with the anon key**.
+- `pages`: `SELECT` allowed for all — the `llms.txt` output is the product and deliberately shareable by link. Every `/p/{id}` URL in the browser is a `pages.id` UUID; that v4 is the access token, unguessable per row.
+- `jobs`: `SELECT` allowed for all. Job rows carry crawl-execution state (status, progress, timestamps, error) with no user identity. Not referenced by any user-facing URL — `/p/{id}` routes through `pages.id`, and the worker's internal `jobs.id` lookups go through the service-role key. The policy matters only for direct anon-key queries against Supabase, which return rows with no new information beyond "someone crawled this URL."
+- `user_requests`: `auth.uid() = user_id` for every operation — **one user can't read another user's history even with the anon key**. This is the privacy-sensitive table: the person→URLs mapping lives only here.
 
 Our server code uses the service-role key (bypasses RLS), but we also explicitly filter by `user_id` in every query. Two-layer defense.
 

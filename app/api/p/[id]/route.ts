@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { bumpPageRequest, getJob } from "@/lib/store"
+import { bumpPageRequest, getPageById } from "@/lib/store"
 
 export const runtime = "nodejs"
 
@@ -8,7 +8,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params
-  const job = await getJob(id)
+  // `id` is the pages.id UUID (user-facing, stable across re-crawls) —
+  // getPageById joins the latest job for status so an in-flight
+  // monitor re-crawl surfaces "Refreshing…" even when the cached
+  // page.result is still the previous terminal output.
+  const job = await getPageById(id)
   if (!job) return NextResponse.json({ error: "Not found" }, { status: 404 })
 
   // Count a view as "active use" so the monitor sweeper keeps the page.
