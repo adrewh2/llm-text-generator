@@ -1,8 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { FolderDown } from "lucide-react"
-import AppHeader from "../AppHeader"
-import NavAuth from "../NavAuth"
 import PageList, { type WirePage } from "./PageList"
 import { getUserPages } from "@/lib/store"
 
@@ -30,8 +28,6 @@ export default async function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-white font-sans">
-      <AppHeader right={<NavAuth initialUser={user} />} />
-
       <main className="max-w-4xl mx-auto px-6 py-8">
         <div className="flex items-center justify-between mb-8">
           <div>

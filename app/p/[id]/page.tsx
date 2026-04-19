@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation"
 import { getPageById } from "@/lib/store"
+import { createClient } from "@/lib/supabase/server"
 import PageView from "./PageView"
 import { scrubError } from "@/app/api/p/[id]/scrubError"
 import type { ApiJob } from "./types"
@@ -16,13 +17,17 @@ export default async function PageViewPage({
   params: Promise<{ id: string }>
 }) {
   const { id } = await params
-  const job = await getPageById(id)
-  if (!job) notFound()
+  const supabase = await createClient()
+  const [jobResult, userResult] = await Promise.all([
+    getPageById(id),
+    supabase.auth.getUser(),
+  ])
+  if (!jobResult) notFound()
   const initialJob: ApiJob = {
-    ...job,
-    error: job.error ? scrubError(job.error) : undefined,
-    createdAt: job.createdAt.toISOString(),
-    updatedAt: job.updatedAt.toISOString(),
+    ...jobResult,
+    error: jobResult.error ? scrubError(jobResult.error) : undefined,
+    createdAt: jobResult.createdAt.toISOString(),
+    updatedAt: jobResult.updatedAt.toISOString(),
   }
-  return <PageView initialJob={initialJob} />
+  return <PageView initialJob={initialJob} initialUser={userResult.data.user} />
 }

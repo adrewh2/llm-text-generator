@@ -4,10 +4,7 @@ import { useState, useEffect, useRef, useMemo } from "react"
 import { ArrowRight, Globe, Zap, CheckCircle, RefreshCw, Loader2, BookMarked, FolderDown } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import type { User } from "@supabase/supabase-js"
 import { clientValidateUrl } from "@/lib/crawler/url"
-import AppHeader from "./AppHeader"
-import NavAuth from "./NavAuth"
 
 const EXAMPLE_OUTPUT = `# FastHTML
 
@@ -26,7 +23,7 @@ const EXAMPLE_OUTPUT = `# FastHTML
 
 - [Starlette docs](https://gist.githubusercontent.com/jph00/.../starlette-sml.md): Starlette subset useful for FastHTML development`
 
-export default function LandingClient({ initialUser }: { initialUser: User | null }) {
+export default function LandingClient() {
   const [url, setUrl] = useState("")
   const [focused, setFocused] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -144,16 +141,6 @@ export default function LandingClient({ initialUser }: { initialUser: User | nul
 
   return (
     <div className="min-h-screen bg-white font-sans">
-      <AppHeader
-        right={
-          <div className="flex items-center gap-6">
-            <a href="#how-it-works" className="text-sm text-zinc-500 hover:text-zinc-900 transition-colors hidden sm:block">
-              How it works
-            </a>
-            <NavAuth initialUser={initialUser} />
-          </div>
-        }
-      />
 
       {/* Hero */}
       <section className="relative overflow-hidden">

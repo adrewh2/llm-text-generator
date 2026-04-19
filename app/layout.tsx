@@ -1,5 +1,7 @@
 import type { Metadata } from "next"
 import { Geist, Geist_Mono, Newsreader } from "next/font/google"
+import { createClient } from "@/lib/supabase/server"
+import GlobalHeader from "./GlobalHeader"
 import "./globals.css"
 
 const geistSans = Geist({
@@ -26,12 +28,18 @@ export const metadata: Metadata = {
   description: "Generate a spec-compliant llms.txt file for any website in seconds.",
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Resolve auth once for the layout — NavAuth gets seeded from this
+  // server snapshot so the "Sign in" → avatar swap on first render
+  // never flashes the anon state for a signed-in user.
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${displaySerif.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${displaySerif.variable} font-sans antialiased`}
       >
+        <GlobalHeader initialUser={user} />
         {children}
       </body>
     </html>

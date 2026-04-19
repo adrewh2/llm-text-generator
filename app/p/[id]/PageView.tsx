@@ -4,10 +4,13 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useParams, useSearchParams } from "next/navigation"
 import { LayoutDashboard, Loader2, Plus, Shield } from "lucide-react"
 import Link from "next/link"
+import type { User } from "@supabase/supabase-js"
 import { validateLlmsTxt } from "@/lib/crawler/validate"
 import { createClient } from "@/lib/supabase/client"
 import { debugLog } from "@/lib/log"
 import { ui } from "@/lib/config"
+import AppHeader, { HEADER_BUTTON_CLASS } from "@/app/AppHeader"
+import UserMenu from "@/app/UserMenu"
 import ProgressPane from "./ProgressPane"
 import ResultPane from "./ResultPane"
 import { useVisibleStatus } from "./useVisibleStatus"
@@ -32,7 +35,13 @@ function cacheSetJob(id: string, job: ApiJob): void {
 // Auth listener lives inside PageViewInner so HMR and unmount clean
 // it up. SIGNED_OUT clears jobCache to prevent cross-session bleed.
 
-function PageViewInner({ initialJob }: { initialJob: ApiJob | null }) {
+function PageViewInner({
+  initialJob,
+  initialUser,
+}: {
+  initialJob: ApiJob | null
+  initialUser: User | null
+}) {
   const params = useParams<{ id: string }>()
   const searchParams = useSearchParams()
   const shouldSimulate = searchParams?.get("simulate") === "1"
@@ -47,7 +56,7 @@ function PageViewInner({ initialJob }: { initialJob: ApiJob | null }) {
     (pageId ? cacheGetJob(pageId) : null) ?? initialJob,
   )
   const [notFound, setNotFound] = useState(false)
-  const [isSignedIn, setIsSignedIn] = useState(false)
+  const [user, setUser] = useState<User | null>(initialUser)
   // Seed at step 0 so a cached (already-complete) job doesn't flash the
   // result pane before the simulation timers kick in.
   const [simulatedStep, setSimulatedStep] = useState<number | null>(shouldSimulate ? 0 : null)
@@ -73,10 +82,9 @@ function PageViewInner({ initialJob }: { initialJob: ApiJob | null }) {
   // into the next session on a shared device.
   useEffect(() => {
     const supabase = createClient()
-    supabase.auth.getUser().then(({ data }) => setIsSignedIn(!!data.user))
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
-        setIsSignedIn(!!session?.user)
+        setUser(session?.user ?? null)
         if (event === "SIGNED_OUT") jobCache.clear()
       },
     )
@@ -187,59 +195,51 @@ function PageViewInner({ initialJob }: { initialJob: ApiJob | null }) {
 
   return (
     <div className="h-screen font-sans bg-white flex flex-col">
-      <header className="border-b border-zinc-100 px-6 py-3 flex items-center gap-4 shrink-0">
-        <Link href="/" className="flex items-center gap-2 mr-2 shrink-0" aria-label="Home">
-          <div className="w-5 h-5 bg-zinc-950 rounded-[4px] flex items-center justify-center">
-            <span className="text-white font-mono text-[8px] font-bold">{"//"}</span>
-          </div>
-        </Link>
-        <div className="h-4 w-px bg-zinc-200 shrink-0" />
-
-        <div className="flex items-center gap-2 flex-1 min-w-0">
-          {domain
-            ? <span className="text-sm text-zinc-500 hidden sm:block truncate">{domain}</span>
-            : <div className="h-3 w-32 bg-zinc-100 rounded animate-pulse hidden sm:block" />
-          }
-          {showResult ? (
-            <>
-              <span className="text-zinc-300 hidden sm:block">·</span>
-              <span className="text-xs text-zinc-400 font-mono hidden sm:block shrink-0">{crawledCount} pages</span>
-              {validation && (
-                <span className={`flex items-center gap-1.5 ml-1 text-xs font-medium px-2.5 py-1 rounded-full ring-1 shrink-0 ${
-                  validation.valid
-                    ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
-                    : "bg-red-50 text-red-600 ring-red-100"
-                }`}>
-                  <Shield size={11} />
-                  {validation.valid ? "Spec valid" : `${validation.errors.length} issue${validation.errors.length > 1 ? "s" : ""}`}
-                </span>
-              )}
-            </>
-          ) : job && !isDone ? (
-            <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400 shrink-0">
-              <Loader2 size={11} className="animate-spin" /> Generating…
-            </span>
-          ) : null}
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          <Link
-            href="/"
-            className="flex items-center gap-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-all"
-          >
-            <Plus size={12} className="text-zinc-400" />
-            Generate
-          </Link>
-          {isSignedIn && (
-            <Link
-              href="/dashboard"
-              className="flex items-center gap-1.5 text-xs font-medium text-zinc-600 hover:text-zinc-900 bg-zinc-50 hover:bg-zinc-100 px-3 py-1.5 rounded-lg border border-zinc-200 transition-all"
-            >
-              <LayoutDashboard size={12} /> Dashboard
+      <AppHeader
+        center={
+          <>
+            <span className="h-4 w-px bg-zinc-200 shrink-0" aria-hidden />
+            {domain
+              ? <span className="text-sm text-zinc-500 hidden sm:block truncate">{domain}</span>
+              : <div className="h-3 w-32 bg-zinc-100 rounded animate-pulse hidden sm:block" />}
+            {showResult ? (
+              <>
+                <span className="text-zinc-300 hidden sm:block">·</span>
+                <span className="text-xs text-zinc-400 font-mono hidden sm:block shrink-0">{crawledCount} pages</span>
+                {validation && (
+                  <span className={`flex items-center gap-1.5 ml-1 text-xs font-medium px-2.5 py-1 rounded-full ring-1 shrink-0 ${
+                    validation.valid
+                      ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
+                      : "bg-red-50 text-red-600 ring-red-100"
+                  }`}>
+                    <Shield size={11} />
+                    {validation.valid ? "Spec valid" : `${validation.errors.length} issue${validation.errors.length > 1 ? "s" : ""}`}
+                  </span>
+                )}
+              </>
+            ) : job && !isDone ? (
+              <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400 shrink-0">
+                <Loader2 size={11} className="animate-spin" /> Generating…
+              </span>
+            ) : null}
+          </>
+        }
+        right={
+          <div className="flex items-center gap-3">
+            <Link href="/" className={HEADER_BUTTON_CLASS}>
+              <Plus size={14} className="text-zinc-400" />
+              Generate
             </Link>
-          )}
-        </div>
-      </header>
+            {user && (
+              <Link href="/dashboard" className={HEADER_BUTTON_CLASS}>
+                <LayoutDashboard size={14} className="text-zinc-400" />
+                Dashboard
+              </Link>
+            )}
+            {user && <UserMenu user={user} />}
+          </div>
+        }
+      />
 
       {validation && !validation.valid && (
         <div className="bg-red-50 border-b border-red-100 px-6 py-2 shrink-0">
@@ -303,10 +303,16 @@ function PageViewFallback() {
   )
 }
 
-export default function PageView({ initialJob }: { initialJob: ApiJob | null }) {
+export default function PageView({
+  initialJob,
+  initialUser,
+}: {
+  initialJob: ApiJob | null
+  initialUser: User | null
+}) {
   return (
     <Suspense fallback={<PageViewFallback />}>
-      <PageViewInner initialJob={initialJob} />
+      <PageViewInner initialJob={initialJob} initialUser={initialUser} />
     </Suspense>
   )
 }

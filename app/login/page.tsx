@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { ArrowLeft, Github } from "lucide-react"
 import Link from "next/link"
-import AppHeader from "../AppHeader"
 
 export default function LoginPage() {
   const [loading, setLoading] = useState<string | null>(null)
@@ -39,8 +38,6 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen bg-white flex flex-col">
-      <AppHeader />
-
       <div className="px-6 pt-6">
         <Link
           href="/"
