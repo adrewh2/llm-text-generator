@@ -211,7 +211,40 @@ curl -s "$BASE_URL/api/p/$JOB" | jq -r '.error'
 ```
 **Expect:** `This URL can't be crawled.`
 
-### 3.5 Error-scrub doesn't leak internals
+### 3.5 Non-default port rejected
+
+Any port other than the implicit `:80` for `http` / `:443` for `https`
+is rejected pre-DNS — protects against the crawler being pointed at
+non-HTTP services (Redis, SSH, SMTP, etc.) on public IPs.
+
+```bash
+for url in \
+  "http://example.com:8080/" \
+  "http://example.com:6379/" \
+  "https://example.com:8443/" ; do
+  JOB=$(curl -s -X POST "$BASE_URL/api/p" \
+    -H "Content-Type: application/json" -d "{\"url\":\"$url\"}" | jq -r '.page_id // empty')
+  if [ -n "$JOB" ]; then
+    sleep 2
+    curl -s "$BASE_URL/api/p/$JOB" | jq -c '{status, error}'
+  else
+    echo "$url → rejected at submit"
+  fi
+done
+```
+**Expect:** every case either rejected at submit or `status=failed`
+with `error="This URL can't be crawled."` (the scrubbed form of the
+internal `Unsafe URL (non-default port not allowed (…))` message).
+
+The default ports still work (test later, not during SSRF battery —
+these will actually try to crawl the site):
+```bash
+# https://example.com (default :443) and http://example.com (default :80)
+# should NOT be rejected by port check; they hit whatever DNS resolution
+# returns and proceed from there.
+```
+
+### 3.6 Error-scrub doesn't leak internals
 
 Verify the **internal** `jobs.error` row contains the resolved-IP
 details, but the **API** response doesn't:

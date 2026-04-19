@@ -35,6 +35,16 @@ export async function assertSafeUrl(url: string): Promise<void> {
     throw new UnsafeUrlError(url, "only http(s) URLs are allowed")
   }
 
+  // WHATWG URL normalises default ports (`http://x:80` → `http://x`)
+  // so `u.port` is "" when the default is in use. An explicit
+  // non-default port lets an attacker point our crawler at
+  // non-HTTP services on public IPs (Redis on 6379, memcached,
+  // SMTP, SSH banners, etc.) that might accept HTTP-looking bytes
+  // and leak state or mis-execute. Reject.
+  if (u.port !== "") {
+    throw new UnsafeUrlError(url, `non-default port not allowed (${u.port})`)
+  }
+
   const host = u.hostname
   if (!host) throw new UnsafeUrlError(url, "missing hostname")
 
