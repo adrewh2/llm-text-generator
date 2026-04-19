@@ -29,8 +29,23 @@ function installRequestInterceptor(page: Page): void {
 export function isSpaHtml(html: string, bodyExcerpt: string): boolean {
   const textLen = bodyExcerpt.trim().length
 
-  // Large HTML payload but almost no extractable text → SPA shell or bot challenge
-  // This is the most reliable signal — check it first regardless of framework
+  // Modern SPA-shell pattern: empty mount-point div in a low-text
+  // HTML. Catches Vite-built React / Vue / Svelte / Nuxt shells which
+  // are often under 1 KB total — the size-based check further down
+  // was written for bloated CRA / Angular builds and misses these.
+  // The div must be explicitly empty (`<div id="root"></div>`) so we
+  // don't false-positive on SSR'd pages that happen to use
+  // `id="root"` as a wrapper around real content.
+  if (
+    textLen < 100 &&
+    /<div\s+id=["'](?:root|app|__next|__nuxt|svelte)["'][^>]*>\s*<\/div>/i.test(html)
+  ) {
+    return true
+  }
+
+  // Large HTML payload but almost no extractable text → SPA shell or
+  // bot challenge. This is the most reliable signal for bundlers that
+  // ship a lot of inline config (CRA, legacy Angular).
   if (html.length > 5000 && textLen < 100) return true
 
   // Framework signals only matter if there's also minimal server-rendered text.
@@ -39,7 +54,10 @@ export function isSpaHtml(html: string, bodyExcerpt: string): boolean {
 
   // Angular / Vue mount indicators
   if (/\bng-app\b|\bng-view\b|\bdata-ng-app\b/.test(html)) return true
-  // React mount indicators
+  // React mount indicators — legacy hooks only. React 18+ emits a
+  // bare `<div id="root">` instead of attaching `data-reactroot`, so
+  // the "empty mount div" heuristic above is the one that catches
+  // modern React.
   if (/\bdata-reactroot\b|\bdata-react-helmet\b/.test(html)) return true
   // Unrendered template syntax (Angular/Vue bindings still in source)
   if (/\{\{[^}]{1,60}\}\}/.test(html)) return true

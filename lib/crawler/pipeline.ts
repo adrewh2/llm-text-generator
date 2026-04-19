@@ -367,12 +367,25 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
     // so small crawls don't trip on a single failure. Require at least
     // 5 attempts before the rule kicks in — a 2-page site with 1
     // timeout shouldn't read as "partial".
+    //
+    // Also fail outright when we end up with zero useful pages in
+    // the output (primary + optional both empty). This happens on
+    // JS-only SPAs that our SPA detector missed *and* whose Puppeteer
+    // render produced nothing meaningful either — without this the
+    // assembler would emit a degenerate `# <siteName>` stub with no
+    // sections. A clear failure is a better UX than a useless file.
     const attempted = crawled + failed
     const successRate = attempted > 0 ? crawled / attempted : 0
     const status =
-      crawled === 0                          ? "failed"
-      : attempted >= 5 && successRate < 0.5  ? "partial"
+      crawled === 0                                 ? "failed"
+      : primary.length === 0 && optional.length === 0 ? "failed"
+      : attempted >= 5 && successRate < 0.5         ? "partial"
       : "complete"
+
+    const error =
+      status === "failed" && primary.length === 0 && optional.length === 0
+        ? "browser render failed"  // scrubError maps this to "We couldn't render this site."
+        : undefined
 
     await updateJob(jobId, {
       status,
@@ -380,6 +393,7 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
       pages: dedupedSections,
       genre,
       siteName,
+      ...(error ? { error } : {}),
     })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unexpected error"
