@@ -234,16 +234,6 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
                   // Chrome don't auto-zoom the viewport on focus. Drops to
                   // text-sm (14px) at sm+ where the compact look is fine.
                   className="flex-1 min-w-0 px-3 py-2 text-base sm:text-sm text-zinc-900 placeholder-zinc-400 bg-transparent outline-none font-mono"
-                  // type="url" + inputMode="url" tells iOS this is a URL
-                  // field: the keyboard swaps to the ".", "/", ".com"
-                  // variant and the QuickType accessory bar above the
-                  // keyboard (Passwords / Payment / Contacts) is
-                  // suppressed — those only surface on fields iOS reads
-                  // as credential / payment / address. autoComplete="off"
-                  // blocks Safari's own URL-history dropdown so nothing
-                  // else rides in on top. HTML5 validation is off at the
-                  // <form> level (noValidate) so bare domains like
-                  // "example.com" still flow through clientValidateUrl.
                   inputMode="url"
                   autoComplete="off"
                   autoCorrect="off"

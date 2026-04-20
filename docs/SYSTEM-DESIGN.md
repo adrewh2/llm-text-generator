@@ -93,7 +93,7 @@ sequenceDiagram
     R-->>P: allowed
     P->>DB: SELECT from pages WHERE url = ?
     DB-->>P: miss or stale
-    P->>R: consume NEW_CRAWL bucket (3/hr anon, 10/hr auth)
+    P->>R: consume NEW_CRAWL bucket (3/hr anon, 50/hr auth)
     R-->>P: allowed
     P->>DB: INSERT job (pending) + upsertUserRequest
     P->>Q: publishJSON({ jobId, url })
@@ -139,7 +139,7 @@ sequenceDiagram
 - **`POST /api/p` returns 5xx** — browser shows an error; nothing enqueued, nothing lost.
 - **QStash publish fails** (network / auth / wrong region) — `lib/upstash/jobQueue.ts` catches and falls through to `waitUntil(runCrawlPipeline(...))`. Same Fluid Compute instance runs the crawl; no retry safety, but the crawl isn't dropped.
 - **Worker returns non-2xx** — QStash redelivers with exponential backoff, up to `retries: 3`. The pipeline sets `job.status = crawling` at entry, so a retry overwrites rather than duplicates state.
-- **Anthropic 429 / 5xx** — the SDK's built-in retry handles it transparently. `lib/crawler/llmEnrich.ts` passes `maxRetries: llm.MAX_RETRIES` (5, up from the SDK default of 2) and `timeout: llm.CALL_TIMEOUT_MS` (60 s); exponential backoff and `Retry-After` honouring are the SDK defaults we rely on. 5 retries gives ~30 s of total backoff per call, still well inside the 270 s pipeline budget. If all 5 retries exhaust, the specific LLM step falls through to its deterministic fallback and the crawl still completes. A global LLM concurrency semaphore is the remaining follow-up called out in `SCALING.md` §3.
+- **Anthropic 429 / 5xx** — the Anthropic SDK retries transient failures with exponential backoff. If retries exhaust, the specific LLM step falls through to a deterministic fallback and the crawl still completes (degraded quality, no user-visible error). Tuning + rationale in [`SCALING.md §2`](./SCALING.md#2-where-we-hit-walls).
 - **Fluid Compute instance recycled mid-crawl** — worker never returns 200 → QStash treats as failure → redelivers. Crawl re-runs from scratch.
 
 ---
@@ -207,45 +207,4 @@ The last thing this stage decides is the terminal status of the crawl. If we did
 
 ## 5. What sits where in the repo
 
-```
-app/
-  page.tsx + LandingClient.tsx   landing, with server-resolved auth state
-  dashboard/                     page history, delete, monitor status
-  p/[id]/                        result viewer + poll loop
-  login/                         OAuth entry
-  api/
-    p/                           POST submit, GET poll, DELETE history
-    pages/                       history list + zip export
-    monitor/                     daily cron handler
-    worker/crawl/                QStash-signed worker (the actual crawl host)
-  auth/callback/                 OAuth return
-
-lib/
-  config.ts                      all tunable constants
-  store.ts                       Supabase access layer
-  rateLimit.ts                   two-bucket (SUBMIT + NEW_CRAWL) Upstash Redis + in-memory fallback
-  jobQueue.ts                    QStash publish + waitUntil fallback
-  supabase/{client,server}.ts    Supabase client factories
-  crawler/
-    pipeline.ts                  orchestration — the one function the worker calls
-    {robots,sitemap,fetchPage,
-     safeFetch,readBounded,
-     canonicalUrl,ssrf,
-     spaCrawler,discover,extract,
-     markdownProbe,classify,
-     genre,score,group,
-     llmEnrich,assemble,
-     siteName,urlLabel,
-     monitor,validate}.ts        individual pipeline stages
-  env.ts, log.ts                 env + logger helpers (log.ts forwards Errors to Sentry)
-
-instrumentation.ts               Next.js register hook — loads Sentry server/edge init
-instrumentation-client.ts        Sentry browser SDK init (on-error replay)
-sentry.server.config.ts          Node runtime init + ignoreErrors filter
-sentry.edge.config.ts            Edge runtime init (for middleware)
-app/global-error.tsx             App Router root error boundary → Sentry
-supabase/migration.sql           full schema + RLS
-middleware.ts                    session refresh + /dashboard gate
-next.config.ts                   CSP + security headers + withSentryConfig wrapper
-vercel.json                      function durations + cron schedule
-```
+Full folder-by-folder breakdown lives in [`DESIGN.md §14`](./DESIGN.md). At the top level: `app/` for Next.js (routes + `app/api/*`), `lib/` for server code (`config.ts`, `store.ts`, `crawler/` pipeline organised by stage, `upstash/` + `supabase/` wrappers), `supabase/migration.sql` for the schema, and a handful of root-level config files (`middleware.ts`, `next.config.ts`, `vercel.json`, Sentry SDK init).

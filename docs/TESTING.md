@@ -263,17 +263,13 @@ response returns a generic string with no IP reference.
 
 ## 4. Rate limiting (two-bucket)
 
-Rate limits are per-principal: user id when signed in, client IP (from
-`X-Forwarded-For` / `X-Real-IP`) when anon. Local dev without Upstash
-uses per-instance in-memory buckets.
-
-Two buckets per principal — both must be clear for a new crawl to
-dispatch:
-
-| Bucket | Anon | Auth | Charged when |
-|---|---|---|---|
-| SUBMIT (abuse floor) | 60 /hr | 300 /hr | Every `POST /api/p` |
-| NEW_CRAWL (budget guard) | 3 /hr | 10 /hr | Cache-miss + no in-flight attach |
+Two buckets per principal (SUBMIT abuse floor + NEW_CRAWL budget
+guard) — both must be clear for a new crawl to dispatch. Canonical
+table + rationale in [`SECURITY.md §2`](./SECURITY.md#2-abuse--rate-limiting);
+capacities in `lib/config.ts` → `rateLimit`. The assertions in
+§4.1–§4.3 below reflect the current defaults (ANON NEW_CRAWL = 3 /hr,
+AUTH NEW_CRAWL = 50 /hr). Local dev without Upstash uses per-instance
+in-memory buckets that reset on dev-server restart.
 
 ### 4.1 NEW_CRAWL limit hit on the 4th novel anon URL
 
@@ -374,7 +370,7 @@ blockquote (`> …`) or preamble text. No `###` headings.
 Programmatic spec validation (using the in-app validator):
 ```bash
 cat > /tmp/validate.mjs <<'EOF'
-import { validateLlmsTxt } from "./lib/crawler/validate.ts"
+import { validateLlmsTxt } from "./lib/crawler/output/validate.ts"
 const text = await fetch(process.env.URL).then(r => r.json()).then(j => j.result)
 const result = validateLlmsTxt(text)
 console.log(JSON.stringify(result, null, 2))

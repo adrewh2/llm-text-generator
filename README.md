@@ -1,54 +1,20 @@
 # llms.txt Generator
 
-A web app that crawls any website and produces a spec-compliant [`llms.txt`](https://llmstxt.org) file describing its most important pages for LLM consumption.
+A web app that turns any website into a spec-compliant [`llms.txt`](https://llmstxt.org) file — a machine-readable index an LLM can use to understand what the site is and which pages matter.
 
-Paste a URL, the app discovers pages (sitemap → robots → link-following, with a Puppeteer fallback for SPAs), extracts metadata, uses an LLM to classify each page and write a concise description, scores and groups the pages into sections, and assembles the final `llms.txt`.
+Paste a URL, wait about a minute, get back a curated `llms.txt`: an H1 with the site's name, a short intro, and the site's most important pages grouped into sections like Docs, Guides, or Products. Sign in to save a history of everything you've generated and export the whole collection as a zip.
 
-## Features
+## What it does
 
-**Crawler**
-- Discovery via `sitemap.xml`, `robots.txt`, and BFS link traversal (respects `Disallow` rules)
-- **LLM-prioritized crawl queue** — before crawling starts, Claude reorders the candidate URL list by likely value given the site name + homepage excerpt (up to `llm.RANK_MAX_KEEP = 120` URLs; skipped for small candidate sets). The worker pool then fetches in LLM-preferred order, so the 25-page budget is spent on the pages most worth showing an LLM. A per-path-prefix cap (`URLS_PER_PREFIX_CAP = 5` over a 2-segment bucket) runs first so a single section of a content-heavy site (e.g. 500 `/watch` URLs) can't crowd out the rest of the prompt.
-- Markdown-variant probing (prefers `.md` links per the spec)
-- SPA detection + headless-Chrome fallback via `puppeteer` (local) / `@sparticuz/chromium` (Vercel)
-- Worker-pool concurrency with a default politeness delay; honors `robots.txt` `Crawl-delay` as a shared cross-worker clock, capped at 10 s
-- SSRF-hardened: every outbound fetch resolves DNS and rejects RFC1918 / CGNAT / loopback / link-local / metadata IPs and non-default ports (`lib/crawler/net/ssrf.ts`). Also enforced up-front at `POST /api/p` and in `createJob` so no unsafe URL ever reaches the DB.
-- Streaming body reads with hard byte caps so a server that omits or lies about `Content-Length` can't OOM us (`lib/crawler/net/readBounded.ts`)
-- **Primary-language prioritization** — the homepage's `<html lang>` attribute picks the site's primary language (defaults to `en`). URLs whose path locale differs from that (e.g. `/ar/` or `/ja-jp/` on an English-primary site) are filtered before the LLM ranker runs, and pages whose `lang` attr diverges from primary take a scoring penalty. The same `primaryLang` is passed to the LLM prompts so descriptions and preamble come back in the site's own language — a Japanese-primary site still generates a coherent Japanese `llms.txt`. See `lib/crawler/net/language.ts`.
+- **Crawls a site intelligently.** Reads the site's `sitemap.xml` and `robots.txt`, explores outward from the homepage, and — when a site is a JavaScript shell (SPA) — renders it through headless Chromium. Before crawling, an LLM re-orders the candidate URLs by likely value so the page budget is spent on the pages an LLM reader would actually want.
+- **Detects the site's primary language** from the homepage and prioritises same-language URLs, so a Japanese-primary site produces a coherent Japanese `llms.txt` rather than getting swamped by English alternates.
+- **Classifies and scores each page** with Claude, combining the LLM's judgment with deterministic quality signals (description presence, `.md` sibling per the spec, structured data, URL shape).
+- **Assembles a spec-compliant file**: H1 + blockquote summary + intro paragraph + `## Section` headings with importance-ordered bullet lists. Curated external references (spec links, upstream docs, related projects the site links to itself) are included as peers.
+- **Caches globally.** One canonical result per URL, shared across all users. A daily cron detects upstream change via a signature over the sitemap + homepage and re-crawls only when something's actually drifted.
+- **Account features** for signed-in users: dashboard of every URL you've generated, infinite scroll + bulk ZIP export, one-click "add to dashboard" when viewing a shared result URL.
+- **Production-hardened**: SSRF guards on every outbound fetch (with per-redirect re-validation), two-bucket rate limiter (SUBMIT floor + NEW_CRAWL quota), prompt-injection defence on every LLM call, Row-Level Security on every table, Sentry error tracking, and a durable QStash queue for crawl dispatch with graceful fallbacks for local dev.
 
-**LLM enrichment**
-- Per-page classification (`doc`, `api`, `example`, `blog`, `changelog`, `about`, …) via Claude
-- LLM-written descriptions, section names, and scoring — tuned to the site's inferred genre
-- Site-genre detection (23 categories: `developer_docs`, `api_reference`, `technical_knowledge_base`, `help_center`, `saas_product`, `marketing_site`, `ecommerce_store`, `marketplace`, `media_publication`, `blog`, `community_forum`, `social_platform`, `event_site`, `entertainment`, `government`, `academic_research`, `nonprofit`, `corporate`, `portfolio`, `personal`, `landing_page`, `directory_listing`, `generic`) — steers section naming and preamble tone
-
-**Output**
-- Spec-compliant `llms.txt` assembly with generated preamble and importance-ordered sections
-- Curated external references included in output
-- In-browser spec validator + read-only result view + copy / download
-
-**Shared cache**
-- Globally-shared page cache: one canonical result per URL, reused across all users — anon and signed-in alike
-- 24-hour TTL (configurable) — POSTs to stale pages trigger a fresh crawl
-- In-flight attach: two submissions of the same URL during an active crawl share one job rather than kicking off a duplicate
-
-**Accounts**
-- Supabase OAuth sign-in (GitHub + Google); anonymous access to the generate + view paths remains fully supported
-- Per-user dashboard of every page they requested, with infinite scroll, remove-from-history action, and bulk ZIP download
-- **Add-to-dashboard** action on the result page — signed-in viewers landing on a shared `/p/[id]` URL they haven't seen before get a one-click save button (far-left of Copy / Download) that adds the page to their history without re-crawling; button auto-hides on URLs already saved
-- Row-Level Security on every table; service-role key used only server-side — one user cannot read another user's history even with the anon key
-- Two-bucket rate limiter on `POST /api/p` — a loose **SUBMIT** floor (60/hr anon, 300/hr auth by default) on every POST, and a tight **NEW_CRAWL** quota (3/hr anon, 10/hr auth by default) charged only when a submission dispatches a fresh pipeline run. Keyed by user id when signed in, by client IP when not. Upstash Redis state in production, in-memory fallback for local dev.
-
-**Durable queue + observability**
-- Crawl dispatch via **Upstash QStash** — signed webhook POSTs to `/api/worker/crawl`, retry-on-non-2xx up to 3 tries, `waitUntil(runCrawlPipeline(...))` fallback for local dev
-- **Sentry** error tracking with on-error session replay, grouped by `context` tag; expected failures (SSRF, bot-challenge, timeouts, budget-exhaust) filtered from issue noise
-
-**Monitoring**
-- Every generated page is monitored by default — the dashboard shows a passive "Refreshed X ago" status
-- Two refresh paths:
-  - **Daily cron** — Vercel Cron (midnight UTC) computes a signature over each monitored site's sitemap + homepage; on mismatch, a full re-crawl is dispatched and `pages.result` is refreshed. Daily is the Vercel Hobby-plan ceiling; the schedule string in `vercel.json` can be tightened to hourly (`0 * * * *`) on a Pro plan.
-  - **Request-driven TTL** — when anyone requests a URL through POST whose cached result is older than 24h (`PAGE_TTL_HOURS` in `lib/config.ts`), a fresh crawl is triggered on the spot. The old `pages.result` is preserved until the new one completes, so no request is ever served an empty result.
-- Cron also sweeps: jobs wedged in a non-terminal status for more than 15 minutes (`STUCK_JOB_AFTER_MS`) are force-failed so they don't block future submissions; pages not requested in the last 5 days are quietly un-monitored
-- Re-crawl fan-out runs through the QStash queue (`waitUntil` fallback in dev) — see `app/api/monitor/route.ts`
+Full detail on any of these lives in the docs under [`docs/`](./docs) — see [Further reading](#further-reading) below.
 
 ## Prerequisites
 
@@ -117,29 +83,23 @@ The full redirect chain is: browser → GitHub/Google (which has the Supabase ca
 
 | Variable | Where | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | server | Claude API for page enrichment. Without it the LLM steps degrade to deterministic fallbacks — the app still produces a spec-valid `llms.txt`, just un-enriched. |
-| `SUPABASE_URL` | server | Supabase project URL |
-| `SUPABASE_ANON_KEY` | server | Supabase anon key (used for server auth helpers) |
-| `SUPABASE_SERVICE_ROLE_KEY` | server | Bypasses RLS for store writes — **never expose to the client** |
-| `NEXT_PUBLIC_SUPABASE_URL` | browser | Same URL, exposed for the browser Supabase client |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser | Anon key exposed to the browser |
-| `CRON_SECRET` | server | A random string you generate yourself (e.g. `openssl rand -hex 32`) and set as an env var in Vercel. On every scheduled run, Vercel Cron reads this value and sends it as an `Authorization: Bearer <secret>` header on the request to `/api/monitor`; the route does a timing-safe compare against the same env var and returns `401` on any mismatch. If `CRON_SECRET` is unset the route fails closed (rejects every call), which also means `/api/monitor` is unreachable until you set one. |
+| `ANTHROPIC_API_KEY` | server | Claude API for page enrichment. Absent → LLM steps degrade to deterministic fallbacks; output is still spec-valid, just un-enriched. |
+| `SUPABASE_URL` | server | Supabase project URL. |
+| `SUPABASE_ANON_KEY` | server | Supabase anon key (for server-side auth helpers). |
+| `SUPABASE_SERVICE_ROLE_KEY` | server | Bypasses RLS — **server-only; never ship to the browser**. |
+| `NEXT_PUBLIC_SUPABASE_URL` | browser | Same URL, exposed to the browser client. |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser | Anon key, exposed to the browser. |
+| `CRON_SECRET` | server | Random string you generate (`openssl rand -hex 32`). Vercel Cron sends it as `Authorization: Bearer …` to `/api/monitor`, which timing-safe-compares. Unset ⇒ the endpoint fails closed. |
 
-**Required in production, optional locally** (all auto-injected by the respective Vercel Marketplace integrations — see [Deploying to Vercel §2](#2-provision-marketplace-integrations)):
+**Required in production, optional locally** — all auto-injected by Marketplace integrations (see [Deploying to Vercel §2](#2-provision-marketplace-integrations)).
 
-| Variable | Where | Purpose |
-|---|---|---|
-| `UPSTASH_REDIS_REST_URL` | server | Upstash Redis REST endpoint. Backs the production rate limiter. **Required on Vercel deploys** — `lib/rateLimit.ts` throws at module load time if either this or `UPSTASH_REDIS_REST_TOKEN` is missing and `VERCEL=1` is set. The fail-fast is deliberate: silently falling back to per-instance in-memory buckets in production would let an attacker bypass rate limits by triggering cold starts or autoscale events. Only the local dev path (no `VERCEL` env) keeps the in-memory fallback. |
-| `UPSTASH_REDIS_REST_TOKEN` | server | Token pair for the URL above. Same boot-time requirement on Vercel. |
-| `QSTASH_TOKEN` | server | Authenticates publishes to Upstash QStash from `lib/jobQueue.ts`. If absent, the publisher falls back to `waitUntil(runCrawlPipeline(...))` — same instance runs the crawl, no mid-pipeline retry safety. |
-| `QSTASH_URL` | server | QStash region-specific base URL (e.g. `https://qstash-us-east-1.upstash.io`). **Required** alongside `QSTASH_TOKEN` for accounts outside `eu-central-1` — without it the SDK silently publishes to the wrong region and messages never land. The Marketplace integration sets this automatically. |
-| `QSTASH_CURRENT_SIGNING_KEY` | server | Verifies incoming QStash webhook signatures at `/api/worker/crawl`. |
-| `QSTASH_NEXT_SIGNING_KEY` | server | Rotated signing key; SDK accepts either. |
-| `QSTASH_WORKER_URL` | server | *Optional.* Explicit callback URL QStash should POST back to. When unset, `resolveWorkerUrl()` in `lib/jobQueue.ts` derives it from `VERCEL_PROJECT_PRODUCTION_URL` (stable public alias — preferred) or `VERCEL_URL` (per-deployment, gated by Deployment Protection). Set this explicitly if you're running a preview deploy or tunneling locally. |
-| `NEXT_PUBLIC_SENTRY_DSN` | browser + server | Sentry ingest DSN. Copy from Sentry → Project Settings → Client Keys. Safe to expose — it's an ingest-only identifier. If unset, the Sentry SDK silently no-ops. |
-| `SENTRY_AUTH_TOKEN` | build-time | Used by `withSentryConfig` in `next.config.ts` to upload source maps during the Vercel build. Auto-injected by the Vercel Sentry integration. |
-| `SENTRY_ORG` | build-time | Sentry org slug, used alongside the auth token for source-map upload. |
-| `SENTRY_PROJECT` | build-time | Sentry project slug. |
+| Variable | Purpose |
+|---|---|
+| `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` | Back the production rate limiter. Vercel deploys fail fast at module load if either is missing (the in-memory fallback isn't safe in prod — see [`SECURITY.md §2`](./docs/SECURITY.md#2-abuse--rate-limiting)). |
+| `QSTASH_TOKEN` + `QSTASH_URL` + `QSTASH_CURRENT_SIGNING_KEY` + `QSTASH_NEXT_SIGNING_KEY` | Authenticate and sign the crawl queue. Missing `QSTASH_TOKEN` ⇒ `waitUntil` fallback (no retry durability); mis-configured region for `QSTASH_URL` ⇒ silent drops — documented in [`SCALING.md §4`](./docs/SCALING.md#4-integration-gotchas-lessons-from-shipping-phase-2). |
+| `QSTASH_WORKER_URL` | *Optional.* Explicit callback URL override; usually unnecessary (see SCALING.md §4). |
+| `NEXT_PUBLIC_SENTRY_DSN` | Sentry ingest DSN (safe to expose). Unset ⇒ SDK no-ops. |
+| `SENTRY_AUTH_TOKEN` + `SENTRY_ORG` + `SENTRY_PROJECT` | Build-time, for source-map upload via `withSentryConfig`. |
 
 ### Scripts
 
@@ -210,12 +170,9 @@ After the first deploy, copy the production domain and add it to Supabase:
 
 Also update each OAuth provider's allowed callback to the Supabase callback URL (unchanged from the local setup) — OAuth flows go browser → Supabase → app, so the provider only needs to know about Supabase.
 
-### 5. Cron + function limits + QStash callback
+### 5. Platform config
 
-- `vercel.json` schedules `/api/monitor` at `0 0 * * *` (daily, midnight UTC). On **Hobby** this is the most frequent allowed cadence; on **Pro** you can change it to `0 * * * *` for hourly.
-- `/api/p`, `/api/monitor`, and `/api/worker/crawl` are set to `maxDuration: 300` — Fluid Compute default, available on all plans as of the 2025 timeout bump.
-- Vercel automatically injects `CRON_SECRET` as the `Authorization: Bearer …` header on cron invocations. If the env var is unset the route fails closed (`401`).
-- **QStash callbacks** land on the worker route via the stable production alias (`VERCEL_PROJECT_PRODUCTION_URL`, e.g. `llm-text-generator.vercel.app`), not the per-deployment URL (which is gated by Vercel's Deployment Protection). `lib/jobQueue.ts` → `resolveWorkerUrl()` prefers the alias; no setup required unless you're on a preview deploy or behind a custom domain.
+`vercel.json` already sets the cron schedule (`/api/monitor` daily — tighten to hourly on Pro) and raises `maxDuration` on the long-running routes. Vercel Cron injects `CRON_SECRET` as the `Authorization: Bearer …` header automatically. QStash callbacks land on the stable production alias out of the box; preview deploys or custom domains need `QSTASH_WORKER_URL` set explicitly — see [`SCALING.md §4`](./docs/SCALING.md#4-integration-gotchas-lessons-from-shipping-phase-2) for the gotchas that will otherwise silently drop messages.
 
 ### 6. Verify
 
@@ -246,98 +203,11 @@ Then open your Sentry project's **Issues** tab; the error should appear within ~
 
 Finally, open the site, sign in with GitHub or Google, generate a URL, and check the dashboard.
 
-## Architecture
+## Architecture at a glance
 
-```
-app/
-  layout.tsx, page.tsx,           Root shell + landing page. layout.tsx is async,
-    LandingClient.tsx             resolves auth, renders the persistent GlobalHeader.
-  components/                     Cross-route UI chrome
-    AppHeader.tsx                 Sticky logo + nav shell (center + right slots)
-    GlobalHeader.tsx              Mounted once in root layout; hides itself on /p/{id}
-    NavAuth.tsx                   Dashboard ↔ Generate link swap + UserMenu
-    UserMenu.tsx                  Avatar (OAuth picture → initials fallback) + sign-out
-    ConfirmDialog.tsx             Accessible confirm dialog (used by JobActions)
-  p/[id]/                         Result viewer
-    page.tsx                      RSC — fetches job + user, streams initial state
-    PageView.tsx                  Client — AppHeader + poll loop + ProgressPane / ResultPane
-    ProgressPane.tsx, ResultPane.tsx
-    types.ts, useVisibleStatus.ts
-  dashboard/                      Per-user page history + monitor status
-    page.tsx, PageList.tsx,       Server list + infinite-scroll client + live-refresh
-    MonitorStatus.tsx,            for any row whose latest job is still running
-    JobActions.tsx, DownloadButton.tsx
-  login/                          OAuth sign-in (GitHub / Google)
-  auth/callback/                  Supabase auth callback
-  api/p/                          POST create a crawl
-  api/p/[id]/                     GET page status by pages.id UUID + scrubError helper
-  api/p/request/                  DELETE remove URL from user's history
-  api/pages/                      GET paginated user history (dashboard)
-  api/pages/download/             GET bulk-download history as a zip
-  api/monitor/                    GET cron entrypoint (CRON_SECRET gated)
-  api/worker/crawl/               POST QStash-signed crawl worker — the actual pipeline host
-  global-error.tsx                App Router root error boundary → Sentry
+Next.js App Router on Vercel Fluid Compute, Supabase Postgres for durable state, Upstash Redis + QStash for rate-limit state and the crawl queue, Claude Haiku for LLM work. Three Supabase tables — `pages` (canonical per-URL result cache), `jobs` (one row per crawl execution), `user_requests` (signed-in history) — with Row-Level Security on all three.
 
-lib/
-  config.ts                       Tunable constants (TTLs, limits, rate limits, retries)
-  env.ts                          Typed env-var access with fail-fast checks
-  log.ts                          debugLog + errorLog — forward Errors to Sentry
-  store.ts                        Supabase-backed page + job + user-request store
-  upstash/
-    rateLimit.ts                  Two-bucket token limiter (SUBMIT + NEW_CRAWL), Upstash Redis + in-memory fallback
-    jobQueue.ts                   QStash publish + waitUntil fallback
-  supabase/                       Browser + SSR client factories
-  crawler/
-    pipeline.ts                   Orchestrates crawl → enrich → score → assemble
-    monitor.ts                    Signature + change detection for cron
-    types.ts                      Shared pipeline types
-    net/                          URL + HTTP primitives
-      url.ts, urlLabel.ts,        Normalize / cap / skip + filename helpers
-      canonicalUrl.ts             Dual www/non-www HEAD probe → canonical URL
-      safeFetch.ts, ssrf.ts,      SSRF-guarded fetch with per-hop redirect validation
-      ipRanges.ts                 Shared (browser+server) forbidden-IP classifier
-      readBounded.ts              Streaming body read with hard byte cap
-      language.ts                 Primary-language detection + locale-path helpers
-    discovery/                    Where pages come from
-      sitemap.ts, robots.ts,      sitemap.xml + robots.txt parse
-      discover.ts                 Link extraction from HTML
-      fetchPage.ts                Main page fetcher
-      spaCrawler.ts               Puppeteer fallback for JS-rendered sites
-      markdownProbe.ts            .md variant probing
-    enrich/                       Per-page processing
-      extract.ts                  Cheerio-based metadata extraction
-      genre.ts, siteName.ts       Site-level inference
-      llmEnrich.ts                Claude-powered descriptions, ranking, preamble
-      score.ts                    Importance scoring with LLM + language signals
-      group.ts                    Section assignment + selection
-    output/
-      assemble.ts                 Final llms.txt string assembly
-      validate.ts                 Spec validator
-
-instrumentation.ts                Next.js hook — loads sentry.{server,edge}.config by runtime
-instrumentation-client.ts         Sentry browser SDK init (on-error replay)
-sentry.server.config.ts           Node runtime init + ignoreErrors filter
-sentry.edge.config.ts             Edge runtime init (for middleware)
-middleware.ts                     Supabase auth cookie refresh + /dashboard gate
-next.config.ts                    CSP + security headers + withSentryConfig wrapper
-supabase/migration.sql            Schema + RLS policies
-vercel.json                       Function limits + cron schedule
-```
-
-### Data model
-
-- **`pages`** — one row per URL (globally shared cache). `result` holds the generated `llms.txt`. Monitoring state (`monitored`, `last_checked_at`, `content_signature`, `last_requested_at`) lives here.
-- **`jobs`** — one row per crawl execution, FK → `pages.url`. Multiple jobs can exist per page (e.g. TTL refreshes, monitor-triggered re-crawls).
-- **`user_requests`** — tracks which pages a signed-in user has generated; powers the dashboard.
-
-### Security
-
-RLS is enabled on every table. All app traffic to Supabase goes through server-only code using the **service-role key**, which bypasses RLS. The policies below define what *would* happen if someone queried Supabase directly with the anon key:
-
-- `pages` / `jobs`: public read (these results are the product)
-- `user_requests`: `auth.uid() = user_id` — one user cannot read another user's history even with the anon key
-
-See [`docs/SECURITY.md`](./docs/SECURITY.md) for the full threat model — SSRF, abuse / cost controls, prompt-injection containment, cross-user data-leak prevention, and classic web-app risks.
+The deeper picture — component diagram, crawl-request lifecycle, pipeline stages, threat model, performance ceilings — is in [`docs/`](./docs). Start with [`SYSTEM-DESIGN.md`](./docs/SYSTEM-DESIGN.md) for the visual overview, then [`DESIGN.md`](./docs/DESIGN.md) for the rationale.
 
 ## Further reading
 

@@ -9,8 +9,11 @@ deferred, and where to look when something breaks in production.
 
 **Sentry (error tracking).** Grouped issues, stack traces with source
 maps, on-error session replay, release tagging tied to Vercel deploys.
-Free tier: 5 K errors, 10 K performance events, 50 replays per month,
-30-day retention, 1 seat. Sufficient for this project's scale.
+The free tier is comfortably enough for this project's volume (see
+Sentry's plans page for current limits); the two constraints we
+actively manage against it are replay sampling (on-error only,
+configured in `instrumentation-client.ts`) and noise filtering
+(§3 below).
 
 **Vercel runtime log viewer (built-in).** 1-hour retention on Hobby
 plan, longer on Pro. Useful for tailing during a deploy or reproducing
@@ -47,21 +50,21 @@ public bundle.
 
 ## 3. What Sentry ignores on purpose
 
-These show up in `sentry.server.config.ts` → `ignoreErrors`. They're
-things we already catch and handle gracefully; letting them open as
-new Sentry issues would drown out real signal.
+`sentry.server.config.ts` → `ignoreErrors` filters the classes of
+failure we expect and already handle. Letting them open as new issues
+would drown the signal. The current list covers:
 
-| Pattern | Source | Why ignored |
-|---|---|---|
-| `UnsafeUrlError` / `Unsafe URL (…)` / `forbidden IP range` | `lib/crawler/net/ssrf.ts` | User submitted a private / metadata / loopback URL. Product behaviour, not a bug. |
-| `Bot challenge page` | `lib/crawler/fetchPage.ts` | Cloudflare / PerimeterX / similar WAF interstitial on the target site. Nothing we can fix. |
-| `Response too large` | `lib/crawler/net/readBounded.ts` | Target response exceeded the 5 MB / 10 MB cap. By design. |
-| `^HTTP 4\d\d` | `lib/crawler/fetchPage.ts` | Target returned 4xx. User-provided URL; not our bug. |
-| `^Timeout$` | `lib/crawler/fetchPage.ts`, `lib/crawler/sitemap.ts`, etc. | Target site didn't respond within the per-fetch budget. |
-| `Exceeded time budget` | `lib/crawler/pipeline.ts` | Pipeline hit the 270 s cap. Already written as `status: "failed"` on the job row. |
+- **SSRF rejections** — user submitted a private / metadata / loopback URL. Product behaviour.
+- **Target-site 4xx** — the submitted URL returned 4xx. Not our bug.
+- **Target-site timeouts** — the site didn't respond within the per-fetch budget.
+- **Bot-challenge interstitials** — Cloudflare / PerimeterX / similar WAF pages. Nothing we can fix.
+- **Response-too-large** — target exceeded the configured byte cap. By design.
+- **Pipeline-budget exhaust** — we hit the wall-clock cap; already recorded as `status: failed` on the job row.
 
-Adjust the list if one of these starts meaning something real (e.g.
-timeouts from a specific target becoming a customer complaint).
+See the file for the exact regex patterns; that's the source of truth
+and it changes more often than this doc should. Adjust the list if
+one of these starts meaning something real (e.g. timeouts from one
+specific target becoming a customer complaint).
 
 ---
 
@@ -114,54 +117,16 @@ In rough order of useful-first:
 
 ---
 
-## 6. What a "production-grade" setup would add
+## 6. What a production-grade setup would add
 
 Deferred by design; worth listing for a reviewer.
 
-### The big next step: Axiom on Vercel Pro
+**The big next step — an external log aggregator** (Axiom is the natural choice via the Vercel Marketplace, but Datadog / Better Stack would work too). Sentry answers *what broke*; a log aggregator answers *is the system healthy, are the trends moving the right way* — crawl-duration percentiles, cache-hit ratio, Upstash-fail-open frequency, queue-fallback rate. These signals live in `console.warn` / `console.info` lines today (they don't belong in Sentry), so they're invisible beyond the short Vercel-logs retention window.
 
-**Gate:** Vercel **Log Drains** — the mechanism every traditional log
-aggregator uses for auto-ingestion from Vercel — is a Pro-tier-only
-feature ($20/mo). That's why Axiom / Datadog / Better Stack show as
-unavailable on the current Hobby plan. Upgrading to Pro unlocks all
-of them simultaneously; the tighter hourly-cron cadence is an
-independent bonus of the same upgrade.
+The gate on shipping it is Vercel Pro — log drains are a Pro-tier feature. Once we're on Pro, any of the marketplace aggregators is a one-click install; the app's log lines are already `[context] message`-shaped and parse cleanly as events. A polish pass on `lib/log.ts` to emit JSON (e.g. via `pino`) would make field-indexed queries easier, but isn't a prerequisite.
 
-**Recommended choice: Axiom** via its Vercel Marketplace integration.
-- Native one-click install (unified billing through Vercel once on Pro).
-- Free tier: **0.5 GB/month ingest, 30-day retention** — fits this
-  app's volume comfortably.
-- APL query language; tail + dashboard + alert-rules in one product.
+**Other items worth listing:**
 
-**What Axiom adds that Sentry doesn't catch:**
-
-| Signal | Where it lives today | Value of Axiom capturing it |
-|---|---|---|
-| `[rateLimit] Upstash call failed, FAILING OPEN: …` | `lib/upstash/rateLimit.ts`, `console.warn` | Trend: is Redis intermittently flaky, or did we silently disable rate limiting platform-wide? Sentry skips it by design (not an Error). |
-| `[enqueueCrawl] branch=qstash\|fallback:*` | `lib/upstash/jobQueue.ts`, `console.info` | Alert when `fallback:*` rate spikes — means QStash state has drifted, queue is quietly not getting used. |
-| `[pipeline]` step durations / success rates | `lib/store.ts` updates + implicit from status transitions | P50 / P95 crawl duration, % hitting `partial`, deterministic-fallback rate on LLM calls. Sentry traces show slices of this but aren't a time-series tool. |
-| Successful crawls + cache-hit counts | `api/p` response paths, no dedicated log line | Answers "how many unique URLs today", "cache-hit ratio over the week" — not possible without an aggregated log stream. |
-
-Rule of thumb: **Sentry answers "what broke"; Axiom answers "is the
-system healthy and are the trends moving the right way."** At
-take-home scale the first question dominates. At production scale the
-second becomes equally important.
-
-**Migration effort if we go there:** ~30 minutes. One-click install
-from the Vercel Marketplace provisions the Axiom dataset and sets up
-the log drain. The app already emits structured-enough log lines
-(`[context] message`) that Axiom can parse as events without a code
-change. A later polish pass would move `lib/log.ts` to a JSON logger
-(`pino`) so Axiom can index by field — makes queries like
-"count denials by userId per hour" trivial instead of regex-heavy.
-
-### Other deferred items
-
-- **Sentry Performance at non-10 % sampling.** We ship `tracesSampleRate:
-  0.1`. Raise if we actually need trace coverage.
-- **Release-health alerts.** Auto-alert on error-rate regression per
-  release (Sentry feature). One toggle in the Sentry dashboard.
-- **Vercel Speed Insights.** Real-user Core Web Vitals. Free tier.
-  Only matters if frontend perf starts being a complaint.
-- **Structured-data logger** (`pino` / `winston`). Prerequisite for
-  field-indexed queries in whichever aggregator we pick.
+- **Sentry Performance sampling.** We ship at 10 %. Raise when actively chasing a perf regression.
+- **Release-health alerts.** One toggle in the Sentry dashboard.
+- **Vercel Speed Insights.** Real-user Core Web Vitals. Flip on if frontend performance starts being a complaint.

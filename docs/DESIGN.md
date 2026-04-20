@@ -10,7 +10,7 @@ The design is tight on purpose. Every URL produces one shared, globally-visible 
 
 1. **LLM does the judgment calls; deterministic code does the plumbing.** Every decision that requires taste is the LLM's: which of the discovered URLs are worth spending the 25-page budget on (`rankCandidateUrls`), how important each crawled page is on a 1–10 scale (`enrichBatch`), what section to put it in, what its description should say if the page didn't provide one, the site's brand name (`llmSiteName`), and the site's intro paragraph (`generateSitePreamble`). The deterministic layer handles the mechanics around those calls: robots/sitemap discovery, per-URL fetch + metadata extraction, SSRF validation, a base numeric score from structural signals (description present, `.md` sibling, JSON-LD, body length, URL-shape penalties), deduplication, and final markdown assembly.
 
-   Where the two layers meet — selection and section assignment — the LLM's output is the dominant input. The importance rating folds into the score as `(importance − 5.5) × 5`, contributing roughly ±23 on top of base signals that cap around +75; that's large enough to flip pages across the primary (≥ 50) and optional (15–49) thresholds. Section names come from the LLM's suggestion first, with path-regex inference only as a fallback when the LLM didn't supply one. So calling inclusion or grouping "deterministic" would be wrong — the thresholds and grouping rules are deterministic, but the numbers and hints they operate on are not.
+   Where the two layers meet — selection and section assignment — the LLM's output is the dominant input. The importance rating folds into the score as `(importance − 5.5) × 5`, contributing roughly ±23 on top of base signals that cap around +75; that's large enough to flip pages across the primary (≥ 40) and optional (15–39) thresholds (constants in `lib/crawler/enrich/score.ts`). Section names come from the LLM's suggestion first, with path-regex inference only as a fallback when the LLM didn't supply one. So calling inclusion or grouping "deterministic" would be wrong — the thresholds and grouping rules are deterministic, but the numbers and hints they operate on are not.
 2. **Globally-shared result per URL.** One `llms.txt` per site, reused across all users. No per-user copies; no per-user mutations. Users get their own *history* (what they've asked for), but the *result* is shared.
 3. **Crawl one URL once, keep it fresh passively.** A cached result under 24 hours old is returned immediately. A daily cron checks for upstream change on URLs that users are still actively using.
 4. **Security is a pipeline concern, not a wrapper.** SSRF validation runs at every fetch hop; rate limiting runs on every `POST /api/p`; prompt injection defenses run on every LLM call.
@@ -45,93 +45,46 @@ Three long-running routes (`app/api/p/route.ts`, `app/api/monitor/route.ts`, `ap
 
 ## 3. Data Model
 
-Three tables, all in `supabase/migration.sql`. RLS is enabled on all of them; the server uses the service-role key and bypasses RLS for writes, but the policies are the last line of defense if the anon key is ever misused.
+Three tables. The canonical DDL, indexes, and RLS policies are in `supabase/migration.sql`; the per-table RLS policy rationale is in [`SECURITY.md §4`](./SECURITY.md#4-authentication-and-authorization). This section covers the shape and why.
 
 ### `pages` — canonical per-URL cache
 
-```sql
-url                TEXT PRIMARY KEY
-id                 UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE
-result             TEXT                        -- final llms.txt, nullable until complete
-site_name          TEXT
-genre              TEXT
-crawled_pages      JSONB                       -- ScoredPage[] used by the page explorer UI
-monitored          BOOLEAN NOT NULL DEFAULT true
-last_checked_at    TIMESTAMPTZ
-last_requested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-content_signature  TEXT                        -- sha256 of sitemap + homepage, used by cron
-created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
-updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
-```
+One row per canonical URL. Holds the final `llms.txt` (`result`), the scored page list the explorer UI consumes (`crawled_pages` JSONB), LLM-extracted site metadata (`site_name`, `genre`), and the monitoring state (`monitored`, `last_checked_at`, `last_requested_at`, `content_signature`).
 
-Two identifiers live here, on purpose: `url` is the canonical dedup key (FK target for `jobs` and `user_requests`, and how the crawl pipeline keys its cache); `id` is the user-facing UUID that every `/p/{id}` URL in the product routes through. Stable across re-crawls — a monitor-triggered refresh overwrites `result` on the same `id`, so bookmarked / shared URLs keep working.
+Two identifiers, on purpose: `url` (PRIMARY KEY) is the dedup key — FK target for `jobs` / `user_requests` and the crawl pipeline's cache key. `id` (UUID) is the user-facing identifier — every `/p/{id}` URL in the product routes through it, stable across re-crawls, so bookmarked and shared URLs keep working through monitor refreshes.
 
-Every page is **monitored by default**. The monitor cron unsets that flag on pages nobody has touched in the last 5 days, to keep the daily sweep bounded.
-
-Policy: `pages_public_read` — `SELECT USING (true)`. Any client can read any completed `llms.txt`; this is intentional (share-by-link). The page UUID is the access token — v4, not enumerable without the full table.
+Every page is monitored by default; the cron unsets the flag on pages nobody has touched in the last `monitor.STALE_DAYS`, keeping the daily sweep bounded.
 
 ### `jobs` — one row per crawl execution
 
-```sql
-id          UUID PRIMARY KEY
-page_url    TEXT NOT NULL REFERENCES pages(url) ON DELETE CASCADE
-status      TEXT NOT NULL DEFAULT 'pending'    -- CHECK constraint enforces enum
-progress    JSONB NOT NULL                     -- {discovered, crawled, failed}
-site_name   TEXT
-genre       TEXT
-error       TEXT
-created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-```
+Holds status, progress, errors, and timestamps for a single crawl run. Status transitions: `pending → crawling → enriching → scoring → assembling → {complete | partial | failed}`, enforced by a `CHECK` constraint so a typo in client code can't corrupt the state machine.
 
-Status transitions: `pending → crawling → enriching → scoring → assembling → {complete | partial | failed}`. The enum is enforced by a `CHECK` constraint so a typo in client code can't corrupt the state machine.
-
-`jobs` is a history, not a cache. Every crawl — first request, user-triggered re-crawl, monitor-triggered re-crawl — creates a new row. The *result* lives on the matching `pages` row. `jobs.id` is **internal to the crawl pipeline** — the worker uses it to update row status, and the monitor cron passes it through QStash message bodies. Nothing user-facing references it; `/p/{id}` routes against `pages.id`.
-
-Policy: `jobs_public_read` — `SELECT USING (true)`. Job rows carry crawl-execution state (status, progress, timestamps, error) and no user-identifying data; they're safe to expose at the policy layer even though the app accesses them exclusively through the service-role key.
-
-Index `idx_jobs_page_status_created(page_url, status, created_at DESC)` backs the dashboard's "latest terminal job per page" lookup.
+`jobs` is a history, not a cache. Every crawl — user submission, TTL refresh, monitor-triggered re-crawl — creates a new row. The *result* lives on the matching `pages` row. `jobs.id` is internal to the pipeline (worker uses it to update status, monitor cron passes it through QStash); nothing user-facing references it — `/p/{id}` routes against `pages.id`.
 
 ### `user_requests` — per-user history
 
-```sql
-id          UUID PRIMARY KEY DEFAULT gen_random_uuid()
-user_id     UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE
-page_url    TEXT NOT NULL REFERENCES pages(url) ON DELETE CASCADE
-created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-UNIQUE(user_id, page_url)
-```
-
-This is the *only* user-scoped data in the system. One row per (user, URL) pair records that a signed-in user asked for that URL. It's what the dashboard lists and what feeds the zip download.
-
-Policy: `user_requests_own` — `auth.uid() = user_id` for both USING and WITH CHECK. This is the critical policy — it's what stops one user from reading another user's history.
-
-Index `idx_user_requests_user_created(user_id, created_at DESC)` backs the paginated dashboard query.
+The *only* user-scoped data in the system. One row per `(user_id, page_url)` pair recording that a signed-in user asked for that URL. Feeds the dashboard list and the zip download. RLS on this table is what stops one user from reading another user's history — the privacy-critical policy.
 
 ### Why this shape
 
-- No per-user result copies means a popular URL produces a single `pages` row and a single crawl, regardless of how many users have asked for it.
-- `user_requests` carries no data beyond the join; overrides, notes, tags — nothing. Deleting a request removes it from your dashboard without affecting anyone else.
-- The `ON DELETE CASCADE` from `pages(url)` is wired through both `jobs` and `user_requests` so a future cleanup job could drop a page cleanly.
+- One `pages` row per URL means a popular URL crawls once regardless of how many users ask for it.
+- `user_requests` carries no data beyond the join — no overrides, notes, tags. Deleting a request removes it from your dashboard without affecting anyone else.
+- `ON DELETE CASCADE` from `pages(url)` reaches through both `jobs` and `user_requests` so a future cleanup could drop a page cleanly.
 
 ---
 
 ## 4. Auth & User Model
 
-Supabase Auth handles everything: GitHub and Google OAuth providers, SSR session cookies, server-side user lookup from the cookie.
-
-- `/lib/supabase/server.ts` — server-side client; used by API routes and server components.
-- `/lib/supabase/client.ts` — browser-side client; used for OAuth redirects and for `onAuthStateChange` wiring in the header nav.
-- `/middleware.ts` — refreshes the session cookie on every request and redirects `/dashboard` to `/login` if there is no session. Only `/dashboard` is gated.
+Supabase Auth handles identity: GitHub and Google OAuth, SSR session cookies, server-side user lookup from the cookie. `lib/supabase/{server,client}.ts` hold the factories; `middleware.ts` keeps the session cookie fresh on the routes that use it and gates `/dashboard`. Full middleware matcher + session-refresh rationale in [`SECURITY.md §4`](./SECURITY.md#4-authentication-and-authorization).
 
 The app is **optionally-authenticated** on the main flow. Anyone can generate an `llms.txt` without signing in. Sign-in unlocks:
 
 - `/dashboard` (history list)
-- Higher rate limits (300/hr submit + 10/hr new crawls vs 60/hr + 3/hr anon — see §Rate limiting)
+- Higher rate limits (see [`SECURITY.md §2`](./SECURITY.md#2-abuse--rate-limiting) for the bucket table)
 - `GET /api/pages` + `GET /api/pages/download` (history API + zip export)
 - Remembering what you've asked for across devices
 
-There is no preview/full mode distinction. Every crawl uses the same budget: 25 pages, depth 2. The only difference an account makes is how many crawls you can request per hour and whether the result shows up in your history.
+There is no preview/full mode distinction. Every crawl uses the same budget. The only difference an account makes is how many crawls per hour you can request and whether the result lands in your history.
 
 ---
 
@@ -154,24 +107,28 @@ All routes live under `/app/api`.
 
 ### `POST /api/p` — the hot path
 
-Every new-crawl request lands here. The route:
+Every new-crawl request lands here. The flow is four gates then a branch:
 
-1. Parses and validates the URL (`≤ 2048` chars, http(s)).
-2. Looks up the principal: `user.id` if signed in, else the client IP. Consumes the **SUBMIT** token bucket — `AUTH_SUBMIT` (300/hr) or `ANON_SUBMIT` (60/hr) — a loose abuse floor charged on every POST. On miss, returns `429` with `reason: "submit_flood"`, `retryAfterSec`, and (for anon users) `signInPrompt: true`. Later, if the request branches into the new-crawl path, the tight **NEW_CRAWL** bucket — `AUTH_NEW_CRAWL` (10/hr) or `ANON_NEW_CRAWL` (3/hr) — is charged too; a denial at that point returns `429` with `reason: "new_crawl_quota"`. Cache-hit and in-flight-attach submissions *never* touch the new-crawl bucket, so a user whose new-crawl quota is exhausted can still reach already-cached URLs.
-3. **Pre-resolution cache check.** Most cached URLs are keyed under one of the two raw forms (with / without `www.`) of the submitted URL, so we try `tryServeAt(rawKey)` and `tryServeAt(altWwwKey)` first — a cache hit or in-flight attach here returns immediately without paying for a HEAD probe.
-4. **Canonical URL resolution.** If both raw forms miss, `resolveCanonicalUrl` (`lib/crawler/canonicalUrl.ts`) probes both www/non-www variants in parallel via SSRF-validated HEAD requests. If they resolve to the same final URL, we honor the server's preference; if they resolve independently, we strip `www.` as a dedup convention. `normalizeUrl` then strips tracking and per-request session / OAuth tokens (e.g. Google's `dsh` / `ifkv` / `osid`) so the cache key is stable across resubmissions.
-5. **Post-resolution cache check.** If the canonical URL differs from both raw forms we already tried (e.g. the server redirected to a different hostname), `tryServeAt(canonicalUrl)` gets one more shot at a cache hit.
-6. **New crawl.** Consumes the **NEW_CRAWL** bucket, then creates a new `jobs` row and calls `enqueueCrawl(jobId, url)` (`lib/upstash/jobQueue.ts`), which publishes to QStash if `QSTASH_TOKEN` is set and falls back to `waitUntil(runCrawlPipeline(...))` for local dev. Either way the HTTP response returns immediately; the actual crawl runs later in the worker (`app/api/worker/crawl/route.ts` for the QStash path, the caller's own Fluid Compute instance for the fallback).
-7. On all three branches (cache-hit, in-flight attach, new crawl), if the user is signed in, `upsertUserRequest` adds the URL to their dashboard history. The row is an upsert against `UNIQUE(user_id, page_url)` so re-submissions don't duplicate.
+1. **Origin check** (`isAllowedOrigin`) — rejects cross-origin POSTs; requests with no `Origin` header pass through (not CSRF vectors). Defence-in-depth on top of the `SameSite=Lax` session cookie.
+2. **URL parse + validation** — reject missing / non-string / over-length / non-http(s) URLs with `400`.
+3. **SSRF gate** (`assertSafeUrl`) — runs *before* rate-limit consumption, so loopback / RFC1918 / metadata-IP / non-default-port / DNS-unresolvable URLs never reach the DB or a token-bucket slot. `createJob` re-runs this check in defence-in-depth, which guarantees no unsafe URL can ever persist a `pages` or `jobs` row regardless of how the caller reached `createJob`.
+4. **SUBMIT rate-limit** — keyed by `user.id` or client IP. Denial → `429 { reason: "submit_flood", retryAfterSec, signInPrompt }`. NEW_CRAWL is charged separately, below, only when the request actually dispatches a crawl. See [`SECURITY.md §2`](./SECURITY.md#2-abuse--rate-limiting) for the full bucket table.
+
+Past the gates, the route tries to avoid work:
+
+- **Cache / in-flight check** — we try up to three keys (raw, `www.`-alternate, and canonical-after-HEAD-probe) because most repeat submissions match one of the first two without paying for a HEAD request. Canonicalisation uses a dual www/non-www probe (via `resolveCanonicalUrl` in `lib/crawler/net/canonicalUrl.ts`) and strips tracking + per-request session/OAuth tokens so the cache key stays stable across resubmissions. Any hit (cached terminal result or in-flight job we can attach to) returns the matching `page_id` immediately.
+- **New crawl** — on a full miss: charge the NEW_CRAWL bucket, insert a `jobs` row, and call `enqueueCrawl(jobId, url)` (QStash in prod, `waitUntil` fallback in dev). The HTTP response returns immediately; the actual pipeline runs later in the worker (`app/api/worker/crawl/route.ts` under QStash, the caller's own Fluid Compute instance under the dev fallback).
+
+On every branch — cache hit, in-flight attach, new crawl — a signed-in caller gets an `upsertUserRequest` written to their dashboard history (idempotent against `UNIQUE(user_id, page_url)`).
 
 ### `GET /api/p/[id]` — the poll target
 
-Client polls every `ui.POLL_INTERVAL_MS` (1.5s) until the job is terminal. The route:
+Client polls every `ui.POLL_INTERVAL_MS` until the job is terminal. The route:
 
-- Fetches the `jobs` row and, for terminal statuses, joins on `pages` for `result` and `crawled_pages`.
-- Calls `bumpPageRequest(pageUrl)` on every non-failed status so `pages.last_requested_at` advances even while a user is watching a mid-flight job. This is how active pages stay monitored. Terminal responses are CDN-cached (below), so the bump fires once per edge-cache window rather than on every poll — still well under the 5-day sweeper threshold.
-- Scrubs the `error` field (removes resolved IPs and SSRF-specific detail from user-facing text).
-- Sets `Cache-Control: public, s-maxage=86400, stale-while-revalidate=604800` on terminal responses — 1 day fresh, 7 days stale-while-revalidate. The long TTL is a safety net; freshness is maintained by **write-side invalidation**: when `updateJob` writes a new terminal result, it calls `revalidatePath('/api/p/:id')` for every job id that maps to the URL. This is required because `getJob` resolves `job.result` through `pages.result` by `page_url`, so a monitor re-crawl changes the JSON for every historical job id sharing the URL. The TTL only matters if a `revalidatePath` call is dropped, a deploy changes the response schema, or someone writes to Supabase outside of `updateJob` — in those cases the cache self-heals within a day rather than staying stale indefinitely. In-flight responses return `no-store` to keep progress live.
+- Looks up the page by UUID, joining to the latest job for status/progress/error and (when terminal) the cached `result` + `crawled_pages`.
+- Bumps `last_requested_at` on every non-failed poll so active pages stay monitored.
+- Scrubs the `error` field (see [`SECURITY.md §9`](./SECURITY.md#9-error-information-disclosure)) so user-facing text doesn't leak resolved IPs or SSRF detail.
+- Sets a long public Cache-Control on terminal responses so Vercel's CDN handles repeat polls. Freshness comes from **write-side invalidation** — `updateJob` calls `revalidatePath` on the page's `/api/p/{id}` whenever a terminal result is written — rather than the TTL. The TTL is a safety net for dropped revalidations, schema changes, or direct-SQL writes; the common path never waits for it. In-flight polls return `no-store` so progress stays live.
 
 ### `GET /api/monitor` — daily sweep
 
@@ -181,151 +138,84 @@ See §8.
 
 ## 6. Crawl Pipeline
 
-All of this lives in `/lib/crawler/`. The entry point is `runCrawlPipeline(jobId, targetUrl)` in `pipeline.ts`.
+`runCrawlPipeline(jobId, targetUrl)` in `lib/crawler/pipeline.ts` is the entry point. For the stage-by-stage narrative (discovery → enrichment → scoring → assembly) see [`SYSTEM-DESIGN.md §3`](./SYSTEM-DESIGN.md#3--pipeline-stages-what-the-progress-ui-shows); this section covers the pipeline decisions that narrative doesn't: where the LLM/deterministic line is drawn, how scoring selects pages, how the pipeline self-terminates, and the SPA fallback.
 
-```
-normalize + SSRF-check
-  ↓
-robots.txt (disallows + sitemap references)
-  ↓
-sitemap(s) — up to 3 sources, capped at 500 URLs total
-  ↓
-homepage fetch (plain HTTP first, Puppeteer fallback if SPA / blocked)
-  ↓
-if sitemap was sparse: extract nav links from homepage
-  ↓
-capByPathPrefix: max 5 URLs per 2-segment path prefix
-  ↓
-LLM rank: Claude reorders candidate URLs by likely value
-  ↓
-Worker pool (5 non-SPA, 1 SPA): fetch + extract metadata for each URL
-   - per-page: streaming HTML fetch (capped at RESPONSE_MAX_BYTES = 5 MB) + cheerio parse → ExtractedPage
-   - probe for a .md sibling (HEAD, then lightweight GET)
-   - discover more links if depth < MAX_DEPTH (2)
-   - politeness: robots.txt Crawl-delay enforced as a shared clock across
-     workers (capped at MAX_CRAWL_DELAY_MS = 10 s); when no directive is
-     set, a per-worker POLITENESS_DELAY_MS = 300 ms baseline applies
-   - hard caps: crawler.MAX_PAGES = 25, crawler.PIPELINE_BUDGET_MS = 270s
-  ↓
-genre detection (23 categories: developer_docs, api_reference,
-                 technical_knowledge_base, help_center, saas_product,
-                 marketing_site, ecommerce_store, marketplace,
-                 media_publication, blog, community_forum, social_platform,
-                 event_site, entertainment, government, academic_research,
-                 nonprofit, corporate, portfolio, personal, landing_page,
-                 directory_listing, generic) from homepage HTML + URL
-                 patterns — priority-ordered so narrower subtypes match
-                 before broader siblings
-  ↓
-resolveExternalReferences: homepage-only outbound anchors → LLM ranks
-  down to crawler.EXTERNAL_REFS_MAX_KEEP (8) → each fetched once for
-  metadata (no link discovery, depth 1 only) → merged into the page set
-  ↓
-LLM enrich (enrichBatch, batches of 20): returns importance 1–10,
-  section hint, and a description where missing
-  ↓
-scorePages: structural signal weights (description presence, .md availability,
-  JSON-LD, body length, URL-shape penalties) plus (importance − 5.5) × 5 from the LLM
-  (genre is passed in but not currently used inside scorePages)
-  ↓
-assignSections: score ≥ 50 → primary (LLM-hinted or path-inferred section)
-                15–49   → Optional
-                < 15    → excluded
-  ↓
-filterAndSelectPages: dedupe by hostname+path, homepage excluded,
-  cap primary at 50 and optional at 10 (60 total, sorted by score desc)
-  ↓
-generateSitePreamble: Claude writes a 1–3 sentence intro given genre + selected pages
-  ↓
-assembleFile: H1 + blockquote summary + preamble + H2 sections + Optional
-  ↓
-terminal status:
-   crawled = 0                 → failed
-   attempted ≥ 5 & rate < 50%  → partial
-   otherwise                   → complete
-```
+### Where the LLM line is drawn
 
-The pipeline runs under a 270-second timeout enforced via `Promise.race`. If the timeout wins, the job is flipped to `failed` with a clean error; otherwise the inner function has already written its own success/failure state.
+Per the design principle in §1: every taste call is the LLM's (which URLs to crawl under the 25-page cap, per-page importance + section label, brand name, site preamble), every mechanical call is deterministic (robots/sitemap parsing, fetch + extraction, SSRF validation, scoring math, markdown assembly).
+
+The LLM does **not** decide:
+- **Final link ordering inside a section** — deterministic sort by score descending.
+- **File assembly** — `assembleFile()` is pure text construction.
+- **Whether a page lands in Optional** — pages below the primary threshold are always Optional (or excluded below the include threshold), regardless of what section the LLM suggested.
+
+### Scoring and selection
+
+`scorePages` produces a numeric score per page by combining structural quality signals (description presence, `.md` sibling, JSON-LD, headings, body length — all additive) with URL-shape anti-patterns (pagination, print/export, tag/category/archive/author paths — all subtractive) and the LLM's importance rating folded in as `(importance − 5.5) × 5`, giving roughly a ±23-point swing on top of base signals that cap around +75. There's also a soft off-primary-language penalty so locale duplicates sink below their primary-language twins (see `language.ts`).
+
+Three thresholds, all in `lib/crawler/enrich/score.ts` (`PRIMARY_SCORE_THRESHOLD`, `INCLUDE_SCORE_THRESHOLD`):
+
+- **Primary** (high score) — page lands under its LLM-hinted section (with path-regex inference as fallback if the LLM didn't supply one).
+- **Optional** (middling score) — page lands under `## Optional`.
+- **Excluded** (below include threshold) — dropped.
+
+`filterAndSelectPages` then dedupes by hostname+path (so `/foo` and `/foo/index.html` collapse), excludes the base-domain homepage (redundant with the H1), and caps the output at 50 Primary + 10 Optional. A single-page-site rescue puts the homepage back in Optional if both buckets would otherwise be empty — so one-page SPAs still produce a valid (minimal) file rather than failing.
+
+(`scorePages` takes a `genre` argument it currently ignores — an earlier design spec'd genre-specific weight modifiers that were never implemented. Genre is still used by the LLM prompts + preamble.)
+
+### Terminal status
+
+At the end of a crawl the job flips to one of three terminal states:
+
+- **`failed`** — no pages were successfully fetched, OR both output buckets (primary + optional) are empty. The second case catches SPAs our detector missed whose Puppeteer render also produced nothing: better a clean failure than a degenerate `# <SiteName>` stub.
+- **`partial`** — we fetched at least a handful of URLs but more than half of the attempts failed along the way. Intentionally gated at ≥ 5 attempts so a 2-page site with one timeout doesn't read as partial.
+- **`complete`** — everything else.
+
+### Self-termination
+
+The pipeline runs under a `PIPELINE_BUDGET_MS` (currently 270 s — see `lib/config.ts`) timeout driven by an `AbortController`. A `setTimeout(ac.abort, PIPELINE_BUDGET_MS)` fires the signal; the inner pipeline calls `signal.throwIfAborted()` at each stage boundary and bails as soon as the budget is gone. The outer `catch` flips the job to `failed` with a clean error. This replaced an earlier `Promise.race` implementation that returned promptly but left the inner pipeline running orphaned in the background — still consuming compute + Anthropic spend on work no one was waiting for.
 
 ### SPA handling
 
-`isSpaHtml(html, bodyExcerpt)` in `spaCrawler.ts` flags a response as SPA if the HTML is large but visible text is tiny, or if framework markers (`data-reactroot`, `ng-app`, unexpanded `{{ … }}`) are present, or if the plain fetch was blocked entirely. When triggered, the pipeline launches headless Chromium (`@sparticuz/chromium` on Vercel, bundled `puppeteer` locally), navigates with resource-blocking on for images/fonts/media, and uses the rendered DOM for both extraction and link discovery. Puppeteer is single-threaded within a job, so `CONCURRENCY` is forced to 1 when the browser path is active.
-
-### Per-page extraction
-
-`extractMetadata(url, html)` in `extract.ts` derives, in priority order:
-
-- **Title:** `og:title` → `<title>` → first `<h1>`.
-- **Description:** JSON-LD → `og:description` → `<meta name=description>` → first sentence of cleaned body → heading fallback → `none`. The winning source is stored as `descriptionProvenance` and used by the scorer to prefer structured sources over derived ones.
-- **Body excerpt:** up to `crawler.EXCERPT_MAX_BYTES` (4 KB UTF-8) of cleaned text from the main content area, with nav/footer/aside stripped.
-- **Canonical URL + lang** from standard tags.
-- **`.md` sibling:** `probeMarkdown(url)` tries `{url}.md` and, for trailing-slash URLs, `{path}index.html.md` per the spec; HEAD first, falling back to a 4 KB GET if HEAD is unreliable; validated by content-type plus lightweight markdown signals.
+`isSpaHtml(html, bodyExcerpt)` flags a response as SPA when the HTML is large but visible text is tiny, when framework markers (`data-reactroot`, `ng-app`, unexpanded `{{ … }}`) are present, or when the plain fetch was blocked entirely. On an SPA signal the pipeline launches headless Chromium (`@sparticuz/chromium` on Vercel, bundled `puppeteer` locally) with resource-blocking on for images/fonts/media, and uses the rendered DOM for both extraction and link discovery for the rest of the crawl. Puppeteer is single-threaded within a job, so worker-pool concurrency is forced to 1 when the browser path is active. The gate is one-way: once we've fallen back to Chromium we stay there, because a plain fetch that failed on the homepage is overwhelmingly likely to fail on subpages too.
 
 ### External references
 
-The same-domain filter in `extractLinksFromHtml` is correct for the crawl queue — without it, a single outbound anchor would give the crawler permission to roam the web — but leaves the output with no cross-origin entries, even when the site explicitly links to its own spec / upstream docs / closely related projects. `resolveExternalReferences` in `pipeline.ts` bridges that gap.
-
-Steps:
-
-1. **Extract homepage externals only.** `extractExternalLinksFromHtml(homepageHtml, baseUrl)` collects cross-origin anchors with their anchor text. Subpages are intentionally ignored — homepage externals are the curated set the site itself vouches for.
-2. **LLM ranks them.** `rankExternalReferences` (see §7) picks up to `crawler.EXTERNAL_REFS_MAX_KEEP` (8), dropping social-media profiles, tracking pixels, hosting badges, and similar noise.
-3. **Fetch each once, for metadata only.** `fetchPage(url)` + `extractMetadata(url, html)` runs on each kept URL in parallel. If a fetch fails, the curated reference is kept with an anchor-text-only title rather than silently dropped.
-4. **Merge into `successful`.** External entries flow through `llmEnrichPages`, `scorePages`, and `assignSections` alongside internal pages, so the LLM can place them in whatever section it thinks fits (often `Resources`, `References`, or a topic-specific label).
-
-Depth is strictly 1 for externals by construction: `resolveExternalReferences` never calls `extractLinksFromHtml` on external HTML, and the fetched URLs never enter the crawl queue. They also don't count against `MAX_PAGES`. SSRF is preserved because `fetchPage` still goes through `safeFetch`, which validates every redirect hop.
-
-### Scoring
-
-`scorePages` in `score.ts` produces a numeric score per page from:
-
-- structural signals (description presence +25, `.md` sibling +20, JSON-LD +10, headings +10, body ≥ 200 chars +10);
-- URL-shape penalties (pagination −15, print/export −20, tag/category/archive/author −25);
-- the LLM's importance rating, folded in as `Math.round((importance − 5.5) × 5)` — so `importance=10` contributes +23, `importance=1` contributes −23.
-
-Thresholds: primary ≥ 50, optional 15–49, excluded < 15. These are starting points and can be tuned without touching structure. Note: `scorePages` takes a `genre` argument but does not currently use it — the old design spec'd genre-specific weight modifiers; those were never implemented. Genre is still computed and used elsewhere (LLM prompts, preamble context).
+Same-domain filtering on the crawl queue is correct (a single outbound anchor would otherwise give the crawler permission to roam the web), but leaves the output with no cross-origin entries even when the site explicitly links to its own spec, upstream docs, or closely related projects. `resolveExternalReferences` bridges that gap: homepage outbound anchors only, LLM-ranked down to `crawler.EXTERNAL_REFS_MAX_KEEP`, each fetched exactly once for metadata (no link discovery), merged into scoring alongside internal pages so the LLM can place them in whatever section fits. SSRF is preserved — `fetchPage` still goes through `safeFetch` with per-hop validation.
 
 ---
 
 ## 7. LLM Usage
 
-Five call sites, all pinned to `claude-haiku-4-5-20251001`:
+Five call sites, all pinned to the model in `llm.MODEL`:
 
-1. **`rankCandidateUrls`** — given up to `llm.RANK_MAX_KEEP` (120) URLs plus the site name and homepage excerpt, return the list re-ordered by likely value. Skipped entirely for candidate lists below `llm.RANK_SKIP_BELOW` (10).
-2. **`enrichBatch`** (called from `llmEnrichPages`) — batches of `llm.ENRICH_BATCH_SIZE` (20) pages, run in parallel. Per page, returns `importance` (1–10), a `section` label, and a `description` (the LLM rewrites even when the page had one — replacement is kept only if it differs; provenance is then flipped to `llm`). The `section` value is the *primary* signal for primary pages (score ≥ 50); the path-regex inference runs only when the LLM didn't return a usable section. Pages with score < 50 are always placed into `Optional` regardless of what the LLM suggested.
-3. **`rankExternalReferences`** — given homepage outbound anchors (URL + anchor text) plus the site name and homepage excerpt, return up to `crawler.EXTERNAL_REFS_MAX_KEEP` (8) curated references. Prompt is tuned to keep spec / upstream / related-project links and drop social media, tracking, hosting badges, and peripheral mentions. Skipped when there's nothing to prune (candidates ≤ `maxKeep`).
-4. **`llmSiteName`** — given deterministic candidates (`og:site_name`, `application-name`, JSON-LD `name`, `<title>`, first `<h1>`) plus the hostname, returns a clean 1–4-word brand name. Falls back to the deterministic result when the LLM is unavailable or returns something unusable (see `cleanSiteName` in `siteName.ts`).
-5. **`generateSitePreamble`** — given site name, genre, and the selected pages, returns a 1–3 sentence intro paragraph for the assembled file. If this call fails, the file is assembled without a preamble rather than faking one.
+1. **`rankCandidateUrls`** — reorders the candidate URL list by likely value. Takes the whole list + site name + homepage excerpt; skipped entirely for small lists where ranking doesn't buy anything. Caps in `lib/config.ts`.
+2. **`enrichBatch`** (via `llmEnrichPages`) — processes pages in parallel batches and returns `importance` (1–10), `section` label, and `description` per page. `section` is the primary signal for pages above the primary threshold; the path-regex inference only runs when the LLM didn't return a usable section. Pages below the primary threshold always land in `Optional` regardless of what the LLM said.
+3. **`rankExternalReferences`** — curates homepage outbound anchors, keeping spec / upstream / related-project links and dropping social / tracking / hosting-badge noise. Skipped when there's nothing to prune.
+4. **`llmSiteName`** — picks a clean brand name from deterministic homepage candidates. Falls back to a deterministic guess if the LLM is unavailable or returns something unusable.
+5. **`generateSitePreamble`** — writes the 1–3 sentence intro paragraph. If the model isn't confident (explicit flag in the response schema), the file ships without a preamble rather than with refusal prose.
 
-### What the LLM does *not* decide
-
-- **Final link ordering inside a section.** Deterministic sort by score descending.
-- **File assembly.** `assembleFile()` is pure text construction given its inputs.
-- **Whether a page ends up in Optional.** Pages with a final score < 50 are always Optional (or excluded if < 15), regardless of what section the LLM suggested.
-
-Everything else — which URLs get crawled under the 25-page cap, how each page's importance shifts its score, the section name for primary pages, descriptions where the extractor found none, the site brand name, the site preamble — is LLM-driven. Two runs on the same site can produce different outputs.
+The boundaries the LLM does and does not cross are in §6 ("Where the LLM line is drawn"). One consequence worth flagging: every crawl is a little non-deterministic. Two runs on the same site can produce different section labels, descriptions, or priority orderings, all of them valid. That's the design, not a bug.
 
 ### Prompt injection defenses
 
-Every chunk of crawled content embedded in an LLM prompt is passed through `neuter()` before being inserted into the prompt. It strips tag-like constructs (`</?tag>`), strips `[[…]]` prompt-template guards, and collapses all newlines to single spaces (so an attacker can't break out of the `<untrusted_pages>` fence with line-start tricks). Prompts also wrap untrusted content in an explicit `<untrusted_pages>` block with a preamble telling the model to treat everything inside as data.
-
-On the output side, returned JSON is parsed and each field is re-validated before use: `section` must match `[\p{L}\p{N} \-&/]+` and fit within `llm.SECTION_MAX_CHARS` (30), `description` is `neuter()`'d again and truncated to `llm.DESCRIPTION_MAX_CHARS` (240), and `importance` is clamped to `[1, 10]`. Anything that doesn't match the expected shape is silently dropped so the path-based section inference in `group.ts` takes over.
+Every chunk of crawled content is sanitised before injection, wrapped in an explicit `<untrusted_pages>` fence the model is told to treat as data, and every LLM output field is re-validated against a strict shape before we use it. Full mechanism (sanitizer details, fence structure, output allowlists) in [`SECURITY.md §3`](./SECURITY.md#3-prompt-injection). The net effect: an attacker can make the LLM return garbage for its own page's description, but they can't poison a different page's output or escape the shape.
 
 ---
 
 ## 8. Monitoring
 
-`GET /api/monitor` runs daily (`"0 0 * * *"` in `vercel.json`, the Vercel Hobby-plan cron ceiling), authenticated by a timing-safe compare against `CRON_SECRET`. There is no monitor state machine — monitoring is just a cron job that compares signatures and triggers re-crawls.
+`GET /api/monitor` runs on a Vercel Cron schedule, authenticated by a timing-safe compare against `CRON_SECRET`. There is no monitor state machine — monitoring is just a cron job that compares signatures and triggers re-crawls.
 
-On each invocation:
+Each invocation does three things, in order:
 
-1. **Force-fail stuck jobs.** `sweepStuckJobs(monitor.STUCK_JOB_AFTER_MS)` flips any job wedged in a non-terminal status with an `updated_at` older than 15 minutes to `failed`. This runs first so phantom in-flight rows (worker crash past QStash's retry window) don't keep blocking future submissions for the same URL.
-2. **Sweep stale.** `sweepStaleMonitoredPages(monitor.STALE_DAYS)` sets `monitored = false` on any page whose `last_requested_at` is older than 5 days. This keeps the working set bounded to URLs people are actually using.
-3. **Fetch a batch.** `getMonitoredPages({ limit: monitor.BATCH_SIZE })` pulls up to 200 monitored pages, oldest-checked first. Pages are processed sequentially, with a `monitor.SAME_HOST_DELAY_MS` (400 ms) politeness delay when two in a row share the same host.
-4. **Compute signature.** `computeSignature(pageUrl)` in `monitor.ts` fetches the sitemap (via `fetchSitemapUrls`, which honors `crawler.SITEMAP_TIMEOUT_MS` = 10 s and `MAX_SITEMAP_URLS` = 500) and the homepage (8 s via `crawler.HOMEPAGE_FETCH_TIMEOUT_MS`) in parallel. Both go through `readBoundedText` so a server omitting or lying about `Content-Length` can't OOM the batch. Each is hashed separately — `sha256(sortedSitemapUrls.join("\n"))` and `sha256(normalizedHtml)` — then combined as `sha256("${sitemapHash}|${homepageHash}")`. If both fetches fail, it returns `null` (caller treats that as "skip this cycle"). Homepage normalization strips `<script>`, `<style>`, and comments and collapses whitespace so per-request build ids don't trigger false positives.
-5. **Compare.** `detectChange` treats the first-ever check (no stored signature) as `changed: false` — it just records the baseline. On every subsequent check, a mismatch triggers `dispatchRecrawl()`, which creates a new `jobs` row and hands it to `enqueueCrawl` (same queue path as user submissions). A match is a no-op beyond updating the timestamp.
-6. **Record.** `recordMonitorCheck(pageUrl, signature)` always updates `last_checked_at`; it only overwrites `content_signature` if the sig was computed successfully, so a transient fetch failure doesn't wipe the baseline.
+1. **Force-fail stuck jobs** — any job wedged in a non-terminal status past the stuck-job window is flipped to `failed`. Must run before `getActiveJobForUrl` elsewhere would treat those rows as phantom in-flight work.
+2. **Retire stale pages** — any page not requested in the last `monitor.STALE_DAYS` has `monitored` set to `false`, bounding the working set to URLs people are actually using.
+3. **Signature sweep** — pull the next batch of monitored pages (oldest-checked first, same-host politeness delay between hits), compute a signature over the site (sitemap URL set + normalised homepage HTML, hashed together), and dispatch a re-crawl if the signature drifted from the stored one. First-ever check just records the baseline without triggering a crawl; transient fetch failures don't overwrite the stored signature.
 
-A successful crawl also sets `last_checked_at = now()` in `updateJob()` (see `lib/store.ts:104`). So the moment a page is generated for the first time, the dashboard shows "Refreshed just now" — it doesn't dangle on "Awaiting check" until the next cron tick.
+Re-crawls flow through the same `enqueueCrawl` path as user submissions. A successful crawl stamps `last_checked_at` itself, so the dashboard shows "Refreshed just now" immediately after first generation rather than dangling on "Awaiting check" until the next cron tick.
+
+Narrower than the crawl pipeline by design: the monitor only fetches `{origin}/sitemap.xml` (not robots-declared sitemaps or `/sitemap_index.xml` indirection), because it runs on every monitored URL every tick and indirection would balloon the cost. Thresholds and sizing (`STALE_DAYS`, `BATCH_SIZE`, `SAME_HOST_DELAY_MS`, `STUCK_JOB_AFTER_MS`) live in `lib/config.ts` → `monitor`.
 
 ### Why stateless
 
@@ -335,18 +225,14 @@ An earlier draft had `monitors` and `monitor_runs` tables and a proper state mac
 
 ## 9. Frontend
 
-All pages live under `/app`. Highlights:
+Four routes: `/` (landing with the URL input), `/dashboard` (signed-in history, infinite-scroll), `/p/[id]` (live crawl progress → read-only result), `/login` (OAuth picker). The result page polls `/api/p/[id]` until the job is terminal; it also validates the final `llms.txt` against the spec in-browser and surfaces a "Spec valid" / "N issues" badge. Signed-in viewers on a shared result URL they don't yet own see an "Add to Dashboard" button that saves the URL without re-crawling.
 
-- **`/` (`app/page.tsx`)** — Landing page. URL input (auto-focused on mount), example output, "how it works" cards, sign-in upsell. Submitting the form `POST`s to `/api/p` and navigates to `/p/[id]`.
-- **`/dashboard` (`app/dashboard/page.tsx`)** — Signed-in only. Server-rendered initial page (20 items) with `force-dynamic` so the RSC cache doesn't serve stale history after navigating back from `/p/[id]`. `PageList` is a client component that does infinite-scroll via an IntersectionObserver sentinel, calling `GET /api/pages` for subsequent pages. Each row shows site name, genre, requested-at, monitor status ("Refreshed X ago"), and a delete button that calls `DELETE /api/p/request`.
-- **`/p/[id]` (`app/p/[id]/page.tsx`)** — Result viewer. Polls `GET /api/p/[id]` every 1.5 s until the job is terminal. Two panes swap in based on job state: `ProgressPane` for live crawls (animated step list with counts), `ResultPane` for complete/partial (read-only markdown block + copy + download). On terminal results, the page calls `validateLlmsTxt(result)` and renders the outcome as a "Spec valid" / "N issues" badge in the header, with an inline error list for invalid output. `ResultPane` conditionally renders an **Add to Dashboard** button (first in the action group) when the viewer is signed in and the URL isn't already in their history — resolved via `GET /api/p/request?pageUrl=…` on mount; the button fails closed (hidden) on network error so we don't prompt a save we're unsure about. Clicking it `POST`s to `/api/p/request` and hides on 201. Desktop shows the label "Add to Dashboard"; mobile collapses to the icon. Cached results trigger a short simulated-progress animation (`SIM_STEP_DURATIONS_MS`) before revealing the result so the UI doesn't snap. After `MAX_POLL_FAILURES` (5) consecutive poll errors, the page shows a "Lost connection" banner with a reload button and stops polling (circuit breaker).
-- **`/login` (`app/login/page.tsx`)** — OAuth picker (GitHub, Google).
-- **`NavAuth` (`app/NavAuth.tsx`)** — Header component, present on `/` and `/p/[id]`. Renders "Sign in" for anon users, or a Dashboard link plus an account menu (email + sign out) for signed-in users. Subscribes to `onAuthStateChange` so the UI updates without a page refresh.
-- **`ConfirmDialog` (`app/components/ConfirmDialog.tsx`)** — Generic modal, portaled to `document.body` to escape containing-block traps (an earlier embed inside a `-translate-y-1/2` wrapper broke `position: fixed`).
+Two client-side-only behaviours worth knowing about:
 
-### Client-side caching
+- **Per-tab job cache** — recently-seen crawl results are cached in memory so tabbing between dashboard and result doesn't re-fetch. Cleared on Supabase `SIGNED_OUT` so a prior user's view doesn't leak into the next session.
+- **Poll circuit-breaker** — after several consecutive poll failures the page stops polling and shows a "lost connection" banner with a manual reload. Prevents a dead backend from hammering the API.
 
-The result page keeps a per-tab LRU (`JOB_CACHE_MAX = 30`) of recently-seen jobs so tabbing between dashboard and result doesn't re-fetch. The cache is cleared on `SIGNED_OUT` to avoid a stale-view flash after logout.
+Everything else (component names, state-management details, specific element labels) is code-level — see the files under `app/`.
 
 ---
 
@@ -356,36 +242,11 @@ Full discussion in [`SECURITY.md`](./SECURITY.md). Summary:
 
 ### SSRF
 
-`lib/crawler/net/ssrf.ts` exports `assertSafeUrl(url)`, which:
-
-1. Accepts only `http:` and `https:`.
-2. Resolves DNS and validates *every* answer, not just the first.
-3. Blocks IPv4 RFC1918, loopback, link-local (including AWS metadata 169.254.169.254), multicast, unspecified, and benchmark ranges.
-4. Blocks IPv6 loopback, link-local, unique-local, multicast, unspecified, and validates the IPv4 tail of `::ffff:x.x.x.x`-mapped addresses.
-
-`lib/crawler/net/safeFetch.ts` is a manual-redirect fetch wrapper that re-runs `assertSafeUrl` on every hop (max `crawler.MAX_REDIRECTS = 5`). This is important: a redirect from `https://example.com` to `http://127.0.0.1` would pass an initial check but not a per-hop check.
-
-Both the crawl pipeline entry and the Puppeteer path call `assertSafeUrl` before any network I/O.
-
-Known limitation: TOCTOU between `assertSafeUrl` and the actual fetch (DNS rebinding could, in principle, swap the answer between the two lookups). Accepted because closing the gap requires pinning the socket to a specific IP at connect time, which Node's `fetch` doesn't expose. The window is narrow and the blast radius is a single GET.
+Every outbound fetch goes through `assertSafeUrl` (rejects non-http(s), non-default ports, and any private / loopback / link-local / metadata IP across v4 and v6) wrapped in a manual-redirect fetcher that re-validates on every hop. The Puppeteer path calls it directly before each `page.goto`. Full blocked-range list and the DNS-rebinding TOCTOU caveat live in [`SECURITY.md §1`](./SECURITY.md#1-ssrf-server-side-request-forgery).
 
 ### Rate limiting
 
-Two token buckets per principal (principal = `user.id` when signed in, else client IP). Both live in `lib/upstash/rateLimit.ts`; both are backed by **Upstash Redis** (`@upstash/ratelimit`) in production, with an in-memory fallback for local dev.
-
-| Bucket | Anon | Auth | Consumed when | Denial `reason` |
-|---|---|---|---|---|
-| `SUBMIT` | 60/hr | 300/hr | Every `POST /api/p` (abuse floor) | `submit_flood` |
-| `NEW_CRAWL` | 3/hr | 10/hr | Only when the request dispatches a fresh crawl (cache miss + no in-flight attach) | `new_crawl_quota` |
-
-The split lets normal users re-visit cached URLs freely while still protecting Anthropic / Puppeteer budget from a bot looping on fresh domains. A user whose `NEW_CRAWL` bucket is empty can still load any URL that's already in the global `pages` cache (same product), and only sees the "you've hit your limit for generating new pages" message when they try a genuinely new URL.
-
-Redis keys are prefixed per bucket (`submit:…`, `newcrawl:…`) so the two limiters never share state. Denials return `429` with `Retry-After` plus a JSON body `{ error, reason, retryAfterSec, signInPrompt }`; the landing client renders "Try again in N minutes" using `retryAfterSec` and surfaces a Sign-In CTA when `signInPrompt` is set.
-
-Backend selection:
-
-- **Upstash Redis** (`@upstash/ratelimit`) when both `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are set. State is centralized so instance churn / region failover / autoscale can't reset a user's bucket, and the limits hold up against distributed IPs. On a transient Redis error the limiter fails open (logged) — a flaky Redis shouldn't take down all crawl submissions.
-- **In-memory token bucket** otherwise. Keeps `npm run dev` working without a Redis dependency. Fine for a single Fluid Compute instance; not fit for production at scale since a cold-start or autoscale event gives the attacker a fresh bucket.
+Two token buckets (SUBMIT + NEW_CRAWL) per principal on `POST /api/p`; Upstash Redis in production, in-memory fallback for dev. Full bucket table, backend selection, fail-open rationale, and denial response shape live in [`SECURITY.md §2`](./SECURITY.md#2-abuse--rate-limiting). All four bucket sizes are tunable in `lib/config.ts` → `rateLimit`.
 
 ### Prompt injection
 
@@ -393,17 +254,11 @@ See §7. Neutering before injection + schema-validated output + hard length caps
 
 ### RLS
 
-Service-role key stays server-side (`lib/store.ts:17`). Client never sees it. RLS policies are the last line of defense: even if the anon key is exfiltrated, a direct Supabase query cannot read another user's `user_requests` rows. `pages` and `jobs` are deliberately world-readable — the page UUID is a non-enumerable UUID v4, and the point of the product is that the `llms.txt` output is shareable by link.
+Service-role key stays server-side (loaded via `requireEnv("SUPABASE_SERVICE_ROLE_KEY")` inside `getClient()` in `lib/store.ts`). Client never sees it. RLS policies are the last line of defense: even if the anon key is exfiltrated, a direct Supabase query cannot read another user's `user_requests` rows. `pages` and `jobs` are deliberately world-readable — the page UUID is a non-enumerable UUID v4, and the point of the product is that the `llms.txt` output is shareable by link.
 
 ### Headers
 
-`next.config.ts` sets on every response:
-
-- **Content-Security-Policy** — `default-src 'self'`, `script-src 'self' 'unsafe-inline' 'unsafe-eval'` (required for Next.js's RSC bootstrap and HMR — documented trade-off in the file's comment), `style-src 'self' 'unsafe-inline'`, `img-src 'self' data: blob: https:`, `font-src 'self' data: https://fonts.gstatic.com`, `connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.ingest.sentry.io https://*.sentry.io`, `worker-src 'self' blob:` (Sentry session-replay SDK runs a blob-backed worker), `frame-ancestors 'self'`, `form-action 'self'`, `base-uri 'self'`, `object-src 'none'`.
-- `X-Frame-Options: SAMEORIGIN`
-- `X-Content-Type-Options: nosniff`
-- `Referrer-Policy: strict-origin-when-cross-origin`
-- `Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()`
+`next.config.ts` sets CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, and `Permissions-Policy` on every response. Exact directives + rationale per header (including the documented `'unsafe-inline'` / `'unsafe-eval'` trade-off for Next.js's RSC bootstrap) live in [`SECURITY.md §7`](./SECURITY.md#7-http-security-headers).
 
 ### Cron authentication
 
@@ -417,16 +272,18 @@ No API key or token ever reaches the log stream. Error messages embedded in job 
 
 ## 11. Config Surface
 
-All tunable constants are in `/lib/config.ts`, grouped by domain. This is the single place to change anything that might plausibly be adjusted for business or UX reasons. Values below are current as of this document:
+Every constant that might plausibly be adjusted for business or UX reasons lives in `lib/config.ts`, grouped by domain. One source of truth, one file to grep when you need to see what a number currently is. The groups:
 
-- **`crawler`** — `MAX_PAGES: 25`, `MAX_DEPTH: 2`, `CONCURRENCY: 5`, `POLITENESS_DELAY_MS: 300`, `PAGE_TTL_HOURS: 24`, `URLS_PER_PREFIX_CAP: 5`, `PREFIX_SEGMENT_DEPTH: 2`, `MAX_SITEMAP_URLS: 500`, `SITEMAP_MAX_BYTES: 10 MB`, `SITEMAP_TIMEOUT_MS: 10_000`, `HOMEPAGE_FETCH_TIMEOUT_MS: 8_000`, `RESPONSE_MAX_BYTES: 5 MB`, `MAX_REDIRECTS: 5`, `MAX_CRAWL_DELAY_MS: 10_000`, `EXCERPT_MAX_BYTES: 4 KB`, `PIPELINE_BUDGET_MS: 270_000`, `EXTERNAL_REFS_MAX_KEEP: 8`.
-- **`llm`** — `MODEL: claude-haiku-4-5-20251001`, `MAX_RETRIES: 5`, `CALL_TIMEOUT_MS: 60_000`, `ENRICH_BATCH_SIZE: 20`, `RANK_MAX_KEEP: 120`, `RANK_SKIP_BELOW: 10`, `DESCRIPTION_MAX_CHARS: 240`, `SECTION_MAX_CHARS: 30`.
-- **`api`** — `MAX_URL_LENGTH: 2048`, `PAGES_DEFAULT_LIMIT: 20`, `PAGES_MAX_LIMIT: 50`, `DOWNLOAD_MAX_ENTRIES: 500`.
-- **`rateLimit`** — `ANON_SUBMIT: { capacity: 60, refillPerSec: 60/3600 }`, `AUTH_SUBMIT: { capacity: 300, refillPerSec: 300/3600 }`, `ANON_NEW_CRAWL: { capacity: 3, refillPerSec: 3/3600 }`, `AUTH_NEW_CRAWL: { capacity: 10, refillPerSec: 10/3600 }`, `CRON_MONITOR: { capacity: 12, refillPerSec: 12/3600 }` (anti-amplification bucket on `/api/monitor` — see [`SECURITY.md`](./SECURITY.md) §2).
-- **`monitor`** — `STALE_DAYS: 5`, `BATCH_SIZE: 200`, `SAME_HOST_DELAY_MS: 400`, `STUCK_JOB_AFTER_MS: 900_000`.
-- **`ui`** — `POLL_INTERVAL_MS: 1_500`, `MAX_POLL_FAILURES: 5`, `LIVE_MIN_STEP_DWELL_MS: 1_200`, `SIM_STEP_DURATIONS_MS: [1800, 1600, 1400, 1200]`, `MONITOR_STATUS_TICK_MS: 10_000`, `JOB_CACHE_MAX: 30`.
+- **`crawler`** — crawl bounds: page count, link-follow depth, worker concurrency, politeness delays, per-fetch timeouts, byte caps on responses and sitemaps, pipeline wall-clock budget, external-ref cap.
+- **`llm`** — the pinned Claude model, Anthropic SDK retry/timeout tuning, enrichment batch size, URL-ranker caps, sanitizer length limits.
+- **`api`** — input-side caps on the public routes: URL length, pagination defaults/ceiling, zip-export max entries.
+- **`rateLimit`** — token-bucket configs for `POST /api/p` (SUBMIT + NEW_CRAWL, split anon/auth), the `/api/monitor` anti-amplification bucket, and the `/api/pages/download` zip cap. Rationale in [`SECURITY.md §2`](./SECURITY.md#2-abuse--rate-limiting).
+- **`monitor`** — cron sweep sizing: stale-page cutoff in days, batch size per tick, same-host politeness delay, stuck-job timeout.
+- **`ui`** — client-side timing: poll cadence, circuit-breaker threshold, stepper dwell times, cache sizes.
 
-Secrets come from environment variables: `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_URL`, and `SUPABASE_ANON_KEY` are loaded via `lib/env.ts`'s `requireEnv()` so a missing value fails fast; `ANTHROPIC_API_KEY` and `CRON_SECRET` are read directly with `process.env` because their call sites already handle absence (LLM features degrade to deterministic fallbacks, and the cron endpoint fails closed).
+Code reads these constants by name — no hardcoded magic numbers on the hot paths — so tuning a value in one place propagates everywhere it matters.
+
+Secrets come from environment variables, not this file. `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` load through `lib/env.ts`'s `requireEnv()` helper, which fails fast on a missing value. `ANTHROPIC_API_KEY` and `CRON_SECRET` are read directly via `process.env` because their call sites already handle absence gracefully — LLM features degrade to deterministic fallbacks, and the cron endpoint fails closed.
 
 ---
 
@@ -480,100 +337,28 @@ The following are out of scope for the current implementation. Each is plausible
 
 ## 14. Repository Layout
 
-```
-/app
-  page.tsx                           landing
-  layout.tsx                         async root RSC shell — resolves auth, mounts GlobalHeader
-  LandingClient.tsx                  landing-page client interactions
-  /api
-    /p/route.ts                      POST: kick off / return-cached
-    /p/[id]/route.ts                 GET:  poll job
-    /p/[id]/scrubError.ts            user-facing error sanitizer (shared with /p/[id] RSC)
-    /p/request/route.ts              DELETE: remove from history
-    /pages/route.ts                  GET:  paginated history
-    /pages/download/route.ts         GET:  zip export
-    /monitor/route.ts                GET:  cron handler
-    /worker/crawl/route.ts           POST: QStash-signed crawl worker
-  /auth/callback/route.ts            OAuth return
-  /login/page.tsx                    OAuth picker
-  /dashboard
-    page.tsx                         server-rendered initial list
-    PageList.tsx                     infinite-scroll client + live-refresh of running rows
-    JobActions.tsx                   delete + confirm
-    MonitorStatus.tsx                "Refreshed X ago"
-    DownloadButton.tsx               fetch + blob + inline 429 handling
-  /p/[id]
-    page.tsx                         RSC — seeds initial job + user into the client
-    PageView.tsx                     client — AppHeader + poll loop
-    ProgressPane.tsx                 live crawl animation
-    ResultPane.tsx                   markdown render + copy/download
-    types.ts                         ApiJob
-    useVisibleStatus.ts              status display state machine
-  /components
-    AppHeader.tsx                    sticky logo + nav shell (center + right slots)
-    GlobalHeader.tsx                 mounted once in root layout; hides on /p/{id}
-    NavAuth.tsx                      Dashboard ↔ Generate link swap + UserMenu
-    UserMenu.tsx                     avatar (OAuth picture → initials) + sign-out
-    ConfirmDialog.tsx                accessible confirm dialog
+Organised by concern, not by file. Individual filenames drift; folder purpose doesn't.
 
-/lib
-  config.ts                          all tunable constants
-  env.ts                             requireEnv()
-  log.ts                             debugLog()
-  store.ts                           Supabase queries (service-role)
-  /upstash
-    rateLimit.ts                     token bucket (Upstash Redis + in-memory fallback)
-    jobQueue.ts                      enqueueCrawl (QStash + waitUntil fallback)
-  /supabase
-    client.ts                        browser client (anon)
-    server.ts                        server SSR client (anon + cookie handling)
-  /crawler
-    pipeline.ts                      orchestration
-    monitor.ts                       computeSignature + detectChange
-    types.ts                         ExtractedPage, ScoredPage, CrawlJob, JobStatus
-    /net
-      url.ts                         normalize, capByPathPrefix, skip heuristics, clientValidateUrl
-      urlLabel.ts                    URL → human-ish filename for zip export
-      canonicalUrl.ts                dual www/non-www HEAD probe → canonical URL
-      safeFetch.ts                   per-hop redirect validation
-      ssrf.ts                        assertSafeUrl + forbidden ranges
-      ipRanges.ts                    pure IP-range classifier (shared with browser)
-      readBounded.ts                 streaming body read with hard byte cap
-      language.ts                    primary-language detection + locale-path helpers
-    /discovery
-      sitemap.ts                     sitemap fetch + parse
-      robots.ts                      robots.txt parse
-      discover.ts                    link extraction from HTML
-      fetchPage.ts                   main page fetcher
-      spaCrawler.ts                  Puppeteer + SPA detection
-      markdownProbe.ts               .md variant probing
-    /enrich
-      extract.ts                     per-page metadata extraction
-      genre.ts                       site genre detection
-      siteName.ts                    site-name cleaning + hostname fallback
-      llmEnrich.ts                   rankCandidateUrls + enrichBatch + preamble
-      score.ts                       scoring with LLM importance + language penalty
-      group.ts                       section assignment + selection
-    /output
-      assemble.ts                    final markdown assembly
-      validate.ts                    spec compliance check (run in /p/[id])
-
-/supabase/migration.sql              full schema (pages, jobs, user_requests, RLS)
-
-/instrumentation.ts                  Next.js register hook → loads Sentry server/edge init
-/instrumentation-client.ts           Sentry browser SDK init (on-error replay)
-/sentry.server.config.ts             Node runtime init + ignoreErrors filter
-/sentry.edge.config.ts               Edge runtime init (for middleware)
-/app/global-error.tsx                App Router root error boundary → Sentry
-
-/middleware.ts                       Supabase SSR session + /dashboard gate
-/next.config.ts                      CSP + security headers + withSentryConfig wrapper
-/vercel.json                         function duration + cron schedule
-/docs/SECURITY.md                    threat model + defenses
-```
+- **`app/`** — Next.js App Router. Page routes (`/`, `/dashboard`, `/p/[id]`, `/login`) plus `app/api/*` for every HTTP endpoint. `app/components/` holds cross-route UI chrome (header, user menu, confirm dialog).
+- **`lib/config.ts`** — every tunable constant (see §11).
+- **`lib/store.ts`** — Supabase access layer with the service-role key. Server-only — never imported into client code.
+- **`lib/env.ts`**, **`lib/log.ts`** — `requireEnv()` fail-fast helper and the `debugLog` / `errorLog` pair that forward `Error` payloads to Sentry.
+- **`lib/upstash/`** — external-service wrappers: `rateLimit.ts` (token-bucket limiter with Upstash Redis + in-memory dev fallback) and `jobQueue.ts` (QStash publish + `waitUntil` dev fallback).
+- **`lib/supabase/`** — browser + server Supabase client factories, plus `getUser()` for server auth.
+- **`lib/crawler/`** — the crawl pipeline. Organised by stage:
+  - **`net/`** — URL + HTTP primitives (normalise, SSRF guard, safe-fetch with per-hop validation, bounded body reads, language detection).
+  - **`discovery/`** — where pages come from (robots.txt, sitemaps, homepage fetch, SPA/Puppeteer fallback, in-page link extraction, `.md` sibling probing).
+  - **`enrich/`** — turning raw pages into scored, classified data (metadata extraction, genre detection, brand-name cleanup, LLM enrichment, scoring, section assignment).
+  - **`output/`** — final markdown assembly + spec validator (the latter also runs client-side on the result page).
+  - `pipeline.ts` — the entry point the worker calls. `monitor.ts` — signature computation + change detection for the cron.
+- **`supabase/migration.sql`** — full schema (pages, jobs, user_requests, indexes, RLS policies). Canonical.
+- **`middleware.ts`** — Supabase SSR session refresh + `/dashboard` gate.
+- **`next.config.ts`** — CSP and other security headers, `withSentryConfig` wrapper.
+- **`vercel.json`** — `maxDuration` overrides on the long-running routes + the cron schedule.
+- **Sentry init files at the repo root** (`instrumentation.ts`, `instrumentation-client.ts`, `sentry.server.config.ts`, `sentry.edge.config.ts`, `app/global-error.tsx`) — the Next.js SDK pins these names and locations; see [`OBSERVABILITY.md`](./OBSERVABILITY.md) for what each one does.
 
 ---
 
 ## 15. Callouts and Future Work
 
-- **Concurrent cache-miss race.** `POST /api/p` checks `getActiveJobForUrl` (route.ts:88) and attaches to an in-progress job if one exists, which handles sequential duplicates. But there's no DB-level lock or unique constraint between that check and `createJob` on line 100 — two truly simultaneous requests for the same uncached URL can both pass the check and both fire `runCrawlPipeline`, duplicating LLM/crawl spend. The failure mode is benign (the second pipeline's `pages` upsert harmlessly overwrites the first; user sees one result) so it's deferred for the MVP. Fix: partial unique index on `(url)` for active jobs with `ON CONFLICT DO NOTHING`, or a `SELECT ... FOR UPDATE` around the check/insert.
+- **Concurrent cache-miss race.** `POST /api/p` checks `getActiveJobForUrl` (inside the `tryServeAt` helper) and attaches to an in-progress job if one exists, which handles sequential duplicates. But there's no DB-level lock or unique constraint between that check and the subsequent `createJob` — two truly simultaneous requests for the same uncached URL can both pass the check and both fire `runCrawlPipeline`, duplicating LLM/crawl spend. The failure mode is benign (the second pipeline's `pages` upsert harmlessly overwrites the first; user sees one result) so it's deferred for the MVP. Fix: partial unique index on `(url)` for active jobs with `ON CONFLICT DO NOTHING`, or a `SELECT ... FOR UPDATE` around the check/insert.
