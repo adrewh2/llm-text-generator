@@ -146,66 +146,20 @@ sequenceDiagram
 
 ## 3. Pipeline stages (what the progress UI shows)
 
-One per progress-step the user sees. The four boxes match the four rows in `ProgressPane` exactly; this is what's happening inside each row while its spinner is active.
+One per progress-step the user sees. The four stages below match the four rows in `ProgressPane` exactly; this is what's happening inside each row while its spinner is active.
+
+### Overview
 
 ```mermaid
-%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
-flowchart TD
+flowchart LR
     In(["Input: baseUrl"])
+    S1["1 · Crawling pages"]
+    S2["2 · Enriching with AI"]
+    S3["3 · Scoring & classifying"]
+    S4["4 · Assembling file"]
     Out(["Output: markdown llms.txt + status"])
 
-    subgraph Crawling["1 · Crawling pages"]
-        direction LR
-        CR_RB["Read robots.txt"]
-        CR_SM["Walk sitemaps → seed BFS queue"]
-        CR_HP["Probe homepage (HTTP)"]
-        CR_SPA{{"Needs Chromium?"}}
-        CR_BR["Render with Chromium"]
-        CR_MD["Probe .md sibling"]
-        CR_NAV["Scrape nav (HTTP fallback)"]
-        CR_CAP["Cap URLs per path prefix"]
-        CR_LANG["Detect primary language"]
-        CR_LOC["Drop off-locale URLs"]
-        CR_RANK["LLM ranks the queue"]
-        CR_POOL[["Worker pool"]]
-        CR_W["Fetch + extract each page"]
-    end
-
-    subgraph Enriching["2 · Enriching with AI"]
-        direction LR
-        EN_NAME["LLM: brand name"]
-        EN_GENRE["Classify genre"]
-        EN_EXT["Resolve external refs"]
-        EN_STRIP["Strip tagline-dup descriptions"]
-        EN_BATCH["LLM: section + importance + description"]
-    end
-
-    subgraph Scoring["3 · Scoring & classifying"]
-        direction LR
-        SC_SCORE["Score 0–100<br/>(base signals + LLM + locale)"]
-        SC_SECT["Bucket → drop / Optional / Primary"]
-        SC_FILT["Select output set"]
-    end
-
-    subgraph Assembling["4 · Assembling file"]
-        direction LR
-        AS_SUM["Summary blockquote"]
-        AS_PRE["LLM intro paragraph"]
-        AS_NOTE["Robots disallow-all notice"]
-        AS_FILE["Build markdown file"]
-        AS_TERM["Set terminal status"]
-    end
-
-    In --> CR_RB --> CR_SM --> CR_HP --> CR_SPA
-    CR_SPA -- "needs Chromium" --> CR_BR --> CR_MD
-    CR_SPA -- "HTML sufficient" --> CR_MD
-    CR_MD --> CR_NAV --> CR_CAP --> CR_LANG --> CR_LOC --> CR_RANK --> CR_POOL --> CR_W
-    CR_MD -. "kicked off here,<br/>awaited in Enriching" .-> EN_NAME
-    CR_W --> EN_GENRE
-    EN_NAME --> EN_EXT
-    EN_GENRE --> EN_EXT --> EN_STRIP --> EN_BATCH
-    EN_BATCH --> SC_SCORE --> SC_SECT --> SC_FILT
-    SC_FILT --> AS_SUM --> AS_PRE --> AS_NOTE --> AS_FILE --> AS_TERM --> Out
+    In --> S1 --> S2 --> S3 --> S4 --> Out
 ```
 
 ### What each stage does
@@ -213,6 +167,32 @@ flowchart TD
 #### 1 · Crawling pages
 
 Everything from "have a URL" to "have an array of fetched `ExtractedPage`s".
+
+```mermaid
+flowchart LR
+    In(["baseUrl"])
+    CR_RB["Read robots.txt"]
+    CR_SM["Walk sitemaps<br/>→ seed BFS queue"]
+    CR_HP["Probe homepage (HTTP)"]
+    CR_SPA{{"Needs<br/>Chromium?"}}
+    CR_BR["Render with Chromium"]
+    CR_MD["Probe .md sibling"]
+    CR_NAV["Scrape nav (HTTP fallback)"]
+    CR_CAP["Cap URLs per path prefix"]
+    CR_LANG["Detect primary language"]
+    CR_LOC["Drop off-locale URLs"]
+    CR_RANK["LLM ranks the queue"]
+    CR_POOL[["Worker pool"]]
+    CR_W["Fetch + extract each page"]
+    Out(["ExtractedPage[]"])
+
+    In --> CR_RB --> CR_SM --> CR_HP --> CR_SPA
+    CR_SPA -- "needs Chromium" --> CR_BR --> CR_MD
+    CR_SPA -- "HTML sufficient" --> CR_MD
+    CR_MD --> CR_NAV --> CR_CAP --> CR_LANG --> CR_LOC --> CR_RANK --> CR_POOL --> CR_W --> Out
+```
+
+> `llmSiteName` (stage 2's first box) is kicked off at `CR_MD` in parallel with the crawl and awaited at the top of stage 2.
 
 - **`fetchRobots`** — parse `robots.txt`. Two outputs that matter downstream: the Disallow list (honored on every enqueue) and the sitemap URLs (next step's seed). `Crawl-delay` is kept for the worker pool.
 - **`fetchSitemapUrls × up to 3`** — robots-declared sitemaps first, then `/sitemap.xml` and `/sitemap_index.xml` as fallbacks. Each URL is run through `isSameDomain · !shouldSkipUrl · isAllowed` before being accepted into the in-memory BFS queue.
@@ -229,6 +209,21 @@ Everything from "have a URL" to "have an array of fetched `ExtractedPage`s".
 
 Turn the raw `ExtractedPage[]` into an enrichment map the scoring stage can use.
 
+```mermaid
+flowchart LR
+    In(["ExtractedPage[]"])
+    EN_NAME["LLM: brand name<br/>(started during crawl)"]
+    EN_GENRE["Classify genre"]
+    EN_EXT["Resolve external refs"]
+    EN_STRIP["Strip tagline-dup descriptions"]
+    EN_BATCH["LLM: section + importance<br/>+ description"]
+    Out(["Enrichment map"])
+
+    In --> EN_GENRE --> EN_EXT
+    EN_NAME --> EN_EXT
+    EN_EXT --> EN_STRIP --> EN_BATCH --> Out
+```
+
 - **`llmSiteName`** — actually *started* back in phase 1, right before the worker pool awaits. Its only inputs are the homepage's name candidates (`og:site_name`, `<title>`, h1, JSON-LD) + hostname + deterministic guess. Running in parallel with the crawl saves ~5–10 s because the LLM call doesn't sit behind page fetches.
 - **`detectGenre`** — deterministic. Pattern-matches URL paths (presence of `/docs/`, `/shop/`, etc.) and homepage HTML signals to bucket the site into one of the 23 genres in `types.ts`. Used by the enrichment + preamble prompts to set tone and section suggestions.
 - **`resolveExternalReferences`** — homepage outbound anchors → `rankExternalReferences` LLM call picks which to include → each kept URL is fetched in parallel for its metadata. Budget = `MAX_PAGES − internalSuccessful.length`, so internal crawl always wins the cap. Failed fetches degrade to anchor-text-only entries.
@@ -238,6 +233,17 @@ Turn the raw `ExtractedPage[]` into an enrichment map the scoring stage can use.
 #### 3 · Scoring & classifying
 
 Pure TypeScript — no LLM calls. Deterministic mapping from enrichment map → primary / optional.
+
+```mermaid
+flowchart LR
+    In(["Enrichment map"])
+    SC_SCORE["Score 0–100<br/>(base signals + LLM + locale)"]
+    SC_SECT["Bucket → drop /<br/>Optional / Primary"]
+    SC_FILT["Select output set"]
+    Out(["Primary + Optional sets"])
+
+    In --> SC_SCORE --> SC_SECT --> SC_FILT --> Out
+```
 
 - **`scorePages`** — computes a 0–100-ish score per page.
   - Base signals: `description present +25`, `mdUrl present +20`, `descriptionProvenance = json_ld +10`, `headings.length > 0 +10`, `bodyExcerpt.length > 200 +10`.
@@ -259,6 +265,19 @@ Pure TypeScript — no LLM calls. Deterministic mapping from enrichment map → 
 #### 4 · Assembling file
 
 Markdown construction + terminal-status decision.
+
+```mermaid
+flowchart LR
+    In(["Primary + Optional sets"])
+    AS_SUM["Summary blockquote"]
+    AS_PRE["LLM intro paragraph"]
+    AS_NOTE["Robots disallow-all notice"]
+    AS_FILE["Build markdown file"]
+    AS_TERM["Set terminal status"]
+    Out(["markdown llms.txt<br/>+ status"])
+
+    In --> AS_SUM --> AS_PRE --> AS_NOTE --> AS_FILE --> AS_TERM --> Out
+```
 
 - **Summary** — the first `> blockquote` line in the spec. Pulled from the homepage's `<meta name="description">` / `og:description` / JSON-LD `description`. Skipped if provenance was "none" (we'd rather have no summary than a h2-derived fallback here).
 - **`generateSitePreamble` (LLM)** — the 2–3 sentence intro paragraph. Prompt asks for JSON `{ confident, reason, description }`; anything but `confident === true` drops the preamble (avoids the model's "I need more context" hedging landing in the output).
