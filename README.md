@@ -60,9 +60,9 @@ Open <http://localhost:3000>.
 1. Create a new project at [supabase.com/dashboard](https://supabase.com/dashboard).
 2. Open **SQL Editor** → paste the contents of [`supabase/migration.sql`](./supabase/migration.sql) → **Run**. This creates the `pages`, `jobs`, and `user_requests` tables along with RLS policies.
 3. In **Project Settings → API**, copy:
-   - `Project URL` → `SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_URL`
-   - `anon` `public` key → `SUPABASE_ANON_KEY` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - `service_role` `secret` key → `SUPABASE_SERVICE_ROLE_KEY` (server-only, bypasses RLS)
+   - `Project URL` → `NEXT_PUBLIC_SUPABASE_URL`
+   - `anon` `public` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - `secret` key → `SUPABASE_SERVICE_ROLE_KEY` (server-only, bypasses RLS)
 
 ### Configuring OAuth providers
 
@@ -82,15 +82,13 @@ The full redirect chain is: browser → GitHub/Google (which has the Supabase ca
 
 **Required for any deploy (prod or local):**
 
-| Variable                        | Where   | Purpose                                                                                                                                                                                  |
-| ------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ANTHROPIC_API_KEY`             | server  | Claude API for page enrichment. Absent → LLM steps degrade to deterministic fallbacks; output is still spec-valid, just un-enriched.                                                     |
-| `SUPABASE_URL`                  | server  | Supabase project URL.                                                                                                                                                                    |
-| `SUPABASE_ANON_KEY`             | server  | Supabase anon key (for server-side auth helpers).                                                                                                                                        |
-| `SUPABASE_SERVICE_ROLE_KEY`     | server  | Bypasses RLS — **server-only; never ship to the browser**.                                                                                                                               |
-| `NEXT_PUBLIC_SUPABASE_URL`      | browser | Same URL, exposed to the browser client.                                                                                                                                                 |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser | Anon key, exposed to the browser.                                                                                                                                                        |
-| `CRON_SECRET`                   | server  | Random string you generate (`openssl rand -hex 32`). Vercel Cron sends it as `Authorization: Bearer …` to `/api/monitor`, which timing-safe-compares. Unset ⇒ the endpoint fails closed. |
+| Variable                        | Where            | Purpose                                                                                                                                                                                  |
+| ------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`             | server           | Claude API for page enrichment. Absent → LLM steps degrade to deterministic fallbacks; output is still spec-valid, just un-enriched.                                                     |
+| `NEXT_PUBLIC_SUPABASE_URL`      | browser + server | Supabase project URL, of the form `https://<PROJECT_ID>.supabase.co`. Same value on both sides.                                                                                          |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser + server | Supabase anon key. Safe to expose — RLS is the actual gate, not secrecy of this key.                                                                                                     |
+| `SUPABASE_SERVICE_ROLE_KEY`     | server           | Bypasses RLS — **server-only; never add the `NEXT_PUBLIC_` prefix to this**.                                                                                                             |
+| `CRON_SECRET`                   | server           | Random string you generate (`openssl rand -hex 32`). Vercel Cron sends it as `Authorization: Bearer …` to `/api/monitor`, which timing-safe-compares. Unset ⇒ the endpoint fails closed. |
 
 **Required in production, optional locally** — all auto-injected by Marketplace integrations (see [Deploying to Vercel §2](#2-provision-marketplace-integrations)).
 
@@ -151,17 +149,15 @@ The Marketplace integrations don't provision your own keys (Anthropic, Supabase,
 ```bash
 vercel link
 vercel env add ANTHROPIC_API_KEY production
-vercel env add SUPABASE_URL production
-vercel env add SUPABASE_ANON_KEY production
-vercel env add SUPABASE_SERVICE_ROLE_KEY production
 vercel env add NEXT_PUBLIC_SUPABASE_URL production
 vercel env add NEXT_PUBLIC_SUPABASE_ANON_KEY production
+vercel env add SUPABASE_SERVICE_ROLE_KEY production
 vercel env add CRON_SECRET production
 # ...then pull everything back for local parity
 vercel env pull .env.local
 ```
 
-The `NEXT_PUBLIC_*` pair is safe to expose; the others must stay server-only.
+The `NEXT_PUBLIC_*` pair is safe to expose; `SUPABASE_SERVICE_ROLE_KEY` and `CRON_SECRET` must stay server-only.
 
 ### 4. Point Supabase at the production URL
 

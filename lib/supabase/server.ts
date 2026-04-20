@@ -5,8 +5,8 @@ import { requireEnv } from "@/lib/env"
 export async function createClient() {
   const cookieStore = await cookies()
   return createServerClient(
-    requireEnv("SUPABASE_URL"),
-    requireEnv("SUPABASE_ANON_KEY"),
+    requireEnv("NEXT_PUBLIC_SUPABASE_URL"),
+    requireEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
     {
       cookies: {
         getAll() { return cookieStore.getAll() },

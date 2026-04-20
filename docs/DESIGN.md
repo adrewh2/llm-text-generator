@@ -283,7 +283,7 @@ Every constant that might plausibly be adjusted for business or UX reasons lives
 
 Code reads these constants by name — no hardcoded magic numbers on the hot paths — so tuning a value in one place propagates everywhere it matters.
 
-Secrets come from environment variables, not this file. `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` load through `lib/env.ts`'s `requireEnv()` helper, which fails fast on a missing value. `ANTHROPIC_API_KEY` and `CRON_SECRET` are read directly via `process.env` because their call sites already handle absence gracefully — LLM features degrade to deterministic fallbacks, and the cron endpoint fails closed.
+Secrets come from environment variables, not this file. `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` load through `lib/env.ts`'s `requireEnv()` helper, which fails fast on a missing value. `ANTHROPIC_API_KEY` and `CRON_SECRET` are read directly via `process.env` because their call sites already handle absence gracefully — LLM features degrade to deterministic fallbacks, and the cron endpoint fails closed.
 
 ---
 

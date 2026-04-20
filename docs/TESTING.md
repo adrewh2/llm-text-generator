@@ -14,8 +14,8 @@ and can be re-run in isolation.
 ### Environment
 
 - `.env.local` populated — see [`README.md#3-fill-in-envlocal`](../README.md#3-fill-in-envlocal). Required for tests:
-  `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_SUPABASE_URL`,
-  `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `ANTHROPIC_API_KEY`, `CRON_SECRET`.
+  `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+  `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`, `CRON_SECRET`.
 - Upstash Redis + QStash + Sentry vars optional locally; tests that
   exercise those paths are clearly marked **[production-only]**.
 - `npm run dev` running on `http://localhost:3000` (or set `BASE_URL`

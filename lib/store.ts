@@ -14,7 +14,7 @@ let cached: SupabaseClient | null = null
 function getClient(): SupabaseClient {
   if (cached) return cached
   cached = createClient(
-    requireEnv("SUPABASE_URL"),
+    requireEnv("NEXT_PUBLIC_SUPABASE_URL"),
     requireEnv("SUPABASE_SERVICE_ROLE_KEY"),
     { auth: { persistSession: false, autoRefreshToken: false } },
   )
