@@ -54,7 +54,7 @@ export default function ProgressPane({
   }
 
   return (
-    <div className="flex-1 flex items-center justify-center p-8 overflow-y-auto">
+    <div className="flex-1 flex items-start sm:items-center justify-center p-8 pt-12 sm:pt-8 overflow-y-auto">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <p className="text-sm font-medium text-zinc-500 mb-2">

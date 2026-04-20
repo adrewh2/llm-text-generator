@@ -45,7 +45,7 @@ export default function LoginPage() {
     // border-b = 57px rendered). Subtract that exact height so
     // body total = header + login = 100vh and no scrollbar appears.
     // Tailwind arbitrary values need underscores for spaces in calc.
-    <div className="relative min-h-[calc(100vh_-_57px)] bg-white flex items-center justify-center px-6">
+    <div className="relative min-h-[calc(100vh_-_57px)] bg-white flex items-center justify-center px-6 pb-24 sm:pb-32">
       {/* Absolute so the Back link doesn't push the centered card down
           — without it the card's vertical midpoint sits below the
           viewport's because the Back row is pre-card flex content. */}

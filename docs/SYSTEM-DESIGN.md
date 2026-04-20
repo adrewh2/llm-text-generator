@@ -154,45 +154,45 @@ flowchart TD
     Out(["Output: markdown llms.txt + status"])
 
     subgraph Crawling["1 · Crawling pages"]
-        direction TB
-        CR_RB["fetchRobots<br/>parse Disallow, Crawl-delay, sitemap URLs"]
-        CR_SM["fetchSitemapUrls × up to 3 sources<br/>(sameDomain · !skip · isAllowed filter)<br/>→ seed queue + discoveredUrls"]
-        CR_HP["fetchPage(baseUrl)<br/>plain-HTTP homepage probe"]
-        CR_SPA{{"plain fetch ok<br/>AND not isSpaHtml?"}}
-        CR_BR["SpaBrowser.init<br/>+ fetchPageWithLinks(baseUrl)<br/>merge nav links into queue"]
-        CR_MD["probeMarkdown(baseUrl)<br/>record homepage page"]
-        CR_NAV["extractLinksFromHtml(homepage)<br/>only if non-SPA AND queue < 5"]
-        CR_CAP["capByPathPrefix<br/>URLS_PER_PREFIX_CAP = 5 per 2-segment bucket"]
-        CR_LANG["primaryLang ← baseLangCode(html.lang) ?? 'en'"]
-        CR_LOC["locale pre-filter<br/>drop URLs whose urlLocaleCode ≠ primaryLang<br/>(skipped if it would empty the queue)"]
-        CR_RANK["rankCandidateUrls (LLM)<br/>reorder queue by expected structural value"]
-        CR_POOL[["Worker pool<br/>HTTP: 5 parallel · Browser: 1 serial"]]
-        CR_W["per page:<br/>• wait for robots slot or politeness delay<br/>• fetchPage + probeMarkdown (HTTP)<br/>  OR spaBrowser.fetchPageWithLinks (browser)<br/>• extractMetadata<br/>• enqueue new links if depth < MAX_DEPTH<br/>• debounced progress flush (500 ms)"]
+        direction LR
+        CR_RB["Read robots.txt<br/>→ disallow rules<br/>→ crawl-delay<br/>→ sitemap URLs"]
+        CR_SM["Walk sitemaps<br/>up to 3 sources<br/>keep: same-domain<br/>· allowed · not skippable<br/>→ seed the BFS queue"]
+        CR_HP["Probe the homepage<br/>plain HTTP, no browser"]
+        CR_SPA{{"Needs a browser render?<br/>(fetch failed OR SPA shell)"}}
+        CR_BR["Render with Chromium<br/>one page at a time<br/>hydrated JS reveals<br/>nav links we'd miss<br/>on plain HTTP"]
+        CR_MD["Probe for a .md sibling<br/>per the llms.txt spec"]
+        CR_NAV["Scrape homepage nav<br/>only on HTTP path<br/>when sitemap was sparse<br/>(queue < 5 URLs)"]
+        CR_CAP["Cap URLs per section<br/>5 per 2-segment path prefix<br/>stops one area from flooding<br/>the rank prompt"]
+        CR_LANG["Detect primary language<br/>from &lt;html lang&gt;<br/>defaults to 'en'"]
+        CR_LOC["Drop non-primary locales<br/>e.g. /ar/ on an English site<br/>skipped if it would<br/>empty the queue"]
+        CR_RANK["LLM ranks the queue<br/>picks the highest-value URLs<br/>for the 25-page budget"]
+        CR_POOL[["Worker pool<br/>5 parallel on HTTP<br/>1 serial on Chromium"]]
+        CR_W["For each URL:<br/>• respect politeness / crawl-delay<br/>• fetch + extract metadata<br/>• enqueue new links<br/>&nbsp;&nbsp;(until MAX_DEPTH)<br/>• flush progress (debounced 500 ms)"]
     end
 
     subgraph Enriching["2 · Enriching with AI"]
-        direction TB
-        EN_NAME["llmSiteName (LLM)<br/>kicked off in parallel with worker pool<br/>resolved here"]
-        EN_GENRE["detectGenre<br/>deterministic pattern match<br/>on URL set + homepage HTML"]
-        EN_EXT["resolveExternalReferences<br/>• extractExternalLinksFromHtml<br/>• rankExternalReferences (LLM)<br/>• fetchPage each kept (parallel)<br/>budget = MAX_PAGES − internalSuccessful"]
-        EN_STRIP["strip pages whose description<br/>duplicates the homepage tagline"]
-        EN_BATCH["llmEnrichPages (LLM × ceil(n/20))<br/>batches run in parallel<br/>→ section · importance · description"]
+        direction LR
+        EN_NAME["LLM picks the brand name<br/>from og:site_name, title,<br/>h1, JSON-LD<br/><i>kicked off in phase 1,<br/>awaited here</i>"]
+        EN_GENRE["Classify the site genre<br/>docs · ecommerce · corporate ·<br/>news · blog · …<br/>pattern-match URLs + HTML"]
+        EN_EXT["Gather external references<br/>from homepage outbound links<br/>• LLM picks worth keeping<br/>• fetch each for metadata<br/>budget = MAX_PAGES<br/>− internal pages crawled"]
+        EN_STRIP["Blank out descriptions that<br/>just repeat the homepage tagline<br/>(keeps the preamble from<br/>echoing down the output)"]
+        EN_BATCH["LLM enriches each page<br/>batches of 20, run in parallel<br/>→ section<br/>→ importance (1–10)<br/>→ description"]
     end
 
     subgraph Scoring["3 · Scoring & classifying"]
-        direction TB
-        SC_SCORE["scorePages<br/>base: desc +25, mdUrl +20, json-ld +10,<br/>     headings +10, excerpt > 200 chars +10<br/>+ LLM importance: (x − 5.5) × 5<br/>− 20 off-primary-language penalty"]
-        SC_SECT["assignSections<br/>score < 15 → dropped<br/>15–39 → Optional<br/>≥ 40 → LLM section OR path-inferred fallback"]
-        SC_FILT["filterAndSelectPages<br/>• sort by score, dedup by host+path<br/>• drop own homepage<br/>• primary ≤ 50 (≥ 40 · non-Optional)<br/>• optional ≤ 10 (15–39)<br/>• rescue homepage only if both empty"]
+        direction LR
+        SC_SCORE["Score each page 0–100<br/><br/><b>Base signals</b><br/>description +25<br/>mdUrl sibling +20<br/>JSON-LD description +10<br/>has headings +10<br/>body excerpt > 200 ch +10<br/><br/><b>Modifiers</b><br/>LLM importance → ±23<br/>off-primary-language → −20"]
+        SC_SECT["Bucket each page<br/>score < 15 → dropped<br/>15–39 → Optional<br/>≥ 40 → LLM section<br/>&nbsp;&nbsp;(path-inferred fallback)"]
+        SC_FILT["Pick what goes in the output<br/>• dedupe by host + path<br/>• drop site's own homepage<br/>• Primary: up to 50 (score ≥ 40)<br/>• Optional: up to 10 (15–39)<br/>• rescue homepage<br/>&nbsp;&nbsp;only if both are empty"]
     end
 
     subgraph Assembling["4 · Assembling file"]
-        direction TB
-        AS_SUM["summary ← homepageMeta.description<br/>(if provenance ≠ 'none')"]
-        AS_PRE["generateSitePreamble (LLM)<br/>JSON { confident, description }<br/>dropped unless confident === true"]
-        AS_NOTE["robotsNotice if Disallow: /"]
-        AS_FILE["assembleFile<br/>1. # siteName<br/>2. > summary<br/>3. preamble paragraph<br/>4. per-section H2 + [label](url): description<br/>   labels: title → urlToLabel fallback<br/>   (collision / generic-title → URL segment)<br/>5. ## Optional at end"]
-        AS_TERM["terminal status<br/>crawled = 0 → failed<br/>primary + optional empty → failed<br/>attempts ≥ 5 && success < 50 % → partial<br/>else → complete"]
+        direction LR
+        AS_SUM["Derive the summary blockquote<br/>from the homepage description<br/>(only if it came from<br/>meta / og / JSON-LD)"]
+        AS_PRE["LLM writes a 2–3 sentence intro<br/>structured JSON reply with<br/>confidence flag<br/>dropped if not confident"]
+        AS_NOTE["Add 'robots disallow-all' note<br/>when the site blocks all<br/>crawling (Disallow: /)"]
+        AS_FILE["Build the markdown file<br/># SiteName<br/>> summary<br/>intro paragraph<br/>## Section<br/>&nbsp;&nbsp;- [label](url): description<br/>## Optional<br/><br/>label = page title, with<br/>URL-derived fallback on<br/>collision or generic title"]
+        AS_TERM["Decide terminal status<br/>0 pages crawled → failed<br/>empty primary + optional → failed<br/>≥ 5 attempts && < 50 %<br/>&nbsp;&nbsp;success → partial<br/>else → complete"]
     end
 
     In --> CR_RB --> CR_SM --> CR_HP --> CR_SPA
@@ -214,9 +214,9 @@ flowchart TD
 Everything from "have a URL" to "have an array of fetched `ExtractedPage`s".
 
 - **`fetchRobots`** — parse `robots.txt`. Two outputs that matter downstream: the Disallow list (honored on every enqueue) and the sitemap URLs (next step's seed). `Crawl-delay` is kept for the worker pool.
-- **`fetchSitemapUrls × up to 3`** — robots-declared sitemaps first, then `/sitemap.xml` and `/sitemap_index.xml` as fallbacks. Each URL is run through `isSameDomain · !shouldSkipUrl · isAllowed` before being accepted into the queue.
+- **`fetchSitemapUrls × up to 3`** — robots-declared sitemaps first, then `/sitemap.xml` and `/sitemap_index.xml` as fallbacks. Each URL is run through `isSameDomain · !shouldSkipUrl · isAllowed` before being accepted into the in-memory BFS queue.
 - **`fetchPage(baseUrl)` + SPA gate** — plain-HTTP probe of the homepage. If the fetch failed (403 / timeout / bot challenge) or the HTML looks like a JS shell (`isSpaHtml`), the gate flips to the browser path. This is a **one-way** decision: once flipped, every page in the worker pool goes through Puppeteer.
-- **`SpaBrowser.init` + render homepage** — only runs on the browser path. The rendered DOM gives us the hydrated nav and any links the JS added post-load, which get merged into the queue.
+- **`SpaBrowser.init` + render homepage** — only runs on the browser path. The rendered DOM gives us the hydrated nav and any links the JS added post-load, which get merged into the in-memory BFS queue.
 - **`probeMarkdown(baseUrl)`** — looks for a `.md` sibling of the URL (per the llms.txt spec). Contributes +20 to that page's score if found.
 - **`extractLinksFromHtml` (homepage)** — only runs on the *non*-SPA path and only when the sitemap was sparse (queue < 5). Scrapes the homepage's nav as a safety net.
 - **`capByPathPrefix`** — bounds the queue by the first `PREFIX_SEGMENT_DEPTH` (=2) path segments, at most `URLS_PER_PREFIX_CAP` (=5) per bucket. Stops a content-heavy section of the site from swamping the LLM rank prompt.

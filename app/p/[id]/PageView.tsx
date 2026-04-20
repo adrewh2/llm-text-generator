@@ -220,16 +220,22 @@ function PageViewInner({
       <AppHeader
         center={
           <>
-            {/* Domain stays visible on every viewport — users need to
-                know which site's llms.txt they're looking at — and
-                truncate handles long ones. Divider stays too because
-                it's the visual separator between the brand and the
-                domain. Page count + spec chip hide below sm; the
-                mobile right side is tight enough already. */}
+            {/* Domain stays visible when the result is ready — users
+                need to know which site's llms.txt they're looking at.
+                During generation the mobile slot is tight (domain +
+                "Generating…" + right-side buttons overflow), so the
+                domain collapses below sm and the status pill takes
+                its place. Divider stays as the brand/status separator.
+                Page count + spec chip hide below sm; the mobile
+                right side is tight enough already. */}
             <span className="h-4 w-px bg-zinc-200 shrink-0" aria-hidden />
-            {domain
-              ? <span className="text-sm text-zinc-500 truncate">{domain}</span>
-              : <div className="h-3 w-24 sm:w-32 bg-zinc-100 rounded animate-pulse" />}
+            {(() => {
+              const hideDomainOnMobile = !showResult && job && !isDone
+              const domainClass = hideDomainOnMobile ? "hidden sm:block" : ""
+              return domain
+                ? <span className={`text-sm text-zinc-500 truncate ${domainClass}`}>{domain}</span>
+                : <div className={`h-3 w-24 sm:w-32 bg-zinc-100 rounded animate-pulse ${domainClass}`} />
+            })()}
             {showResult ? (
               <>
                 <span className="text-zinc-300 hidden sm:block">·</span>
