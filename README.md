@@ -2,17 +2,17 @@
 
 A web app that turns any website into a spec-compliant [`llms.txt`](https://llmstxt.org) file — a machine-readable index an LLM can use to understand what the site is and which pages matter.
 
-Paste a URL, wait about a minute, get back a curated `llms.txt`: an H1 with the site's name, a short intro, and the site's most important pages grouped into sections like Docs, Guides, or Products. Sign in to save a history of everything you've generated and export the whole collection as a zip.
+Enter a URL and get back a curated `llms.txt`: an H1 with the site's name, a short intro, and the site's most important pages grouped into sections like Docs, Guides, Products, etc. Sign in to save a history of everything you've generated and export the collection as a zip.
 
 ## What it does
 
 - **Crawls a site intelligently.** Reads the site's `sitemap.xml` and `robots.txt`, explores outward from the homepage, and — when a site is a JavaScript shell (SPA) — renders it through headless Chromium. Before crawling, an LLM re-orders the candidate URLs by likely value so the page budget is spent on the pages an LLM reader would actually want.
 - **Detects the site's primary language** from the homepage and prioritises same-language URLs, so a Japanese-primary site produces a coherent Japanese `llms.txt` rather than getting swamped by English alternates.
 - **Classifies and scores each page** with Claude, combining the LLM's judgment with deterministic quality signals (description presence, `.md` sibling per the spec, structured data, URL shape).
-- **Assembles a spec-compliant file**: H1 + blockquote summary + intro paragraph + `## Section` headings with importance-ordered bullet lists. Curated external references (spec links, upstream docs, related projects the site links to itself) are included as peers.
-- **Caches globally.** One canonical result per URL, shared across all users. A daily cron detects upstream change via a signature over the sitemap + homepage and re-crawls only when something's actually drifted.
+- **Assembles a spec-compliant file**: H1 + blockquote summary + intro paragraph + `## Section` headings with importance-ordered bullet lists. Curated external references (spec links, upstream docs, related projects the site links to itself) are included.
+- **Caches globally.** One canonical result per URL, shared across all users. A daily cron detects site changes via a signature over the sitemap + homepage and re-crawls only when something actually drifted. User re-requests can also trigger a regeneration if the page's TTL expired.
 - **Account features** for signed-in users: dashboard of every URL you've generated, infinite scroll + bulk ZIP export, one-click "add to dashboard" when viewing a shared result URL.
-- **Production-hardened**: SSRF guards on every outbound fetch (with per-redirect re-validation), two-bucket rate limiter (SUBMIT floor + NEW_CRAWL quota), prompt-injection defence on every LLM call, Row-Level Security on every table, Sentry error tracking, and a durable QStash queue for crawl dispatch with graceful fallbacks for local dev.
+- **Production-hardened**: SSRF guards on every outbound fetch (with per-redirect re-validation), two-bucket rate limiter (SUBMIT floor + NEW_CRAWL quota), prompt-injection defence on every LLM call, Row-Level Security on every table, Sentry error tracking, and a durable QStash queue for crawl dispatch with fallback systems for local dev.
 
 Full detail on any of these lives in the docs under [`docs/`](./docs) — see [Further reading](#further-reading) below.
 
@@ -35,9 +35,9 @@ vars below are in place — Supabase is the hard dependency (schema,
 auth, session cookie). Walk through this in order:
 
 1. Clone + install (below).
-2. [Create the Supabase project](#1-create-the-supabase-project) — provision it, run the schema migration, copy the keys.
-3. [Configure OAuth providers](#2-configure-oauth-providers) — needed only if you want to test the signed-in flow locally. The anon path works without it.
-4. [Fill in `.env.local`](#3-fill-in-envlocal) — with the Supabase keys from step 2 (and an Anthropic API key so LLM enrichment actually runs; the app falls back to deterministic defaults if you skip it).
+2. [Create the Supabase project](#creating-the-supabase-project) — provision it and run the schema migration.
+3. [Configure OAuth providers](#configuring-oauth-providers) — needed only if you want to test the signed-in flow locally. The anon path works without it.
+4. [Fill in `.env.local`](#filling-in-envlocal) — with the Supabase keys from step 2 (and an Anthropic API key so LLM enrichment actually runs; the app falls back to deterministic defaults if you skip it).
 5. Start the dev server (below).
 
 ```bash
@@ -47,7 +47,7 @@ cd llm-text-generator
 npm install
 
 # Steps 2–4 — complete the numbered sections below, then:
-cp .env.example .env.local   # fill in from steps 2 and 4
+cp .env.example .env.local   # fill in with keys obtained
 
 # Step 5 — run
 npm run dev
@@ -55,7 +55,7 @@ npm run dev
 
 Open <http://localhost:3000>.
 
-### 1. Create the Supabase project
+### Creating the Supabase project
 
 1. Create a new project at [supabase.com/dashboard](https://supabase.com/dashboard).
 2. Open **SQL Editor** → paste the contents of [`supabase/migration.sql`](./supabase/migration.sql) → **Run**. This creates the `pages`, `jobs`, and `user_requests` tables along with RLS policies.
@@ -64,7 +64,7 @@ Open <http://localhost:3000>.
    - `anon` `public` key → `SUPABASE_ANON_KEY` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `service_role` `secret` key → `SUPABASE_SERVICE_ROLE_KEY` (server-only, bypasses RLS)
 
-### 2. Configure OAuth providers
+### Configuring OAuth providers
 
 The app uses GitHub + Google OAuth via Supabase. In **Authentication → Providers**, enable both:
 
@@ -72,34 +72,35 @@ The app uses GitHub + Google OAuth via Supabase. In **Authentication → Provide
 - **Google** — create OAuth credentials in [Google Cloud Console](https://console.cloud.google.com/apis/credentials). Authorized redirect URI: `https://<your-project>.supabase.co/auth/v1/callback`.
 
 Still in the Supabase dashboard, open **Authentication → URL Configuration** (this is Supabase's own allowlist, separate from the provider-side redirect URIs above). Set:
+
 - **Site URL**: `http://localhost:3000` (dev) or your production origin
 - **Redirect URLs**: add both `http://localhost:3000/auth/callback` and `https://<your-prod-domain>/auth/callback`
 
 The full redirect chain is: browser → GitHub/Google (which has the Supabase callback in its allowlist) → Supabase (which has our `/auth/callback` in its allowlist) → app. Each hop needs its own allowlist entry.
 
-### 3. Fill in `.env.local`
+### Filling in `.env.local`
 
 **Required for any deploy (prod or local):**
 
-| Variable | Where | Purpose |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | server | Claude API for page enrichment. Absent → LLM steps degrade to deterministic fallbacks; output is still spec-valid, just un-enriched. |
-| `SUPABASE_URL` | server | Supabase project URL. |
-| `SUPABASE_ANON_KEY` | server | Supabase anon key (for server-side auth helpers). |
-| `SUPABASE_SERVICE_ROLE_KEY` | server | Bypasses RLS — **server-only; never ship to the browser**. |
-| `NEXT_PUBLIC_SUPABASE_URL` | browser | Same URL, exposed to the browser client. |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser | Anon key, exposed to the browser. |
-| `CRON_SECRET` | server | Random string you generate (`openssl rand -hex 32`). Vercel Cron sends it as `Authorization: Bearer …` to `/api/monitor`, which timing-safe-compares. Unset ⇒ the endpoint fails closed. |
+| Variable                        | Where   | Purpose                                                                                                                                                                                  |
+| ------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`             | server  | Claude API for page enrichment. Absent → LLM steps degrade to deterministic fallbacks; output is still spec-valid, just un-enriched.                                                     |
+| `SUPABASE_URL`                  | server  | Supabase project URL.                                                                                                                                                                    |
+| `SUPABASE_ANON_KEY`             | server  | Supabase anon key (for server-side auth helpers).                                                                                                                                        |
+| `SUPABASE_SERVICE_ROLE_KEY`     | server  | Bypasses RLS — **server-only; never ship to the browser**.                                                                                                                               |
+| `NEXT_PUBLIC_SUPABASE_URL`      | browser | Same URL, exposed to the browser client.                                                                                                                                                 |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser | Anon key, exposed to the browser.                                                                                                                                                        |
+| `CRON_SECRET`                   | server  | Random string you generate (`openssl rand -hex 32`). Vercel Cron sends it as `Authorization: Bearer …` to `/api/monitor`, which timing-safe-compares. Unset ⇒ the endpoint fails closed. |
 
 **Required in production, optional locally** — all auto-injected by Marketplace integrations (see [Deploying to Vercel §2](#2-provision-marketplace-integrations)).
 
-| Variable | Purpose |
-|---|---|
-| `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` | Back the production rate limiter. Vercel deploys fail fast at module load if either is missing (the in-memory fallback isn't safe in prod — see [`SECURITY.md §2`](./docs/SECURITY.md#2-abuse--rate-limiting)). |
+| Variable                                                                                 | Purpose                                                                                                                                                                                                                                                                     |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`                                    | Back the production rate limiter. Vercel deploys fail fast at module load if either is missing (the in-memory fallback isn't safe in prod — see [`SECURITY.md §2`](./docs/SECURITY.md#2-abuse--rate-limiting)).                                                             |
 | `QSTASH_TOKEN` + `QSTASH_URL` + `QSTASH_CURRENT_SIGNING_KEY` + `QSTASH_NEXT_SIGNING_KEY` | Authenticate and sign the crawl queue. Missing `QSTASH_TOKEN` ⇒ `waitUntil` fallback (no retry durability); mis-configured region for `QSTASH_URL` ⇒ silent drops — documented in [`SCALING.md §4`](./docs/SCALING.md#4-integration-gotchas-lessons-from-shipping-phase-2). |
-| `QSTASH_WORKER_URL` | *Optional.* Explicit callback URL override; usually unnecessary (see SCALING.md §4). |
-| `NEXT_PUBLIC_SENTRY_DSN` | Sentry ingest DSN (safe to expose). Unset ⇒ SDK no-ops. |
-| `SENTRY_AUTH_TOKEN` + `SENTRY_ORG` + `SENTRY_PROJECT` | Build-time, for source-map upload via `withSentryConfig`. |
+| `QSTASH_WORKER_URL`                                                                      | _Optional._ Explicit callback URL override; usually unnecessary (see SCALING.md §4).                                                                                                                                                                                        |
+| `NEXT_PUBLIC_SENTRY_DSN`                                                                 | Sentry ingest DSN (safe to expose). Unset ⇒ SDK no-ops.                                                                                                                                                                                                                     |
+| `SENTRY_AUTH_TOKEN` + `SENTRY_ORG` + `SENTRY_PROJECT`                                    | Build-time, for source-map upload via `withSentryConfig`.                                                                                                                                                                                                                   |
 
 ### Scripts
 
@@ -165,6 +166,7 @@ The `NEXT_PUBLIC_*` pair is safe to expose; the others must stay server-only.
 ### 4. Point Supabase at the production URL
 
 After the first deploy, copy the production domain and add it to Supabase:
+
 - **Authentication → URL Configuration → Site URL**: `https://<your-domain>`
 - **Authentication → URL Configuration → Redirect URLs**: include `https://<your-domain>/auth/callback`
 
@@ -192,11 +194,13 @@ curl -s -X POST https://<your-domain>/api/p \
 ```
 
 **Verify observability** — force a real pipeline error (DNS resolution failure) and confirm Sentry catches it:
+
 ```bash
 curl -s -X POST https://<your-domain>/api/p \
   -H "Content-Type: application/json" \
   -d '{"url":"https://this-domain-definitely-does-not-exist-asdfghjkl.com"}'
 ```
+
 Then open your Sentry project's **Issues** tab; the error should appear within ~30 s with `context: worker.crawl` or `context: pipeline` tag. Filter by the `context` tag to scope to a single call site.
 
 **Verify the queue** — Upstash Console → QStash → **Events**. You should see a signed POST to `https://<your-domain>/api/worker/crawl` per submitted URL, with status `Delivered`.
