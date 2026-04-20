@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server"
+import { getCurrentUser } from "@/lib/supabase/getUser"
 import { redirect } from "next/navigation"
 import DownloadButton from "./DownloadButton"
 import PageList, { type WirePage } from "./PageList"
@@ -13,8 +13,7 @@ export const dynamic = "force-dynamic"
 const INITIAL_PAGE_SIZE = 20
 
 export default async function DashboardPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
   if (!user) redirect("/login")
 
   // Fetch one extra so we can tell the client whether more pages exist.

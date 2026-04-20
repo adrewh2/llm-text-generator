@@ -130,10 +130,20 @@ export default function ProgressPane({
                   : `${job.progress.discovered} URLs discovered · ${job.progress.crawled} crawled`}
               </span>
             </div>
-            <div className="h-24 flex items-center justify-center p-4">
-              <p className="text-zinc-400 text-xs font-mono">
+            <div className="h-24 flex flex-col items-center justify-center gap-1 p-4">
+              <p className="text-zinc-400 text-xs font-mono text-center">
                 {bottomLabel(job, simulatedStep, domain)}
               </p>
+              {!isSimulated && job.status === "crawling" && job.progress.mode === "browser" && (
+                <>
+                  <p className="text-zinc-400 text-xs font-mono text-center">
+                    This site needs a full browser render
+                  </p>
+                  <p className="text-zinc-400 text-xs font-mono text-center">
+                    Taking a little bit longer
+                  </p>
+                </>
+              )}
             </div>
           </div>
         )}

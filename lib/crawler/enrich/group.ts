@@ -1,4 +1,5 @@
 import type { ScoredPage } from "../types"
+import { INCLUDE_SCORE_THRESHOLD, PRIMARY_SCORE_THRESHOLD } from "./score"
 
 function normalizeForComparison(url: string): string {
   try {
@@ -18,9 +19,9 @@ function normalizeForComparison(url: string): string {
 
 export function assignSections(pages: ScoredPage[]): ScoredPage[] {
   return pages.map((page) => {
-    if (page.score < 15) return { ...page, section: undefined }
+    if (page.score < INCLUDE_SCORE_THRESHOLD) return { ...page, section: undefined }
 
-    if (page.isOptional || page.score < 50) {
+    if (page.isOptional || page.score < PRIMARY_SCORE_THRESHOLD) {
       return { ...page, section: "Optional" }
     }
 
@@ -86,7 +87,7 @@ export function filterAndSelectPages(
     })
 
   const primary = deduped
-    .filter((p) => p.score >= 50 && p.section && p.section !== "Optional")
+    .filter((p) => p.score >= PRIMARY_SCORE_THRESHOLD && p.section && p.section !== "Optional")
     .sort((a, b) => b.score - a.score)
     .slice(0, maxOutput - 10)
 
@@ -94,7 +95,7 @@ export function filterAndSelectPages(
 
   const optional = deduped
     .filter((p) => {
-      if (p.score < 15 || p.score >= 50) return false
+      if (p.score < INCLUDE_SCORE_THRESHOLD || p.score >= PRIMARY_SCORE_THRESHOLD) return false
       if (primaryUrls.has(p.url)) return false
       return true
     })
@@ -112,7 +113,7 @@ export function filterAndSelectPages(
   // place it under Optional so the tiering stays meaningful.
   if (primary.length === 0 && optional.length === 0) {
     const rescueHomepage = pages
-      .filter((p) => isOwnHomepage(p.url) && p.score >= 15)
+      .filter((p) => isOwnHomepage(p.url) && p.score >= INCLUDE_SCORE_THRESHOLD)
       .sort((a, b) => b.score - a.score)[0]
     if (rescueHomepage) {
       optional.push(rescueHomepage)

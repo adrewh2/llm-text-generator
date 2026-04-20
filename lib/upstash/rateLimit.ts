@@ -160,9 +160,12 @@ export async function consumeRateLimit(
       // errorLog so Sentry groups the event — a persistent misconfig
       // *silently disables* rate limiting platform-wide, which is a
       // security concern that warrants alerting, not just a log line.
+      // `remaining: 0` is the honest value: we never actually
+      // consumed a token, so any caller reading this field for a
+      // "tokens left" display shouldn't see a full bucket.
       const message = err instanceof Error ? err.message : String(err)
       errorLog("rateLimit.upstash", `Upstash call failed, FAILING OPEN: ${message}`)
-      return { allowed: true, retryAfterSec: 0, remaining: cfg.capacity }
+      return { allowed: true, retryAfterSec: 0, remaining: 0 }
     }
   }
   return consumeInMemory(key, cfg)

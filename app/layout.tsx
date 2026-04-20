@@ -1,7 +1,7 @@
 import type { Metadata } from "next"
 import { Geist, Geist_Mono, Newsreader } from "next/font/google"
 import { Analytics } from "@vercel/analytics/next"
-import { createClient } from "@/lib/supabase/server"
+import { getCurrentUser } from "@/lib/supabase/getUser"
 import GlobalHeader from "@/app/components/GlobalHeader"
 import "./globals.css"
 
@@ -33,8 +33,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // Resolve auth once for the layout — NavAuth gets seeded from this
   // server snapshot so the "Sign in" → avatar swap on first render
   // never flashes the anon state for a signed-in user.
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
   return (
     <html lang="en">
       <body

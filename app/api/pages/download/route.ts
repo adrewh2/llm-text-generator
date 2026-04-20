@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import JSZip from "jszip"
 import { getUserPageResults } from "@/lib/store"
-import { createClient } from "@/lib/supabase/server"
+import { getCurrentUser } from "@/lib/supabase/getUser"
 import { urlToFilename } from "@/lib/crawler/net/urlLabel"
 import { api, rateLimit } from "@/lib/config"
 import { consumeRateLimit } from "@/lib/upstash/rateLimit"
@@ -11,8 +11,7 @@ export const runtime = "nodejs"
 const MAX_DOWNLOAD_ENTRIES = api.DOWNLOAD_MAX_ENTRIES
 
 export async function GET() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
   if (!user) return new NextResponse(null, { status: 401 })
 
   // One zip per user per 24h. Zipping + shipping up to 500 page

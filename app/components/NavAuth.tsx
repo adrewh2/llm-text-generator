@@ -16,7 +16,12 @@ export default function NavAuth({ initialUser = null }: { initialUser?: User | n
   const [user, setUser] = useState<User | null>(initialUser)
   const supabase = useRef(createClient()).current
   const pathname = usePathname()
+  // On / and /dashboard we show one contextual action (the other is
+  // redundant — / IS "Generate", /dashboard IS "Dashboard"). Everywhere
+  // else — /login, 404, etc. — show both so the user has a way back to
+  // either core surface.
   const onDashboard = pathname?.startsWith("/dashboard") ?? false
+  const onHome = pathname === "/"
 
   // Keep the client state in sync with live auth changes. We skip the
   // one-shot getUser() call here — initialUser from the server is the
@@ -40,19 +45,22 @@ export default function NavAuth({ initialUser = null }: { initialUser?: User | n
     )
   }
 
+  const generateBtn = (
+    <Link href="/" className={HEADER_BUTTON_CLASS} aria-label="Generate">
+      <Plus size={14} className="text-zinc-400" />
+      <span>Generate</span>
+    </Link>
+  )
+  const dashboardBtn = (
+    <Link href="/dashboard" className={HEADER_BUTTON_CLASS} aria-label="Dashboard">
+      <LayoutDashboard size={14} className="text-zinc-400" />
+      <span>Dashboard</span>
+    </Link>
+  )
+
   return (
     <div className="flex items-center gap-2 sm:gap-3">
-      {onDashboard ? (
-        <Link href="/" className={HEADER_BUTTON_CLASS} aria-label="Generate">
-          <Plus size={14} className="text-zinc-400" />
-          <span>Generate</span>
-        </Link>
-      ) : (
-        <Link href="/dashboard" className={HEADER_BUTTON_CLASS} aria-label="Dashboard">
-          <LayoutDashboard size={14} className="text-zinc-400" />
-          <span>Dashboard</span>
-        </Link>
-      )}
+      {onDashboard ? generateBtn : onHome ? dashboardBtn : (<>{generateBtn}{dashboardBtn}</>)}
       <UserMenu user={user} />
     </div>
   )

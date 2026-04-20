@@ -52,6 +52,15 @@ export interface JobProgress {
   discovered: number
   crawled: number
   failed: number
+  /**
+   * How the crawler is fetching pages. `"http"` is the plain-fetch
+   * fast path with N concurrent workers; `"browser"` falls back to
+   * Puppeteer for sites that return a JS shell under plain fetch,
+   * which renders pages one at a time (same Chromium process). Set
+   * once the pipeline decides which path to take; the progress UI
+   * reads this to explain the slower latency of the browser path.
+   */
+  mode?: "http" | "browser"
 }
 
 export type JobStatus =

@@ -1,15 +1,14 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getUserPages } from "@/lib/store"
 import { api } from "@/lib/config"
-import { createClient } from "@/lib/supabase/server"
+import { getCurrentUser } from "@/lib/supabase/getUser"
 
 export const runtime = "nodejs"
 
 const { PAGES_DEFAULT_LIMIT: DEFAULT_LIMIT, PAGES_MAX_LIMIT: MAX_LIMIT } = api
 
 export async function GET(req: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
   if (!user) return new NextResponse(null, { status: 401 })
 
   const params = new URL(req.url).searchParams

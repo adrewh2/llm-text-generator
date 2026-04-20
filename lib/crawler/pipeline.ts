@@ -28,24 +28,37 @@ class PipelineTimeoutError extends Error {
 }
 
 export async function runCrawlPipeline(jobId: string, targetUrl: string): Promise<void> {
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutHandle = setTimeout(() => reject(new PipelineTimeoutError()), PIPELINE_BUDGET_MS)
-  })
+  // AbortController lets the inner pipeline self-terminate at stage
+  // boundaries instead of running orphaned LLM + DB work after the
+  // outer await has given up. On timeout the signal goes aborted;
+  // the inner loop calls throwIfAborted at each stage to bail early.
+  // Previously we used Promise.race which returned promptly but left
+  // the inner pipeline running indefinitely in the background, still
+  // consuming compute + Anthropic spend on work no one was waiting for.
+  const ac = new AbortController()
+  const timeoutHandle = setTimeout(() => {
+    ac.abort(new PipelineTimeoutError())
+  }, PIPELINE_BUDGET_MS)
+
   try {
-    await Promise.race([runPipelineInner(jobId, targetUrl), timeout])
+    await runPipelineInner(jobId, targetUrl, ac.signal)
   } catch (err: unknown) {
-    if (err instanceof PipelineTimeoutError) {
+    if (err instanceof PipelineTimeoutError || ac.signal.aborted) {
       await updateJob(jobId, { status: "failed", error: "Exceeded time budget" })
     }
+    // Non-timeout errors are already handled inside runPipelineInner's
+    // own catch (writes a `failed` state with the actual error). If one
+    // escapes, it reaches the worker route's 500 handler and QStash retries.
   } finally {
-    // Clear the timer so it doesn't keep the Fluid Compute instance
-    // alive past a quick completion.
-    if (timeoutHandle) clearTimeout(timeoutHandle)
+    clearTimeout(timeoutHandle)
   }
 }
 
-async function runPipelineInner(jobId: string, targetUrl: string): Promise<void> {
+async function runPipelineInner(
+  jobId: string,
+  targetUrl: string,
+  signal: AbortSignal,
+): Promise<void> {
   const spaBrowser = new SpaBrowser()
 
   try {
@@ -66,6 +79,7 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
     }
 
     // Fetch robots.txt
+    signal.throwIfAborted()
     const robots = await fetchRobots(baseUrl)
     const robotsFullBlock = hasFullDisallow(robots.disallowed)
 
@@ -101,6 +115,7 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
     // (bot-block, 4xx, timeout), fall through to the Puppeteer path
     // below — claude.ai and similar sites 403 against a plain fetch but
     // render fine in a real browser.
+    signal.throwIfAborted()
     const homepageFetch = await fetchPage(baseUrl)
     const rawHomepageHtml = homepageFetch.ok ? homepageFetch.html ?? null : null
     const rawHomepageMeta = rawHomepageHtml ? extractMetadata(baseUrl, rawHomepageHtml) : null
@@ -136,6 +151,20 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
       })
       return
     }
+
+    // Surface the crawl mode to the progress UI. This is the first
+    // point at which we know whether the rest of the crawl will go
+    // through plain fetch (N workers in parallel) or Puppeteer
+    // (single Chromium, serial). The ProgressPane's terminal line
+    // reads this to explain why the browser path takes longer.
+    await updateJob(jobId, {
+      progress: {
+        discovered: discoveredUrls.size,
+        crawled: 0,
+        failed: 0,
+        mode: needsBrowser ? "browser" : "http",
+      },
+    })
 
     const [homepageMdUrl] = await Promise.all([probeMarkdown(baseUrl)])
     const pages: ExtractedPage[] = [
@@ -195,6 +224,7 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
       queue.splice(0, queue.length, ...preFiltered)
     }
 
+    signal.throwIfAborted()
     const rankedUrls = await rankCandidateUrls(
       queue.map((q) => q.url),
       siteName0,
@@ -207,8 +237,9 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
       .filter((q): q is { url: string; depth: number } => !!q)
     queue.splice(0, queue.length, ...reordered)
 
+    const mode: "http" | "browser" = needsBrowser ? "browser" : "http"
     await updateJob(jobId, {
-      progress: { discovered: discoveredUrls.size, crawled, failed },
+      progress: { discovered: discoveredUrls.size, crawled, failed, mode },
     })
 
     // robots.txt Crawl-delay: gated through a shared `nextSlot`
@@ -230,10 +261,25 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
       if (wait > 0) await delay(wait)
     }
 
+    // Debounce progress writes. Previously we wrote after every page —
+    // 25 crawled pages = 25 extra DB round-trips on the pipeline's hot
+    // path. Now we batch on a min-interval AND a min-page count; the
+    // polling UI refreshes at 1.5s anyway, so sub-second precision on
+    // `discovered` / `crawled` / `failed` doesn't buy anything.
+    const PROGRESS_MIN_INTERVAL_MS = 500
+    let lastProgressAt = 0
+    const flushProgress = async (force = false): Promise<void> => {
+      const now = Date.now()
+      if (!force && now - lastProgressAt < PROGRESS_MIN_INTERVAL_MS) return
+      lastProgressAt = now
+      await updateJob(jobId, { progress: { discovered: discoveredUrls.size, crawled, failed, mode } })
+    }
+
     // Worker pool: pull-based, no batch sync (JS sync code is atomic).
     let queueIdx = 0
     const worker = async (): Promise<void> => {
       while (crawled < MAX_PAGES) {
+        if (signal.aborted) return
         let item: { url: string; depth: number } | undefined
         while (queueIdx < queue.length) {
           const candidate = queue[queueIdx++]
@@ -286,24 +332,29 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
           }
         }
 
-        await updateJob(jobId, { progress: { discovered: discoveredUrls.size, crawled, failed } })
+        await flushProgress()
       }
     }
 
-    await Promise.all(Array.from({ length: needsBrowser ? 1 : CONCURRENCY }, () => worker()))
-
-    // Detect genre + site name. The deterministic extractor gives us
-    // a cheap best-guess; the LLM then picks the actual brand out of
-    // all the raw candidates (og:site_name, title, h1, JSON-LD) —
-    // otherwise we end up storing things like
-    // "Uber Eats | Food & Grocery Delivery | Order Groceries…" or a
-    // cheerio-concatenated nav-icon mess as the dashboard label. If
-    // the LLM is unavailable the deterministic guess is returned as-is.
+    // Site-name LLM call only needs the homepage's extracted
+    // candidates — no dependency on crawled subpages — so kick it off
+    // in parallel with the worker pool. Recovers ~5-10s on typical
+    // sites where the LLM rate-limited or responded slowly.
     const hostname = new URL(baseUrl).hostname
-    const genre = detectGenre(homepageHtml, [...discoveredUrls])
     const deterministicName = extractSiteName(homepageHtml, hostname)
     const nameCandidates = extractSiteNameCandidates(homepageHtml, hostname)
-    const siteName = await llmSiteName(nameCandidates, hostname, deterministicName)
+    const siteNamePromise = llmSiteName(nameCandidates, hostname, deterministicName)
+
+    await Promise.all(Array.from({ length: needsBrowser ? 1 : CONCURRENCY }, () => worker()))
+    // Final flush so the UI sees the last batch's counts even when
+    // they arrived inside the min-interval window.
+    await flushProgress(true)
+
+    // Genre needs the crawled URL set, so it runs after the worker
+    // pool. `llmSiteName` may still be in flight at this point —
+    // awaiting it costs only whatever time it hasn't already spent.
+    const genre = detectGenre(homepageHtml, [...discoveredUrls])
+    const siteName = await siteNamePromise
 
     // Strip pages whose description exactly matches the generic homepage tagline
     const homepageDesc = homepageMeta.description?.trim()
@@ -331,9 +382,11 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
     const successful = [...internalSuccessful, ...externalRefs]
 
     // LLM enrichment: classify pages and generate missing descriptions
+    signal.throwIfAborted()
     await updateJob(jobId, { status: "enriching", genre, siteName })
     const enrichment = await llmEnrichPages(successful, siteName, genre, primaryLang)
 
+    signal.throwIfAborted()
     await updateJob(jobId, { status: "scoring" })
 
     // Derive blockquote summary from homepage description
@@ -354,6 +407,7 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
       return true
     })
 
+    signal.throwIfAborted()
     await updateJob(jobId, { status: "assembling" })
 
     const preamble = await generateSitePreamble(siteName, genre, primary, optional, primaryLang)
@@ -396,6 +450,10 @@ async function runPipelineInner(jobId: string, targetUrl: string): Promise<void>
       ...(error ? { error } : {}),
     })
   } catch (err: unknown) {
+    // Timeout is handled by runCrawlPipeline's outer catch (single
+    // source of truth for the "Exceeded time budget" message). Re-throw
+    // so the outer handler writes the failed state.
+    if (err instanceof PipelineTimeoutError || signal.aborted) throw err
     const message = err instanceof Error ? err.message : "Unexpected error"
     await updateJob(jobId, { status: "failed", error: message })
   } finally {

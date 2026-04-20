@@ -40,14 +40,42 @@ function extractTitle($: CheerioAPI): string {
   const og = $('meta[property="og:title"]').attr("content")?.trim()
   if (og) return cleanTitle(og)
 
-  const tag = $("title").text().trim()
+  // Scope to head so SVG <title> elements (used for icon
+  // accessibility — "Back Button", "Search Icon", "Filter Icon" on
+  // sony.com was the motivating case) don't get concatenated into
+  // the page title. `$("title").text()` matches every title in the
+  // DOM and glues them together.
+  const tag = $("head > title").first().text().trim()
   if (tag) return cleanTitle(tag)
 
-  const h1 = $("h1").first().text().trim()
-  if (h1) return cleanTitle(h1)
+  // Same shape concern for h1: many pages nest visually-hidden
+  // <span> carousel / button labels inside the hero h1, which
+  // cheerio's `.text()` happily concatenates. Strip descendants
+  // whose visibility is hinted by common utility classnames /
+  // aria-hidden / the HTML `hidden` attribute before reading text.
+  const h1el = $("h1").first()
+  if (h1el.length) {
+    const h1clone = h1el.clone()
+    h1clone.find(SR_ONLY_SELECTOR).remove()
+    const h1 = h1clone.text().replace(/\s+/g, " ").trim()
+    if (h1) return cleanTitle(h1)
+  }
 
   return ""
 }
+
+// Classes / attributes that conventionally mark content as visually
+// hidden / screen-reader-only. Removing these from a cloned subtree
+// gives us "what a sighted user would read" before we extract text.
+const SR_ONLY_SELECTOR = [
+  ".sr-only",
+  ".visually-hidden",
+  ".visuallyhidden",
+  ".screen-reader-text",
+  ".a11y-hidden",
+  "[aria-hidden='true']",
+  "[hidden]",
+].join(",")
 
 // Titles often have a site-name suffix like "Page — Site Name" that we
 // want to strip. Be conservative: only strip if the suffix starts with
