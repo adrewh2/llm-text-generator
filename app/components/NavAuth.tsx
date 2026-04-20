@@ -29,7 +29,19 @@ export default function NavAuth({ initialUser = null }: { initialUser?: User | n
   // that the browser client would resolve to anyway.
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => setUser(session?.user ?? null),
+      (event, session) => {
+        // Ignore INITIAL_SESSION: it fires synchronously on subscribe
+        // with whatever the client can resolve from cookies at that
+        // instant, which is occasionally null before the browser
+        // finishes hydrating the auth cookie. Acting on it would
+        // downgrade a signed-in user to the "Sign in" link for one
+        // frame and then flip back — the navbar flicker. We already
+        // seeded `user` from initialUser (SSR cookie read), so trust
+        // that until a real auth event (SIGNED_IN, SIGNED_OUT,
+        // TOKEN_REFRESHED, USER_UPDATED) arrives.
+        if (event === "INITIAL_SESSION") return
+        setUser(session?.user ?? null)
+      },
     )
     return () => subscription.unsubscribe()
   }, [supabase])
