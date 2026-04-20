@@ -148,142 +148,47 @@ sequenceDiagram
 
 One per progress-step the user sees. The four stages below match the four rows in `ProgressPane` exactly; this is what's happening inside each row while its spinner is active.
 
-### Overview
+### 1 · Crawling pages
 
-```mermaid
-flowchart LR
-    In(["Input: baseUrl"])
-    S1["1 · Crawling pages"]
-    S2["2 · Enriching with AI"]
-    S3["3 · Scoring & classifying"]
-    S4["4 · Assembling file"]
-    Out(["Output: markdown llms.txt + status"])
+We start with nothing but a URL. This stage's job is to turn that into a small, deliberate list of pages we've fetched and parsed.
 
-    In --> S1 --> S2 --> S3 --> S4 --> Out
-```
+The first stop is `robots.txt` — partly to know which URLs we're allowed to touch, partly because it usually points at the site's sitemaps. Sitemaps are the fastest way to get a reasonable seed list, so we walk them (the robots-declared ones first, then the conventional `/sitemap.xml` fallbacks) and push every allowed same-domain URL into an in-memory queue.
 
-### What each stage does
+Next we probe the homepage with a plain HTTP fetch. Plenty of sites are server-rendered HTML we can read directly; others are JavaScript shells that only become real HTML once a browser executes them. We have a one-way gate here: if the homepage fetch fails or the HTML looks like a JS shell, we switch to rendering everything through headless Chromium for the rest of the crawl. Staying on HTTP when we can is much faster; falling back to Chromium is what keeps us from returning an empty file on SPAs.
 
-#### 1 · Crawling pages
+Before committing to a final list, we trim the queue. We cap how many URLs we'll take from any one section of the site, so a deep documentation subtree can't swamp the crawl. We detect the site's primary language and drop obvious off-locale prefixes like `/fr/`, `/de/`, `/ja/`. Then we hand the queue to the LLM and ask it to rank and trim — pick the URLs a reader of `llms.txt` would actually want.
 
-Everything from "have a URL" to "have an array of fetched `ExtractedPage`s".
+Finally, a small worker pool fetches the ranked URLs in parallel, respecting `robots.txt` and politeness delays, and extracts title, headings, description, and a body excerpt from each page. One side errand also starts here: we kick off an LLM call to guess the site's brand name in parallel with the crawl, so stage 2 doesn't have to wait on it. The stage ends with an array of `ExtractedPage` records ready to enrich.
 
-```mermaid
-flowchart LR
-    In(["baseUrl"])
-    CR_RB["Read robots.txt"]
-    CR_SM["Walk sitemaps<br/>→ seed BFS queue"]
-    CR_HP["Probe homepage (HTTP)"]
-    CR_SPA{{"Needs<br/>Chromium?"}}
-    CR_BR["Render with Chromium"]
-    CR_MD["Probe .md sibling"]
-    CR_NAV["Scrape nav (HTTP fallback)"]
-    CR_CAP["Cap URLs per path prefix"]
-    CR_LANG["Detect primary language"]
-    CR_LOC["Drop off-locale URLs"]
-    CR_RANK["LLM ranks the queue"]
-    CR_POOL[["Worker pool"]]
-    CR_W["Fetch + extract each page"]
-    Out(["ExtractedPage[]"])
+### 2 · Enriching with AI
 
-    In --> CR_RB --> CR_SM --> CR_HP --> CR_SPA
-    CR_SPA -- "needs Chromium" --> CR_BR --> CR_MD
-    CR_SPA -- "HTML sufficient" --> CR_MD
-    CR_MD --> CR_NAV --> CR_CAP --> CR_LANG --> CR_LOC --> CR_RANK --> CR_POOL --> CR_W --> Out
-```
+Crawling gives us raw pages. Enriching turns them into something the scoring stage can actually reason about.
 
-> `llmSiteName` (stage 2's first box) is kicked off at `CR_MD` in parallel with the crawl and awaited at the top of stage 2.
+Three small signals get computed up front. The **brand name** is the LLM's pick from the homepage's `og:site_name`, `<title>`, h1, and hostname — this one was actually kicked off back during the crawl, so we just await it here instead of paying the latency sequentially. The **genre** is a deterministic label (docs site, shop, blog, marketing page, and so on) based on URL-path and homepage signals — later prompts use it to set tone and suggest section names. And **external references** are outbound links from the homepage that the LLM thinks belong in the output; we share the page budget between internal crawl results and these, so internal always wins the cap.
 
-- **`fetchRobots`** — parse `robots.txt`. Two outputs that matter downstream: the Disallow list (honored on every enqueue) and the sitemap URLs (next step's seed). `Crawl-delay` is kept for the worker pool.
-- **`fetchSitemapUrls × up to 3`** — robots-declared sitemaps first, then `/sitemap.xml` and `/sitemap_index.xml` as fallbacks. Each URL is run through `isSameDomain · !shouldSkipUrl · isAllowed` before being accepted into the in-memory BFS queue.
-- **`fetchPage(baseUrl)` + SPA gate** — plain-HTTP probe of the homepage. If the fetch failed (403 / timeout / bot challenge) or the HTML looks like a JS shell (`isSpaHtml`), the gate flips to the browser path. This is a **one-way** decision: once flipped, every page in the worker pool goes through Puppeteer.
-- **`SpaBrowser.init` + render homepage** — only runs on the browser path. The rendered DOM gives us the hydrated nav and any links the JS added post-load, which get merged into the in-memory BFS queue.
-- **`probeMarkdown(baseUrl)`** — looks for a `.md` sibling of the URL (per the llms.txt spec). Contributes +20 to that page's score if found.
-- **`extractLinksFromHtml` (homepage)** — only runs on the *non*-SPA path and only when the sitemap was sparse (queue < 5). Scrapes the homepage's nav as a safety net.
-- **`capByPathPrefix`** — bounds the queue by the first `PREFIX_SEGMENT_DEPTH` (=2) path segments, at most `URLS_PER_PREFIX_CAP` (=5) per bucket. Stops a content-heavy section of the site from swamping the LLM rank prompt.
-- **`primaryLang` + locale pre-filter** — reads `<html lang>`, defaults to `"en"`. Any URL whose leading path segment is a known ISO 639-1 code different from `primaryLang` is dropped. Has a safety floor: if the filter would empty the queue, it skips (so a site that's *only* locale-prefixed still produces output).
-- **`rankCandidateUrls` (LLM)** — single Anthropic call. Takes the full queue + siteName + homepage excerpt + primaryLang and returns an ordered subset of URL indices. Output is deduped and used as the *new* queue order.
-- **Worker pool** — pull-based; atomic `queueIdx++` under JS's single-threaded model. HTTP path: 5 parallel workers, each politeness-delayed by `POLITENESS_DELAY_MS + jitter` or the robots `Crawl-delay` slot (shared across workers). Browser path: 1 worker, paced by Puppeteer. Each successful page: `extractMetadata`, push to `pages[]`, and if `depth < MAX_DEPTH`, enqueue newly-discovered links. Progress writes to `jobs.progress` are debounced to 500 ms.
+We also do a small de-duplication pass here: if a sub-page's meta description is literally the homepage tagline, we blank it out. Otherwise that same line repeats down the file and the output looks stuck on loop.
 
-#### 2 · Enriching with AI
+The expensive step is the per-page enrichment itself. We chunk pages into batches of 20 and send each batch to the LLM in parallel, asking for three fields per page: the section it belongs in, an importance score from 0 to 10, and a short description. Batching is how we keep the stage cheap — a 25-page crawl is one or two LLM calls here, not 25.
 
-Turn the raw `ExtractedPage[]` into an enrichment map the scoring stage can use.
+### 3 · Scoring & classifying
 
-```mermaid
-flowchart LR
-    In(["ExtractedPage[]"])
-    EN_NAME["LLM: brand name<br/>(started during crawl)"]
-    EN_GENRE["Classify genre"]
-    EN_EXT["Resolve external refs"]
-    EN_STRIP["Strip tagline-dup descriptions"]
-    EN_BATCH["LLM: section + importance<br/>+ description"]
-    Out(["Enrichment map"])
+This stage is pure TypeScript, no LLM calls. The enrichment map from stage 2 is one input; a handful of signals from the pages themselves is the other. For each crawled page we answer: does this belong in the final file, and if so, as a **Primary** entry or just an **Optional** one?
 
-    In --> EN_GENRE --> EN_EXT
-    EN_NAME --> EN_EXT
-    EN_EXT --> EN_STRIP --> EN_BATCH --> Out
-```
+Every page gets a score on a roughly 0–100 scale. Having a real meta description, having a `.md` sibling (per the `llms.txt` spec), having structured data — those push the score up. Pagination, tag / category / archive pages, print-view URLs push it down. The LLM's importance rating maps onto a roughly ±23-point swing. Pages whose URL path or `<html lang>` indicates a non-primary language take a soft penalty rather than getting filtered outright — it's a preference, not a rule.
 
-- **`llmSiteName`** — actually *started* back in phase 1, right before the worker pool awaits. Its only inputs are the homepage's name candidates (`og:site_name`, `<title>`, h1, JSON-LD) + hostname + deterministic guess. Running in parallel with the crawl saves ~5–10 s because the LLM call doesn't sit behind page fetches.
-- **`detectGenre`** — deterministic. Pattern-matches URL paths (presence of `/docs/`, `/shop/`, etc.) and homepage HTML signals to bucket the site into one of the 23 genres in `types.ts`. Used by the enrichment + preamble prompts to set tone and section suggestions.
-- **`resolveExternalReferences`** — homepage outbound anchors → `rankExternalReferences` LLM call picks which to include → each kept URL is fetched in parallel for its metadata. Budget = `MAX_PAGES − internalSuccessful.length`, so internal crawl always wins the cap. Failed fetches degrade to anchor-text-only entries.
-- **Strip duplicate descriptions** — any sub-page that literally repeats the homepage's meta description gets its description blanked out. Prevents the preamble-ish homepage tagline from repeating down the output.
-- **`llmEnrichPages`** — this is the per-page LLM pass. Pages are chunked into `ENRICH_BATCH_SIZE` (20), one Anthropic call per batch, batches run in parallel. Each response is a JSON array of `{ section, importance, description }` in the input order. With `MAX_PAGES = 25`, that's 1–2 calls here.
+Then we bucket. Below 15, dropped. 15 to 40, Optional. Above 40, we try the LLM's suggested section (Docs, Guides, API, Blog, and so on), falling back to a section inferred from the URL path if the LLM declined to pick one. A final pass collapses URL variants that the normalizer missed (`/foo` vs `/foo/index.html`, the homepage itself, query-param duplicates) and caps output size: 50 Primary, 10 Optional.
 
-#### 3 · Scoring & classifying
+There's one rescue case worth calling out: if both buckets come back empty — usually a tiny single-page site — we force the homepage into Optional so the resulting file isn't degenerate.
 
-Pure TypeScript — no LLM calls. Deterministic mapping from enrichment map → primary / optional.
+### 4 · Assembling file
 
-```mermaid
-flowchart LR
-    In(["Enrichment map"])
-    SC_SCORE["Score 0–100<br/>(base signals + LLM + locale)"]
-    SC_SECT["Bucket → drop /<br/>Optional / Primary"]
-    SC_FILT["Select output set"]
-    Out(["Primary + Optional sets"])
+Now it's just markdown construction. The `llms.txt` spec has a loose shape — an H1 with the site name, a blockquote summary, an intro paragraph, then `## Section` headings with bullet lists of links — and we fill each piece in order.
 
-    In --> SC_SCORE --> SC_SECT --> SC_FILT --> Out
-```
+The **summary blockquote** comes straight from the homepage's meta description. If there isn't one, we leave the blockquote off entirely rather than substitute something weaker like an h2; a missing summary is better than a misleading one. The **intro paragraph** is a dedicated LLM call. The prompt asks for a JSON object with a `confident` flag, and if the model isn't confident, we drop the paragraph — this is how we keep the model's "I need more context" hedging out of the output. If `robots.txt` fully disallowed crawling, a single-line notice gets prepended so the reader knows why the file might look thin.
 
-- **`scorePages`** — computes a 0–100-ish score per page.
-  - Base signals: `description present +25`, `mdUrl present +20`, `descriptionProvenance = json_ld +10`, `headings.length > 0 +10`, `bodyExcerpt.length > 200 +10`.
-  - URL penalties: paginated `-15`, print/export `-20`, tag/category/archive `-25`.
-  - LLM importance: `(importance − 5.5) × 5`, so range [−23, +23].
-  - Off-primary-language penalty: `−20` when URL path locale or `<html lang>` indicates a non-primary language. Preference, not filter.
-  - `isOptional` flag set when `score >= 15 && score < PRIMARY_SCORE_THRESHOLD` (40).
-- **`assignSections`** — translates score + `llmSection` into a final section label.
-  - `score < 15` → undefined (dropped from output).
-  - `isOptional` or `score < 40` → "Optional".
-  - Otherwise: LLM's section (if it returned one and it isn't "Optional"), else path-inferred fallback (`/docs/*` → "Docs", etc.).
-- **`filterAndSelectPages`** — final selection.
-  - Dedup by `host + path` (collapses `/foo` vs `/foo/index.html` and query-param variants the normalizer didn't strip).
-  - Drop the site's own homepage (already represented by the `# siteName` H1).
-  - Primary: `score >= 40 && section != "Optional"`, capped at 50.
-  - Optional: `score ∈ [15, 40)`, capped at 10.
-  - Single-page-site rescue: if both sets end up empty, surface the homepage as the one Optional entry so the file isn't degenerate.
+Each link line is `- [label](url): description`. Labels come from the page title when it's unique and distinct from the site name. When a title repeats across many pages (a very common SPA failure mode where `document.title` never updates) we fall back to a URL-derived label, and if there are still collisions we prefix the first differing path segment to break them.
 
-#### 4 · Assembling file
-
-Markdown construction + terminal-status decision.
-
-```mermaid
-flowchart LR
-    In(["Primary + Optional sets"])
-    AS_SUM["Summary blockquote"]
-    AS_PRE["LLM intro paragraph"]
-    AS_NOTE["Robots disallow-all notice"]
-    AS_FILE["Build markdown file"]
-    AS_TERM["Set terminal status"]
-    Out(["markdown llms.txt<br/>+ status"])
-
-    In --> AS_SUM --> AS_PRE --> AS_NOTE --> AS_FILE --> AS_TERM --> Out
-```
-
-- **Summary** — the first `> blockquote` line in the spec. Pulled from the homepage's `<meta name="description">` / `og:description` / JSON-LD `description`. Skipped if provenance was "none" (we'd rather have no summary than a h2-derived fallback here).
-- **`generateSitePreamble` (LLM)** — the 2–3 sentence intro paragraph. Prompt asks for JSON `{ confident, reason, description }`; anything but `confident === true` drops the preamble (avoids the model's "I need more context" hedging landing in the output).
-- **`robotsNotice`** — single-line warning prepended if `robots.txt` fully disallowed crawling; flags that the output only reflects what the homepage itself exposed.
-- **`assembleFile`** — concatenates `# siteName`, `> summary`, preamble, then per-section `## <name>` blocks. Each line is `- [label](url): description`. Labels come from `page.title`, with URL-derived fallbacks when the title matches the site name or repeats across many pages (SPA that never updates `document.title`). Pass-2 disambiguation prefixes the first differing path segment to break collisions.
-- **Terminal status decision** — `crawled = 0` or `primary + optional both empty` → **failed**; `attempted >= 5 && crawled/attempted < 0.5` → **partial**; otherwise **complete**. The failure path writes a scrubbed error ("browser render failed") that `scrubError` later maps to a user-friendly "We couldn't render this site."
+The last thing this stage decides is the terminal status of the crawl. If we didn't produce any output at all, it's **failed**. If we fetched at least a handful of URLs but lost more than half of them along the way, it's **partial**. Otherwise it's **complete**. That status is what the browser polls for and what shows up in the user's dashboard history.
 
 ---
 
