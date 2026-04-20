@@ -234,6 +234,21 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
                   // Chrome don't auto-zoom the viewport on focus. Drops to
                   // text-sm (14px) at sm+ where the compact look is fine.
                   className="flex-1 min-w-0 px-3 py-2 text-base sm:text-sm text-zinc-900 placeholder-zinc-400 bg-transparent outline-none font-mono"
+                  // URL-specific input hints suppress iOS Safari's
+                  // passwords / cards / contacts autofill toolbar (it
+                  // appears by default above the keyboard for generic
+                  // text inputs) and bring up a URL-friendly keyboard
+                  // with "." and "/" keys. autoCorrect + autoCapitalize
+                  // off so typed URLs aren't mangled into
+                  // "Https://Your-Site.Com". Kept as type="text" (not
+                  // "url") to avoid layering HTML5 validation on top of
+                  // clientValidateUrl, which already handles bare
+                  // domains like "example.com".
+                  inputMode="url"
+                  autoComplete="url"
+                  autoCorrect="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
                   required
                   disabled={loading}
                   aria-label="Website URL"
@@ -318,16 +333,15 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
           </p>
           <div className="grid md:grid-cols-3 gap-10">
             {[
-              { icon: Globe, step: "01", title: "Crawl", desc: "We traverse the site via sitemap.xml, robots.txt, and link discovery — respecting robots.txt rules and prioritizing high-value pages like docs and API references." },
-              { icon: Zap, step: "02", title: "Enrich", desc: "An LLM classifies each page, assigns it to a meaningful section, scores its importance, and writes a concise description — all tuned to the site's domain." },
-              { icon: CheckCircle, step: "03", title: "Generate", desc: "A spec-compliant llms.txt is assembled with a generated preamble, importance-ordered sections, and an Optional section for supplementary pages." },
+              { icon: Globe, step: 1, title: "Crawl", desc: "We traverse the site via sitemap.xml, robots.txt, and link discovery — respecting robots.txt rules and prioritizing high-value pages." },
+              { icon: Zap, step: 2, title: "Enrich", desc: "An LLM classifies each page, assigns it to a meaningful section, scores its importance, and writes a concise description." },
+              { icon: CheckCircle, step: 3, title: "Generate", desc: "A spec-compliant llms.txt is assembled with a preamble and importance-ordered sections." },
             ].map(({ icon: Icon, step, title, desc }) => (
               <div key={step} className="group">
-                <div className="text-[10px] font-mono text-zinc-300 mb-4 tracking-widest">{step}</div>
                 <div className="w-9 h-9 bg-white border border-zinc-200 rounded-xl flex items-center justify-center mb-4 shadow-sm">
                   <Icon size={16} className="text-zinc-700" />
                 </div>
-                <h3 className="font-semibold text-zinc-950 mb-2">{title}</h3>
+                <h3 className="font-semibold text-zinc-950 mb-2">{step}. {title}</h3>
                 <p className="text-sm text-zinc-500 leading-relaxed">{desc}</p>
               </div>
             ))}

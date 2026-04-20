@@ -23,7 +23,7 @@ export default function GlobalHeader({ initialUser }: { initialUser: User | null
   return (
     <AppHeader
       right={
-        <div className="flex items-center gap-3 sm:gap-6">
+        <div className="flex items-center gap-3 sm:gap-4">
           {showHowItWorks && (
             <a
               href="#how-it-works"

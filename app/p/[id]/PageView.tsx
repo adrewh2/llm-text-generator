@@ -84,6 +84,14 @@ function PageViewInner({
     const supabase = createClient()
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
+        // Ignore INITIAL_SESSION — it fires synchronously on subscribe
+        // with whatever the client can resolve from cookies at that
+        // instant, which is occasionally null before the browser
+        // finishes hydrating the auth cookie. Trusting it would blank
+        // out the avatar + Dashboard button for one frame. We seeded
+        // user from initialUser (SSR cookie read), so stick with that
+        // until a real auth event arrives.
+        if (event === "INITIAL_SESSION") return
         setUser(session?.user ?? null)
         if (event === "SIGNED_OUT") jobCache.clear()
       },

@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Enabled buttons get a pointer cursor so interactive controls
+   feel consistent with the <Link> CTAs. */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
 html {
   scroll-behavior: smooth;
 }

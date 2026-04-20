@@ -61,22 +61,22 @@ export default function ProgressPane({
           vertically centers the column on desktop where there's
           ample space; on mobile it top-aligns so the "Generating
           llms.txt for" header is always the first thing in view. */}
-      <div className="w-full max-w-md mx-auto px-8 pt-6 pb-8 sm:my-auto">
-        <div className="text-center mb-8">
-          <p className="text-sm font-medium text-zinc-500 mb-2">
+      <div className="w-full max-w-md mx-auto px-6 sm:px-8 pt-3 pb-4 sm:pt-6 sm:pb-8 sm:my-auto">
+        <div className="text-center mb-4 sm:mb-8">
+          <p className="text-sm font-medium text-zinc-500 mb-1 sm:mb-2">
             Generating llms.txt for
           </p>
-          <h2 className="text-xl font-semibold text-zinc-950 tracking-tight">
+          <h2 className="text-lg sm:text-xl font-semibold text-zinc-950 tracking-tight truncate">
             {domain}
           </h2>
         </div>
 
-        <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm mb-4">
+        <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm mb-3 sm:mb-4">
           {STEPS.map((step, idx) => {
             const state = stateFor(step.id)
             const isLast = idx === STEPS.length - 1
             return (
-              <div key={step.id} className={`flex items-center gap-4 px-5 py-4 ${!isLast ? "border-b border-zinc-100" : ""}`}>
+              <div key={step.id} className={`flex items-center gap-3 sm:gap-4 px-4 sm:px-5 py-2.5 sm:py-4 ${!isLast ? "border-b border-zinc-100" : ""}`}>
                 <div className="shrink-0">
                   {state === "done"    && <CheckCircle2 size={18} className="text-emerald-500" />}
                   {state === "active"  && <Loader2 size={18} className="text-zinc-900 animate-spin" />}
@@ -136,7 +136,7 @@ export default function ProgressPane({
                   : `${job.progress.discovered} URLs discovered · ${job.progress.crawled} crawled`}
               </span>
             </div>
-            <div className="h-24 flex flex-col items-center justify-center gap-1 p-4">
+            <div className="min-h-20 sm:min-h-24 flex flex-col items-center justify-center gap-1 px-4 py-3 sm:p-4">
               <p className="text-zinc-400 text-xs font-mono text-center">
                 {bottomLabel(job, simulatedStep, domain)}
               </p>
