@@ -134,13 +134,13 @@ Sign-in goes through Supabase-hosted OAuth (GitHub, Google). The client never se
 
 ### Row-Level Security
 
-`supabase/migration.sql` enables RLS on every table. Policies:
+`supabase/migration.sql` enables RLS on every table. One policy, on `user_requests`:
 
-- `pages`: `SELECT` allowed for all — the `llms.txt` output is the product and deliberately shareable by link. Every `/p/{id}` URL in the browser is a `pages.id` UUID; that v4 is the access token, unguessable per row.
-- `jobs`: `SELECT` allowed for all. Job rows carry crawl-execution state (status, progress, timestamps, error) with no user identity. Not referenced by any user-facing URL — `/p/{id}` routes through `pages.id`, and the worker's internal `jobs.id` lookups go through the service-role key. The policy matters only for direct anon-key queries against Supabase, which return rows with no new information beyond "someone crawled this URL."
-- `user_requests`: `auth.uid() = user_id` for every operation — **one user can't read another user's history even with the anon key**. This is the privacy-sensitive table: the person→URLs mapping lives only here.
+- `user_requests`: `auth.uid() = user_id` for every operation — **one user can't read another user's history even with the anon key**. The privacy-critical table: the person→URLs mapping lives only here.
 
-Our server code uses the service-role key (bypasses RLS), but we also explicitly filter by `user_id` in every query. Two-layer defense.
+`pages` and `jobs` have **no anon-accessible policies**. That's intentional: RLS is default-deny, so with no grants the anon key can't read or write either table. The browser never queries these tables directly — every data read goes through our API routes (which use the service-role key and bypass RLS) — so removing anon access costs us nothing. What it buys: a hacker who lifts the `NEXT_PUBLIC_SUPABASE_ANON_KEY` out of the browser bundle can't use it to bulk-enumerate `pages` / `jobs` by hitting `https://<project>.supabase.co/rest/v1/...` directly. Every data request is routed through our rate limiter + CDN cache.
+
+Our server code uses the service-role key (bypasses RLS), but we also explicitly filter by `user_id` in every user-scoped query. Two-layer defense.
 
 ---
 

@@ -71,21 +71,22 @@ CREATE INDEX idx_jobs_page_status_created
   ON jobs(page_url, status, created_at DESC);
 
 -- RLS is enabled on every table. All app reads/writes go through server
--- API routes using the service-role key, which bypasses RLS. The
--- policies below define what anon + authenticated clients could do if
--- they ever queried Supabase directly (e.g. via the leaked anon key).
+-- API routes using the service-role key, which bypasses RLS.
+--
+-- No anon-accessible policies on `pages` or `jobs`: the anon key is in
+-- every browser bundle (NEXT_PUBLIC_*), so "anon can do X" means "anyone
+-- on the internet can do X by hitting Supabase directly, bypassing our
+-- API's rate limiter and CDN cache." The browser never queries these
+-- tables directly — it goes through our API routes — so we leave anon
+-- with no data-access grants. RLS's default-deny then blocks direct-to-
+-- Supabase enumeration with the leaked anon key.
 ALTER TABLE pages          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE jobs           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_requests  ENABLE ROW LEVEL SECURITY;
 
--- pages + jobs are globally shared and safe to expose as read-only: the
--- llms.txt output is the whole point of the product, and finding a job
--- requires already knowing its UUID.
-CREATE POLICY pages_public_read ON pages FOR SELECT USING (true);
-CREATE POLICY jobs_public_read  ON jobs  FOR SELECT USING (true);
-
--- A user may only touch rows that belong to them. This is the critical
--- policy — it's what stops one user from reading another user's history.
+-- A user may only touch rows that belong to them. The one explicit
+-- policy we need — it's what stops one user from reading another user's
+-- history when signed in with the anon key.
 CREATE POLICY user_requests_own ON user_requests
   FOR ALL
   USING      (auth.uid() = user_id)

@@ -254,7 +254,7 @@ See §7. Neutering before injection + schema-validated output + hard length caps
 
 ### RLS
 
-Service-role key stays server-side (loaded via `requireEnv("SUPABASE_SERVICE_ROLE_KEY")` inside `getClient()` in `lib/store.ts`). Client never sees it. RLS policies are the last line of defense: even if the anon key is exfiltrated, a direct Supabase query cannot read another user's `user_requests` rows. `pages` and `jobs` are deliberately world-readable — the page UUID is a non-enumerable UUID v4, and the point of the product is that the `llms.txt` output is shareable by link.
+Service-role key stays server-side (loaded via `requireEnv("SUPABASE_SERVICE_ROLE_KEY")` inside `getClient()` in `lib/store.ts`). Client never sees it. RLS's default-deny locks everything on `pages` and `jobs` to the service-role key: the browser-bundled anon key has no grants, so a hacker who lifts it can't bulk-read either table directly. `user_requests` carries the one explicit policy (`auth.uid() = user_id`) to keep per-user history private. Full RLS discussion in [`SECURITY.md §4`](./SECURITY.md#4-authentication-and-authorization).
 
 ### Headers
 
@@ -309,9 +309,9 @@ Secrets come from environment variables, not this file. `NEXT_PUBLIC_SUPABASE_UR
 
 *Trade-off:* The same module has an in-memory path (dev) and a Redis path (prod) selected by env. *Why:* local dev shouldn't require a network dependency, and the interface is identical in both paths so callers are unaffected. Upstash is the production target because Vercel KV is deprecated and Upstash Redis is the Marketplace-recommended replacement; the `@upstash/ratelimit` library wraps the right Lua-atomic token-bucket primitives.
 
-### Public `pages` reads + page UUID as access token
+### Page UUID as access token
 
-*Trade-off:* Anyone with a page UUID can see that page's current `llms.txt` result and the latest crawl's status. *Why:* the UUID is v4 and non-enumerable, and shareable result URLs are a feature of the product. The *history* — which URLs a given user has asked for — stays private via RLS on `user_requests`.
+*Trade-off:* Anyone with a `/p/{id}` URL can see that page's current `llms.txt` result and crawl status without signing in. *Why:* the UUID is v4 and non-enumerable, and shareable result URLs are a feature of the product. The *history* — which URLs a given user has asked for — stays private via RLS on `user_requests`, and bulk enumeration of `pages` via a leaked anon key is blocked by RLS default-deny (no anon-accessible policies on `pages` or `jobs`).
 
 ### LLM ranks + deterministic thresholds
 
