@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { bumpPageRequest, getPageById } from "@/lib/store"
+import { bumpPageRequest, getPageById, getPageStatusById } from "@/lib/store"
 import { scrubError } from "./scrubError"
 
 export const runtime = "nodejs"
@@ -9,12 +9,20 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params
-  // `id` is the pages.id UUID (user-facing, stable across re-crawls) —
-  // getPageById joins the latest job for status so an in-flight
-  // monitor re-crawl surfaces "Refreshing…" even when the cached
-  // page.result is still the previous terminal output.
-  const job = await getPageById(id)
-  if (!job) return NextResponse.json({ error: "Not found" }, { status: 404 })
+  // `id` is the pages.id UUID (user-facing, stable across re-crawls).
+  // Start with the lightweight status query — no result / no
+  // crawled_pages. That's all the UI needs for every in-flight poll,
+  // and it avoids pulling the previous terminal value along when a
+  // monitor re-crawl is in flight (UI would drop it anyway).
+  const status = await getPageStatusById(id)
+  if (!status) return NextResponse.json({ error: "Not found" }, { status: 404 })
+
+  // Terminal status → fetch the payload (result + crawled_pages) in a
+  // second query. Happens at most once per page per CDN-cache window,
+  // since terminal responses are cached downstream; in-flight polls
+  // never pay for it.
+  const isTerminalStatus = status.status === "complete" || status.status === "partial"
+  const job = isTerminalStatus ? ((await getPageById(id)) ?? status) : status
 
   // Count a view as "active use" so the monitor sweeper keeps the page.
   // Fire-and-forget — this write doesn't gate the response. Awaiting

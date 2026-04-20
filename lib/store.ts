@@ -62,10 +62,61 @@ export async function createJob(jobId: string, url: string): Promise<{ pageId: s
 }
 
 /**
- * Primary lookup for /api/p/[id]. Resolves a user-facing page UUID to
- * the page's current state — the latest job's status/progress/error,
- * plus the page's cached result when the job is terminal. The
- * returned `id` is the page id (matches the param), not any job id.
+ * Lightweight status lookup for the /api/p/[id] poll path.
+ *
+ * Returns everything the UI needs to render an *in-flight* crawl —
+ * status, progress, error, site metadata — while deliberately
+ * skipping `pages.result` and `pages.crawled_pages`. Those two
+ * columns hold the terminal payload (~a few KB of markdown + ~10 KB
+ * of scored-page JSONB) and are only useful once the job is
+ * terminal. Pulling them on every poll also drags the previous
+ * terminal value along during monitor-triggered re-crawls, which is
+ * pure wire-waste since the route would drop them before responding.
+ *
+ * Poll path shape: light query here first. If status is terminal,
+ * the route falls back to `getPageById` to include the payload.
+ */
+export async function getPageStatusById(pageId: string): Promise<CrawlJob | undefined> {
+  const supabase = getClient()
+  const { data: page } = await supabase
+    .from("pages")
+    .select(`
+      id,
+      url,
+      site_name,
+      genre,
+      jobs:jobs!jobs_page_url_fkey(id, status, progress, site_name, genre, error, created_at, updated_at)
+    `)
+    .eq("id", pageId)
+    .order("created_at", { foreignTable: "jobs", ascending: false })
+    .limit(1, { foreignTable: "jobs" })
+    .maybeSingle()
+  if (!page) return undefined
+
+  const job = Array.isArray(page.jobs) ? page.jobs[0] : null
+  if (!job) return undefined
+
+  return {
+    id: page.id,
+    url: page.url,
+    status: job.status,
+    progress: job.progress,
+    genre: (job.genre ?? page.genre) ?? undefined,
+    siteName: (job.site_name ?? page.site_name) ?? undefined,
+    // Intentionally omitted — use getPageById for terminal-payload reads.
+    result: undefined,
+    pages: undefined,
+    error: job.error ?? undefined,
+    createdAt: new Date(job.created_at),
+    updatedAt: new Date(job.updated_at),
+  }
+}
+
+/**
+ * Full page lookup including the terminal payload (`result` +
+ * `crawled_pages`). Used by the /p/[id] RSC first-paint and by the
+ * /api/p/[id] poll path on terminal status only. For in-flight polls
+ * use `getPageStatusById` — cheaper, skips the TOAST fetch.
  */
 export async function getPageById(pageId: string): Promise<CrawlJob | undefined> {
   const supabase = getClient()
@@ -73,9 +124,6 @@ export async function getPageById(pageId: string): Promise<CrawlJob | undefined>
   // PostgREST's embedded-resource syntax against the jobs_page_url_fkey
   // foreign key. `!` disambiguates the FK path, and the inner
   // order/limit narrow the embedded array to exactly the newest job.
-  // Previously this was two sequential queries (pages, then jobs on
-  // the URL the page query returned) — cutting that to one halves
-  // /p/{id} poll latency and every dashboard row-refresh poll.
   const { data: page } = await supabase
     .from("pages")
     .select(`
@@ -85,7 +133,7 @@ export async function getPageById(pageId: string): Promise<CrawlJob | undefined>
       crawled_pages,
       site_name,
       genre,
-      jobs:jobs!jobs_page_url_fkey(*)
+      jobs:jobs!jobs_page_url_fkey(id, status, progress, site_name, genre, error, created_at, updated_at)
     `)
     .eq("id", pageId)
     .order("created_at", { foreignTable: "jobs", ascending: false })
