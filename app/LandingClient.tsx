@@ -333,16 +333,15 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
           </p>
           <div className="grid md:grid-cols-3 gap-10">
             {[
-              { icon: Globe, step: "01", title: "Crawl", desc: "We traverse the site via sitemap.xml, robots.txt, and link discovery — respecting robots.txt rules and prioritizing high-value pages like docs and API references." },
-              { icon: Zap, step: "02", title: "Enrich", desc: "An LLM classifies each page, assigns it to a meaningful section, scores its importance, and writes a concise description — all tuned to the site's domain." },
-              { icon: CheckCircle, step: "03", title: "Generate", desc: "A spec-compliant llms.txt is assembled with a generated preamble, importance-ordered sections, and an Optional section for supplementary pages." },
+              { icon: Globe, step: 1, title: "Crawl", desc: "We traverse the site via sitemap.xml, robots.txt, and link discovery — respecting robots.txt rules and prioritizing high-value pages." },
+              { icon: Zap, step: 2, title: "Enrich", desc: "An LLM classifies each page, assigns it to a meaningful section, scores its importance, and writes a concise description." },
+              { icon: CheckCircle, step: 3, title: "Generate", desc: "A spec-compliant llms.txt is assembled with a preamble and importance-ordered sections." },
             ].map(({ icon: Icon, step, title, desc }) => (
               <div key={step} className="group">
-                <div className="text-[10px] font-mono text-zinc-300 mb-4 tracking-widest">{step}</div>
                 <div className="w-9 h-9 bg-white border border-zinc-200 rounded-xl flex items-center justify-center mb-4 shadow-xs">
                   <Icon size={16} className="text-zinc-700" />
                 </div>
-                <h3 className="font-semibold text-zinc-950 mb-2">{title}</h3>
+                <h3 className="font-semibold text-zinc-950 mb-2">{step}. {title}</h3>
                 <p className="text-sm text-zinc-500 leading-relaxed">{desc}</p>
               </div>
             ))}
