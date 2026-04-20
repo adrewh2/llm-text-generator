@@ -150,8 +150,8 @@ One per progress-step the user sees. The four boxes match the four rows in `Prog
 
 ```mermaid
 flowchart TD
-    In([/"Input: baseUrl"/])
-    Out([/"Output: markdown llms.txt + status"/])
+    In(["Input: baseUrl"])
+    Out(["Output: markdown llms.txt + status"])
 
     subgraph Crawling["1 · Crawling pages"]
         direction TB
