@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+        env:
+          # Module-load-time constructors (Supabase client factory,
+          # Upstash Redis) throw when their env var is missing. Next.js
+          # build doesn't hit the network, so dummy values are fine.
+          NEXT_PUBLIC_SUPABASE_URL: https://ci.example.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-dummy-anon-key
+          SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key
+          UPSTASH_REDIS_REST_URL: https://ci.example.upstash.io
+          UPSTASH_REDIS_REST_TOKEN: ci-dummy-redis-token
+          QSTASH_TOKEN: ci-dummy-qstash-token
+          QSTASH_CURRENT_SIGNING_KEY: ci-dummy-current
+          QSTASH_NEXT_SIGNING_KEY: ci-dummy-next
+          CRON_SECRET: ci-dummy-cron-secret
+          ANTHROPIC_API_KEY: ci-dummy-anthropic-key
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+      # Only fail on prod-dep vulnerabilities at high+ severity. Dev
+      # deps (eslint plugins, type packages) generate most of the
+      # noise without shipping code to users.
+      - run: npm audit --omit=dev --audit-level=high
