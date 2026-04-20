@@ -170,7 +170,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
         />
         <div className="absolute bottom-0 inset-x-0 h-40 bg-gradient-to-t from-white to-transparent pointer-events-none" />
 
-        <div className="relative max-w-4xl mx-auto px-6 pt-20 pb-16 text-center">
+        <div className="relative max-w-4xl mx-auto px-6 pt-10 sm:pt-20 pb-16 text-center">
           <div className="inline-flex items-center gap-2 bg-white border border-zinc-200 rounded-full px-3.5 py-1.5 mb-8 shadow-sm">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
             <span className="text-[11px] text-zinc-500 font-medium tracking-wide uppercase">
