@@ -40,6 +40,11 @@ export default async function PageViewPage({
     error: jobResult.error ? scrubError(jobResult.error) : undefined,
     createdAt: jobResult.createdAt.toISOString(),
     updatedAt: jobResult.updatedAt.toISOString(),
+    lastCheckedAt: jobResult.lastCheckedAt?.toISOString(),
   }
-  return <PageView initialJob={initialJob} initialUser={user} />
+  // Key on updatedAt so a server-side Refresh (which creates a new job
+  // and re-renders this RSC via router.refresh) causes PageView to
+  // remount with the new initial state — otherwise its useState lazy
+  // init holds the pre-refresh terminal job and polling never starts.
+  return <PageView key={initialJob.updatedAt} initialJob={initialJob} initialUser={user} />
 }

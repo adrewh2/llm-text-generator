@@ -85,6 +85,7 @@ export async function getPageStatusById(pageId: string): Promise<CrawlJob | unde
       url,
       site_name,
       genre,
+      last_checked_at,
       jobs:jobs!jobs_page_url_fkey(id, status, progress, site_name, genre, error, created_at, updated_at)
     `)
     .eq("id", pageId)
@@ -109,6 +110,7 @@ export async function getPageStatusById(pageId: string): Promise<CrawlJob | unde
     error: job.error ?? undefined,
     createdAt: new Date(job.created_at),
     updatedAt: new Date(job.updated_at),
+    lastCheckedAt: page.last_checked_at ? new Date(page.last_checked_at) : undefined,
   }
 }
 
@@ -133,6 +135,7 @@ export async function getPageById(pageId: string): Promise<CrawlJob | undefined>
       crawled_pages,
       site_name,
       genre,
+      last_checked_at,
       jobs:jobs!jobs_page_url_fkey(id, status, progress, site_name, genre, error, created_at, updated_at)
     `)
     .eq("id", pageId)
@@ -161,6 +164,7 @@ export async function getPageById(pageId: string): Promise<CrawlJob | undefined>
     error: job.error ?? undefined,
     createdAt: new Date(job.created_at),
     updatedAt: new Date(job.updated_at),
+    lastCheckedAt: page.last_checked_at ? new Date(page.last_checked_at) : undefined,
   }
 }
 

@@ -79,4 +79,10 @@ export interface CrawlJob {
   error?: string
   createdAt: Date
   updatedAt: Date
+  /**
+   * Stamped when the monitor cron checks the page for drift (whether or
+   * not content changed) AND when a crawl completes. Drives the "Refreshed
+   * X ago" label + the Refresh button in ResultPane.
+   */
+  lastCheckedAt?: Date
 }

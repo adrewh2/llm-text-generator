@@ -1,8 +1,13 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Check, Copy, Download, Link2, Save } from "lucide-react"
+import { useRouter } from "next/navigation"
+import { formatDistanceToNowStrict } from "date-fns"
+import { Check, Copy, Download, Link2, RefreshCw, Save } from "lucide-react"
+import { crawler } from "@/lib/config"
 import type { ApiJob } from "./types"
+
+const STALE_AFTER_MS = crawler.PAGE_TTL_HOURS * 60 * 60 * 1000
 
 interface Props {
   job: ApiJob
@@ -11,6 +16,7 @@ interface Props {
 }
 
 export default function ResultPane({ job, signedIn }: Props) {
+  const router = useRouter()
   const content = job.result ?? ""
   const [copied, setCopied] = useState(false)
   const [copiedLink, setCopiedLink] = useState(false)
@@ -20,8 +26,21 @@ export default function ResultPane({ job, signedIn }: Props) {
   //   true    = already in history → hide button
   const [inHistory, setInHistory] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const copyLinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Freshness derived from the last time the monitor cron (or a fresh
+  // crawl) stamped the page. Matches the "Refreshed X ago" label on the
+  // dashboard. `isStale` mirrors `PAGE_TTL_HOURS` — same threshold that
+  // the POST /api/p path uses to decide whether a submission triggers
+  // a re-crawl, so the button's visibility is consistent with the
+  // underlying cache-staleness rule.
+  const lastCheckedAt = job.lastCheckedAt ? new Date(job.lastCheckedAt) : null
+  const isStale = lastCheckedAt
+    ? Date.now() - lastCheckedAt.getTime() >= STALE_AFTER_MS
+    : false
 
   // Clear pending "Copied!" timers on unmount so they don't fire on
   // an unmounted component (React 19 no-ops this quietly but we'd
@@ -92,6 +111,48 @@ export default function ResultPane({ job, signedIn }: Props) {
     }
   }
 
+  const handleRefresh = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    setRefreshError(null)
+    try {
+      // Same endpoint the landing-page Generate button uses — preserves
+      // the existing rate limiting (SUBMIT + NEW_CRAWL buckets) and
+      // getActiveJobForUrl attach logic. If another viewer just clicked
+      // Refresh on the same URL, our POST attaches to their in-flight
+      // job rather than spawning a duplicate crawl.
+      const res = await fetch("/api/p", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: job.url }),
+      })
+      const data = await res.json().catch(() => ({} as Record<string, unknown>))
+      if (!res.ok) {
+        const msg = typeof data.error === "string" ? data.error : "Failed to refresh"
+        setRefreshError(msg)
+        return
+      }
+      // Success: server either dispatched a new crawl or attached us to
+      // an in-flight one. Either way the latest job on this page is now
+      // non-terminal. router.refresh() re-runs the /p/[id] RSC, which
+      // remounts PageView (keyed on updatedAt) with the new initial
+      // state — ProgressPane takes over and polling kicks in.
+      router.refresh()
+    } catch {
+      setRefreshError("Network error")
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  // Clear the refresh error after a few seconds so a transient failure
+  // doesn't linger indefinitely.
+  useEffect(() => {
+    if (!refreshError) return
+    const t = setTimeout(() => setRefreshError(null), 4000)
+    return () => clearTimeout(t)
+  }, [refreshError])
+
   // Only show the save button when:
   //   - the viewer is signed in,
   //   - the membership check has resolved,
@@ -107,7 +168,46 @@ export default function ResultPane({ job, signedIn }: Props) {
         <span className="hidden sm:inline text-[10px] font-semibold text-zinc-400 uppercase tracking-widest">Result</span>
         <span className="hidden sm:inline text-zinc-200">·</span>
         <span className="hidden sm:inline text-[10px] text-zinc-400 font-mono">llms.txt</span>
+        {/* Freshness label — desktop only. Tells viewers how current
+            the displayed content is; complements the Refresh button
+            below by making "why would I refresh?" self-evident. */}
+        {lastCheckedAt && (
+          <>
+            <span className="hidden sm:inline text-zinc-200">·</span>
+            <span
+              className="hidden sm:inline text-[10px] text-zinc-400"
+              title={lastCheckedAt.toLocaleString()}
+            >
+              Refreshed {formatDistanceToNowStrict(lastCheckedAt, { addSuffix: true })}
+            </span>
+          </>
+        )}
         <div className="ml-auto flex items-center gap-2">
+          {/* Transient refresh error — dismisses itself after ~4s.
+              Rate-limit denials (429) and network errors both land here. */}
+          {refreshError && (
+            <span className="hidden sm:inline text-[11px] text-red-600" role="alert">
+              {refreshError}
+            </span>
+          )}
+          {/* Refresh button — desktop only, and only when the cache
+              is older than PAGE_TTL_HOURS (matches the POST /api/p
+              staleness rule). Clicking is equivalent to re-submitting
+              from the landing form: goes through rate limiting and
+              attaches to any in-flight job for the same URL. */}
+          {isStale && (
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={refreshing}
+              aria-label="Refresh"
+              title="Refresh"
+              className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-medium text-zinc-500 hover:text-zinc-800 px-2.5 py-1 rounded-md border border-zinc-200 hover:border-zinc-300 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} />
+              {refreshing ? "Refreshing…" : "Refresh"}
+            </button>
+          )}
           {showSave && (
             <button
               type="button"

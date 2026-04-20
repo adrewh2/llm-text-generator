@@ -50,6 +50,7 @@ export async function GET(
       error: job.error ? scrubError(job.error) : undefined,
       createdAt: job.createdAt.toISOString(),
       updatedAt: job.updatedAt.toISOString(),
+      lastCheckedAt: job.lastCheckedAt?.toISOString(),
     },
     { headers: { "Cache-Control": cacheControl } },
   )
