@@ -196,8 +196,12 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
           </p>
 
           <form className="max-w-lg mx-auto" onSubmit={handleSubmit}>
+            {/* flex-col on mobile so the Generate button stacks below
+                the URL field — keeps the input from getting crushed on
+                narrow screens. sm:flex-row restores the inline layout
+                on tablets and desktop. */}
             <div
-              className={`flex items-center bg-white border rounded-xl p-1.5 shadow-sm transition-all duration-200 ${
+              className={`flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-0 bg-white border rounded-xl p-1.5 shadow-sm transition-all duration-200 ${
                 focused
                   ? "border-zinc-900 shadow-[0_0_0_3px_rgba(9,9,11,0.06)]"
                   : error
@@ -205,29 +209,31 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
                   : "border-zinc-200 hover:border-zinc-300"
               }`}
             >
-              <Globe size={15} className="ml-2.5 text-zinc-400 shrink-0" />
-              <input
-                ref={inputRef}
-                type="text"
-                value={url}
-                onChange={(e) => { setUrl(e.target.value); setError(""); setShowSignInHint(false) }}
-                onFocus={() => setFocused(true)}
-                onBlur={() => setFocused(false)}
-                placeholder="https://your-website.com"
-                // Font size stays ≥16px on mobile so iOS Safari / Android
-                // Chrome don't auto-zoom the viewport on focus. Drops to
-                // text-sm (14px) at sm+ where the compact look is fine.
-                className="flex-1 px-3 py-2 text-base sm:text-sm text-zinc-900 placeholder-zinc-400 bg-transparent outline-none font-mono"
-                required
-                disabled={loading}
-                aria-label="Website URL"
-                aria-invalid={!!error}
-                aria-describedby={error ? "url-error" : undefined}
-              />
+              <div className="flex items-center flex-1 min-w-0">
+                <Globe size={15} className="ml-2.5 text-zinc-400 shrink-0" />
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={url}
+                  onChange={(e) => { setUrl(e.target.value); setError(""); setShowSignInHint(false) }}
+                  onFocus={() => setFocused(true)}
+                  onBlur={() => setFocused(false)}
+                  placeholder="https://your-website.com"
+                  // Font size stays ≥16px on mobile so iOS Safari / Android
+                  // Chrome don't auto-zoom the viewport on focus. Drops to
+                  // text-sm (14px) at sm+ where the compact look is fine.
+                  className="flex-1 min-w-0 px-3 py-2 text-base sm:text-sm text-zinc-900 placeholder-zinc-400 bg-transparent outline-none font-mono"
+                  required
+                  disabled={loading}
+                  aria-label="Website URL"
+                  aria-invalid={!!error}
+                  aria-describedby={error ? "url-error" : undefined}
+                />
+              </div>
               <button
                 type="submit"
                 disabled={loading || !url.trim()}
-                className="flex items-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-4 py-2 rounded-[9px] hover:bg-zinc-800 active:scale-95 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+                className="flex items-center justify-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-4 py-2.5 sm:py-2 rounded-[9px] hover:bg-zinc-800 active:scale-95 disabled:cursor-not-allowed transition-all whitespace-nowrap"
               >
                 {loading ? (
                   <><Loader2 size={13} className="animate-spin" /> Generating…</>

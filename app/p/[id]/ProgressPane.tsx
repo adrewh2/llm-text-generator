@@ -54,8 +54,14 @@ export default function ProgressPane({
   }
 
   return (
-    <div className="flex-1 flex items-start sm:items-center justify-center p-8 pt-12 sm:pt-8 overflow-y-auto">
-      <div className="w-full max-w-md">
+    <div className="flex-1 flex flex-col overflow-y-auto">
+      {/* Content column. px-8 for horizontal breathing room; pt-6 gives
+          a comfortable gap below the sticky nav on mobile without
+          floating the content too far down on tall viewports. sm:my-auto
+          vertically centers the column on desktop where there's
+          ample space; on mobile it top-aligns so the "Generating
+          llms.txt for" header is always the first thing in view. */}
+      <div className="w-full max-w-md mx-auto px-8 pt-6 pb-8 sm:my-auto">
         <div className="text-center mb-8">
           <p className="text-sm font-medium text-zinc-500 mb-2">
             Generating llms.txt for

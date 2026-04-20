@@ -27,7 +27,7 @@ export default function GlobalHeader({ initialUser }: { initialUser: User | null
           {showHowItWorks && (
             <a
               href="#how-it-works"
-              className="text-sm text-zinc-500 hover:text-zinc-900 transition-colors hidden sm:block"
+              className="text-sm text-zinc-500 hover:text-zinc-900 transition-colors"
             >
               How it works
             </a>
