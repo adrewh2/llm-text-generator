@@ -102,7 +102,7 @@ export default function ConfirmDialog({
           <button
             ref={cancelButtonRef}
             onClick={cancel}
-            className="text-sm font-medium text-zinc-600 hover:text-zinc-900 px-4 py-2 rounded-lg border border-zinc-200 hover:bg-zinc-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400"
+            className="text-sm font-medium text-zinc-600 hover:text-zinc-900 px-4 py-2 rounded-lg border border-zinc-200 hover:bg-zinc-50 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-zinc-400"
           >
             Cancel
           </button>
@@ -111,8 +111,8 @@ export default function ConfirmDialog({
             onClick={confirm}
             className={
               confirmVariant === "primary"
-                ? "text-sm font-medium text-white bg-zinc-950 hover:bg-zinc-800 px-4 py-2 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400"
-                : "text-sm font-medium text-white bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+                ? "text-sm font-medium text-white bg-zinc-950 hover:bg-zinc-800 px-4 py-2 rounded-lg transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-zinc-400"
+                : "text-sm font-medium text-white bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-red-400"
             }
           >
             {confirmLabel}

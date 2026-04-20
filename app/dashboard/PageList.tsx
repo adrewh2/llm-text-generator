@@ -200,7 +200,7 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
                   <span className="text-zinc-300 group-hover:text-zinc-500 transition-colors w-4 text-right">→</span>
                 </div>
               </Link>
-              <div className="absolute right-[3rem] top-1/2 -translate-y-1/2">
+              <div className="absolute right-12 top-1/2 -translate-y-1/2">
                 <JobActions pageUrl={page.pageUrl} onRemoved={removeLocal} />
               </div>
             </div>

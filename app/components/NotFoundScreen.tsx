@@ -7,7 +7,7 @@ import { ArrowRight } from "lucide-react"
 // supplies its own AppHeader), but the card itself is identical.
 export default function NotFoundScreen() {
   return (
-    <div className="relative min-h-[calc(100vh_-_57px)] bg-white flex items-center justify-center px-6">
+    <div className="relative min-h-[calc(100vh-57px)] bg-white flex items-center justify-center px-6">
       <div className="w-full max-w-md text-center">
         <p className="text-[11px] font-mono text-zinc-400 tracking-[0.18em] uppercase mb-4">
           404

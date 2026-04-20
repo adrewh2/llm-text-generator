@@ -234,7 +234,7 @@ function PageViewInner({
               const domainClass = hideDomainOnMobile ? "hidden sm:block" : ""
               return domain
                 ? <span className={`text-sm text-zinc-500 truncate ${domainClass}`}>{domain}</span>
-                : <div className={`h-3 w-24 sm:w-32 bg-zinc-100 rounded animate-pulse ${domainClass}`} />
+                : <div className={`h-3 w-24 sm:w-32 bg-zinc-100 rounded-sm animate-pulse ${domainClass}`} />
             })()}
             {showResult ? (
               <>

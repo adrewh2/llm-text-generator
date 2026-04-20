@@ -71,7 +71,7 @@ export default function ProgressPane({
           </h2>
         </div>
 
-        <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm mb-4">
+        <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-xs mb-4">
           {STEPS.map((step, idx) => {
             const state = stateFor(step.id)
             const isLast = idx === STEPS.length - 1

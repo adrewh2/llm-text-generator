@@ -20,7 +20,7 @@ export default function AppHeader({
   right?: ReactNode
 }) {
   return (
-    <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-sm border-b border-zinc-100">
+    <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-xs border-b border-zinc-100">
       <nav className="pl-6 pr-4 sm:pr-6 h-14 flex items-center gap-3 sm:gap-4">
         <Link href="/" className="flex items-center gap-2.5 shrink-0">
           <div className="w-6 h-6 bg-zinc-950 rounded-[5px] flex items-center justify-center shrink-0">

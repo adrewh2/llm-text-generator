@@ -70,7 +70,7 @@ export default function UserMenu({ user }: { user: User }) {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Account menu"
-        className="block w-8 h-8 rounded-full overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2"
+        className="block w-8 h-8 rounded-full overflow-hidden focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2"
       >
         {showImage ? (
           // Provider-hosted image; intentionally not next/image to

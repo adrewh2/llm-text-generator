@@ -149,7 +149,7 @@ export default function ResultPane({ job, signedIn }: Props) {
       <textarea
         value={content}
         readOnly
-        className="flex-1 p-6 font-mono text-sm leading-[1.75] text-zinc-800 bg-white resize-none outline-none"
+        className="flex-1 p-6 font-mono text-sm leading-[1.75] text-zinc-800 bg-white resize-none outline-hidden"
         spellCheck={false}
       />
     </div>

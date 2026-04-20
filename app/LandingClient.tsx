@@ -168,10 +168,10 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
             backgroundSize: "28px 28px",
           }}
         />
-        <div className="absolute bottom-0 inset-x-0 h-40 bg-gradient-to-t from-white to-transparent pointer-events-none" />
+        <div className="absolute bottom-0 inset-x-0 h-40 bg-linear-to-t from-white to-transparent pointer-events-none" />
 
         <div className="relative max-w-4xl mx-auto px-6 pt-20 pb-16 text-center">
-          <div className="inline-flex items-center gap-2 bg-white border border-zinc-200 rounded-full px-3.5 py-1.5 mb-8 shadow-sm">
+          <div className="inline-flex items-center gap-2 bg-white border border-zinc-200 rounded-full px-3.5 py-1.5 mb-8 shadow-xs">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
             <span className="text-[11px] text-zinc-500 font-medium tracking-wide uppercase">
               Spec-compliant · llmstxt.org
@@ -189,7 +189,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
 
           <p className="text-lg text-zinc-500 max-w-lg mx-auto mb-10 leading-relaxed">
             Crawl a site, extract its key pages, and get a spec-compliant{" "}
-            <code className="text-zinc-700 text-[0.9em] font-mono bg-zinc-100 px-1.5 py-0.5 rounded">
+            <code className="text-zinc-700 text-[0.9em] font-mono bg-zinc-100 px-1.5 py-0.5 rounded-sm">
               llms.txt
             </code>{" "}
             in seconds.
@@ -204,7 +204,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
                 outer is bordered at sm+, inner URL wrapper is
                 bordered below sm. */}
             <div
-              className={`flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-0 sm:bg-white sm:border sm:rounded-xl sm:p-1.5 sm:shadow-sm sm:transition-all sm:duration-200 ${
+              className={`flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-0 sm:bg-white sm:border sm:rounded-xl sm:p-1.5 sm:shadow-xs sm:transition-all sm:duration-200 ${
                 focused
                   ? "sm:border-zinc-900 sm:shadow-[0_0_0_3px_rgba(9,9,11,0.06)]"
                   : error
@@ -213,7 +213,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
               }`}
             >
               <div
-                className={`flex items-center flex-1 min-w-0 bg-white border rounded-xl p-1.5 shadow-sm transition-all duration-200 sm:border-transparent sm:rounded-none sm:p-0 sm:shadow-none ${
+                className={`flex items-center flex-1 min-w-0 bg-white border rounded-xl p-1.5 shadow-xs transition-all duration-200 sm:border-transparent sm:rounded-none sm:p-0 sm:shadow-none ${
                   focused
                     ? "border-zinc-900 shadow-[0_0_0_3px_rgba(9,9,11,0.06)]"
                     : error
@@ -233,7 +233,22 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
                   // Font size stays ≥16px on mobile so iOS Safari / Android
                   // Chrome don't auto-zoom the viewport on focus. Drops to
                   // text-sm (14px) at sm+ where the compact look is fine.
-                  className="flex-1 min-w-0 px-3 py-2 text-base sm:text-sm text-zinc-900 placeholder-zinc-400 bg-transparent outline-none font-mono"
+                  className="flex-1 min-w-0 px-3 py-2 text-base sm:text-sm text-zinc-900 placeholder-zinc-400 bg-transparent outline-hidden font-mono"
+                  // URL-specific input hints suppress iOS Safari's
+                  // passwords / cards / contacts autofill toolbar (it
+                  // appears by default above the keyboard for generic
+                  // text inputs) and bring up a URL-friendly keyboard
+                  // with "." and "/" keys. autoCorrect + autoCapitalize
+                  // off so typed URLs aren't mangled into
+                  // "Https://Your-Site.Com". Kept as type="text" (not
+                  // "url") to avoid layering HTML5 validation on top of
+                  // clientValidateUrl, which already handles bare
+                  // domains like "example.com".
+                  inputMode="url"
+                  autoComplete="url"
+                  autoCorrect="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
                   required
                   disabled={loading}
                   aria-label="Website URL"
@@ -324,7 +339,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
             ].map(({ icon: Icon, step, title, desc }) => (
               <div key={step} className="group">
                 <div className="text-[10px] font-mono text-zinc-300 mb-4 tracking-widest">{step}</div>
-                <div className="w-9 h-9 bg-white border border-zinc-200 rounded-xl flex items-center justify-center mb-4 shadow-sm">
+                <div className="w-9 h-9 bg-white border border-zinc-200 rounded-xl flex items-center justify-center mb-4 shadow-xs">
                   <Icon size={16} className="text-zinc-700" />
                 </div>
                 <h3 className="font-semibold text-zinc-950 mb-2">{title}</h3>
