@@ -224,7 +224,7 @@ function PageViewInner({
   }
 
   return (
-    <div className="h-screen font-sans bg-white flex flex-col">
+    <div className="h-dvh font-sans bg-white flex flex-col">
       <AppHeader
         center={
           <>
@@ -345,7 +345,7 @@ function stripQueryParam(name: string): void {
 
 function PageViewFallback() {
   return (
-    <div className="h-screen flex items-center justify-center bg-white">
+    <div className="h-dvh flex items-center justify-center bg-white">
       <Loader2 size={24} className="text-zinc-400 animate-spin" />
     </div>
   )
