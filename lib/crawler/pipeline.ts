@@ -264,8 +264,9 @@ async function runPipelineInner(
     // Debounce progress writes. Previously we wrote after every page —
     // 25 crawled pages = 25 extra DB round-trips on the pipeline's hot
     // path. Now we batch on a min-interval AND a min-page count; the
-    // polling UI refreshes at 1.5s anyway, so sub-second precision on
-    // `discovered` / `crawled` / `failed` doesn't buy anything.
+    // polling UI refreshes every few seconds anyway, so sub-second
+    // precision on `discovered` / `crawled` / `failed` doesn't buy
+    // anything.
     const PROGRESS_MIN_INTERVAL_MS = 500
     let lastProgressAt = 0
     const flushProgress = async (force = false): Promise<void> => {

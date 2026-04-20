@@ -166,8 +166,8 @@ function PageViewInner({
     // terminal job — we'd otherwise spend one /api/p/{id} round-trip
     // on every page open to re-confirm state that's already on the
     // page. A monitor re-crawl that happens after SSR will be picked
-    // up on the next full navigation; not waiting 1.5s to learn about
-    // it is a fine trade for a faster first interaction on the 99%
+    // up on the next full navigation; not waiting a poll cycle to
+    // learn about it is a fine trade for a faster first interaction on the 99%
     // common path.
     const initiallyTerminal = job
       ? ["complete", "partial", "failed"].includes(job.status)

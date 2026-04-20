@@ -323,8 +323,22 @@ export async function sweepStaleMonitoredPages(staleAfterDays: number): Promise<
  * a Supabase outage here doesn't silently drift sweeper decisions —
  * the caller doesn't wait on this (fire-and-forget) so we log instead
  * of throwing.
+ *
+ * Per-instance cooldown: the sweeper only cares about freshness within
+ * `monitor.STALE_DAYS` (5 d), so bumping every 1.5–5 s poll was ~5
+ * orders of magnitude more than needed. Now every poll-driven bump
+ * inside the cooldown window is a no-op; the first bump per window
+ * still writes. Worst-case staleness is `BUMP_COOLDOWN_MS` across
+ * Fluid instances, which is negligible against a 5-day cutoff.
  */
+const BUMP_COOLDOWN_MS = 5 * 60 * 1000
+const lastBumpAt = new Map<string, number>()
 export async function bumpPageRequest(pageUrl: string): Promise<void> {
+  const now = Date.now()
+  const last = lastBumpAt.get(pageUrl) ?? 0
+  if (now - last < BUMP_COOLDOWN_MS) return
+  lastBumpAt.set(pageUrl, now)
+
   const supabase = getClient()
   const { error } = await supabase
     .from("pages")

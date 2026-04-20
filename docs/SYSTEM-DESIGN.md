@@ -41,7 +41,7 @@ flowchart TB
 
     Landing -- submit URL --> APIP
     Dash -- list + delete --> APIPG
-    Result -- poll every 1.5 s --> APIPID
+    Result -- poll every 5 s --> APIPID
     Browser -- any request --> MW
     MW -- getUser --> Supa
 
@@ -128,7 +128,7 @@ sequenceDiagram
     Q->>Q: mark delivered
 
     loop client poll (until terminal status)
-        U->>DB: GET /api/p/[id] every 1.5 s
+        U->>DB: GET /api/p/[id] every 5 s
     end
 
     note over U: After terminal — Vercel's edge CDN serves<br/>repeat polls from Cache-Control. updateJob<br/>revalidates the page's /api/p/{pageId}<br/>path on re-crawl.

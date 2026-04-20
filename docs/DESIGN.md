@@ -126,7 +126,7 @@ On every branch — cache hit, in-flight attach, new crawl — a signed-in calle
 Client polls every `ui.POLL_INTERVAL_MS` until the job is terminal. The route:
 
 - Looks up the page by UUID, joining to the latest job for status/progress/error and (when terminal) the cached `result` + `crawled_pages`.
-- Bumps `last_requested_at` on every non-failed poll so active pages stay monitored.
+- Bumps `last_requested_at` on non-failed polls so active pages stay monitored. The bump is debounced per Fluid instance (5 min cooldown) — the sweeper only cares about day-scale freshness, so we don't need a Postgres write per poll.
 - Scrubs the `error` field (see [`SECURITY.md §9`](./SECURITY.md#9-error-information-disclosure)) so user-facing text doesn't leak resolved IPs or SSRF detail.
 - Sets a long public Cache-Control on terminal responses so Vercel's CDN handles repeat polls. Freshness comes from **write-side invalidation** — `updateJob` calls `revalidatePath` on the page's `/api/p/{id}` whenever a terminal result is written — rather than the TTL. The TTL is a safety net for dropped revalidations, schema changes, or direct-SQL writes; the common path never waits for it. In-flight polls return `no-store` so progress stays live.
 

@@ -201,8 +201,11 @@ export const monitor = {
 // ─── Client UI timing ───────────────────────────────────────────────────────
 
 export const ui = {
-  /** /p/[id] polling cadence while a job is running. */
-  POLL_INTERVAL_MS: 1_500,
+  /** /p/[id] polling cadence while a job is running. Progress counts
+   *  only tick every few seconds during an active crawl, so a 5 s
+   *  cadence still feels live and cuts in-flight DB read pressure by
+   *  ~3× vs. the old 1.5 s. */
+  POLL_INTERVAL_MS: 5_000,
   /** Consecutive poll failures before the client shows "lost connection". */
   MAX_POLL_FAILURES: 5,
   /** Minimum time each live-crawl step stays on screen. */
