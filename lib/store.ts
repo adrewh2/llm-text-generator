@@ -365,19 +365,28 @@ export async function sweepStaleMonitoredPages(staleAfterDays: number): Promise<
 }
 
 /**
- * Bump `pages.last_requested_at` — called whenever a user interacts
- * with a page's URL, so the sweeper can tell dormant URLs from active
- * ones. No-op if the page doesn't exist yet. Errors go to Sentry so
- * a Supabase outage here doesn't silently drift sweeper decisions —
- * the caller doesn't wait on this (fire-and-forget) so we log instead
- * of throwing.
+ * Record user activity on a page's URL: refresh `last_requested_at`
+ * (so the daily sweeper keeps the page in the monitor rotation) and
+ * re-assert `monitored = true` (recovery if a prior sweep had flipped
+ * it off and the user has now come back).
  *
- * Per-instance cooldown: the sweeper only cares about freshness within
- * `monitor.STALE_DAYS` (5 d), so bumping every 1.5–5 s poll was ~5
- * orders of magnitude more than needed. Now every poll-driven bump
- * inside the cooldown window is a no-op; the first bump per window
- * still writes. Worst-case staleness is `BUMP_COOLDOWN_MS` across
- * Fluid instances, which is negligible against a 5-day cutoff.
+ * Fired from every user-facing entry point to a page: POST /api/p
+ * on all three branches, GET /api/p/[id] on non-failed polls, and
+ * the /p/[id] RSC render (the important one — it catches users who
+ * click into a cached page from their dashboard and then read it
+ * without the client polling, because the terminal poll response is
+ * CDN-cached and wouldn't reach our server).
+ *
+ * Per-instance cooldown: the sweeper only cares about freshness
+ * within `monitor.STALE_DAYS` (5 d), so the first bump per window
+ * writes and subsequent bumps inside the window are no-ops. Worst-
+ * case staleness across Fluid instances is `BUMP_COOLDOWN_MS`, which
+ * is negligible against a 5-day cutoff.
+ *
+ * No-op if the page doesn't exist yet (UPDATE with no matching row).
+ * Errors go to Sentry so a Supabase outage here doesn't silently
+ * drift sweeper decisions — the caller doesn't wait on this
+ * (fire-and-forget) so we log instead of throwing.
  */
 const BUMP_COOLDOWN_MS = 5 * 60 * 1000
 const lastBumpAt = new Map<string, number>()
@@ -390,7 +399,13 @@ export async function bumpPageRequest(pageUrl: string): Promise<void> {
   const supabase = getClient()
   const { error } = await supabase
     .from("pages")
-    .update({ last_requested_at: new Date().toISOString() })
+    .update({
+      last_requested_at: new Date().toISOString(),
+      // Recover the monitor flag on user activity. Without this, a page
+      // that was swept while the user was away stays out of the monitor
+      // rotation even as they come back and keep viewing it.
+      monitored: true,
+    })
     .eq("url", pageUrl)
   if (error) {
     errorLog("store.bumpPageRequest", new Error(`${pageUrl}: ${error.message}`))

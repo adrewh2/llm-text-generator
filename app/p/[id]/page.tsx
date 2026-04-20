@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation"
-import { getPageById } from "@/lib/store"
+import { bumpPageRequest, getPageById } from "@/lib/store"
 import { getCurrentUser } from "@/lib/supabase/getUser"
 import PageView from "./PageView"
 import { scrubError } from "@/app/api/p/[id]/scrubError"
@@ -22,6 +22,19 @@ export default async function PageViewPage({
     getCurrentUser(),
   ])
   if (!jobResult) notFound()
+
+  // Record the navigation as user activity on the page. Critical for
+  // cached-page views reached from the dashboard: once the result is
+  // terminal, every subsequent `GET /api/p/[id]` is served from the
+  // Vercel edge CDN and wouldn't reach our server — the client also
+  // skips polling when SSR seeded a terminal job. Without bumping
+  // here, an actively-read page looks dormant to the monitor sweeper,
+  // which would unmonitor it after 5 days. Fire-and-forget: debounced
+  // per Fluid instance, re-asserts `monitored = true` on the way.
+  if (jobResult.status !== "failed") {
+    bumpPageRequest(jobResult.url).catch(() => {})
+  }
+
   const initialJob: ApiJob = {
     ...jobResult,
     error: jobResult.error ? scrubError(jobResult.error) : undefined,
