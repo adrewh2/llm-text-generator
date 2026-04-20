@@ -149,50 +149,51 @@ sequenceDiagram
 One per progress-step the user sees. The four boxes match the four rows in `ProgressPane` exactly; this is what's happening inside each row while its spinner is active.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
 flowchart TD
     In(["Input: baseUrl"])
     Out(["Output: markdown llms.txt + status"])
 
     subgraph Crawling["1 · Crawling pages"]
         direction LR
-        CR_RB["Read robots.txt<br/>→ disallow rules<br/>→ crawl-delay<br/>→ sitemap URLs"]
-        CR_SM["Walk sitemaps<br/>up to 3 sources<br/>keep: same-domain<br/>· allowed · not skippable<br/>→ seed the BFS queue"]
-        CR_HP["Probe the homepage<br/>plain HTTP, no browser"]
-        CR_SPA{{"Needs a browser render?<br/>(fetch failed OR SPA shell)"}}
-        CR_BR["Render with Chromium<br/>one page at a time<br/>hydrated JS reveals<br/>nav links we'd miss<br/>on plain HTTP"]
-        CR_MD["Probe for a .md sibling<br/>per the llms.txt spec"]
-        CR_NAV["Scrape homepage nav<br/>only on HTTP path<br/>when sitemap was sparse<br/>(queue < 5 URLs)"]
-        CR_CAP["Cap URLs per section<br/>5 per 2-segment path prefix<br/>stops one area from flooding<br/>the rank prompt"]
-        CR_LANG["Detect primary language<br/>from &lt;html lang&gt;<br/>defaults to 'en'"]
-        CR_LOC["Drop non-primary locales<br/>e.g. /ar/ on an English site<br/>skipped if it would<br/>empty the queue"]
-        CR_RANK["LLM ranks the queue<br/>picks the highest-value URLs<br/>for the 25-page budget"]
-        CR_POOL[["Worker pool<br/>5 parallel on HTTP<br/>1 serial on Chromium"]]
-        CR_W["For each URL:<br/>• respect politeness / crawl-delay<br/>• fetch + extract metadata<br/>• enqueue new links<br/>&nbsp;&nbsp;(until MAX_DEPTH)<br/>• flush progress (debounced 500 ms)"]
+        CR_RB["Read robots.txt"]
+        CR_SM["Walk sitemaps → seed BFS queue"]
+        CR_HP["Probe homepage (HTTP)"]
+        CR_SPA{{"Needs Chromium?"}}
+        CR_BR["Render with Chromium"]
+        CR_MD["Probe .md sibling"]
+        CR_NAV["Scrape nav (HTTP fallback)"]
+        CR_CAP["Cap URLs per path prefix"]
+        CR_LANG["Detect primary language"]
+        CR_LOC["Drop off-locale URLs"]
+        CR_RANK["LLM ranks the queue"]
+        CR_POOL[["Worker pool"]]
+        CR_W["Fetch + extract each page"]
     end
 
     subgraph Enriching["2 · Enriching with AI"]
         direction LR
-        EN_NAME["LLM picks the brand name<br/>from og:site_name, title,<br/>h1, JSON-LD<br/><i>kicked off in phase 1,<br/>awaited here</i>"]
-        EN_GENRE["Classify the site genre<br/>docs · ecommerce · corporate ·<br/>news · blog · …<br/>pattern-match URLs + HTML"]
-        EN_EXT["Gather external references<br/>from homepage outbound links<br/>• LLM picks worth keeping<br/>• fetch each for metadata<br/>budget = MAX_PAGES<br/>− internal pages crawled"]
-        EN_STRIP["Blank out descriptions that<br/>just repeat the homepage tagline<br/>(keeps the preamble from<br/>echoing down the output)"]
-        EN_BATCH["LLM enriches each page<br/>batches of 20, run in parallel<br/>→ section<br/>→ importance (1–10)<br/>→ description"]
+        EN_NAME["LLM: brand name"]
+        EN_GENRE["Classify genre"]
+        EN_EXT["Resolve external refs"]
+        EN_STRIP["Strip tagline-dup descriptions"]
+        EN_BATCH["LLM: section + importance + description"]
     end
 
     subgraph Scoring["3 · Scoring & classifying"]
         direction LR
-        SC_SCORE["Score each page 0–100<br/><br/><b>Base signals</b><br/>description +25<br/>mdUrl sibling +20<br/>JSON-LD description +10<br/>has headings +10<br/>body excerpt > 200 ch +10<br/><br/><b>Modifiers</b><br/>LLM importance → ±23<br/>off-primary-language → −20"]
-        SC_SECT["Bucket each page<br/>score < 15 → dropped<br/>15–39 → Optional<br/>≥ 40 → LLM section<br/>&nbsp;&nbsp;(path-inferred fallback)"]
-        SC_FILT["Pick what goes in the output<br/>• dedupe by host + path<br/>• drop site's own homepage<br/>• Primary: up to 50 (score ≥ 40)<br/>• Optional: up to 10 (15–39)<br/>• rescue homepage<br/>&nbsp;&nbsp;only if both are empty"]
+        SC_SCORE["Score 0–100<br/>(base signals + LLM + locale)"]
+        SC_SECT["Bucket → drop / Optional / Primary"]
+        SC_FILT["Select output set"]
     end
 
     subgraph Assembling["4 · Assembling file"]
         direction LR
-        AS_SUM["Derive the summary blockquote<br/>from the homepage description<br/>(only if it came from<br/>meta / og / JSON-LD)"]
-        AS_PRE["LLM writes a 2–3 sentence intro<br/>structured JSON reply with<br/>confidence flag<br/>dropped if not confident"]
-        AS_NOTE["Add 'robots disallow-all' note<br/>when the site blocks all<br/>crawling (Disallow: /)"]
-        AS_FILE["Build the markdown file<br/># SiteName<br/>> summary<br/>intro paragraph<br/>## Section<br/>&nbsp;&nbsp;- [label](url): description<br/>## Optional<br/><br/>label = page title, with<br/>URL-derived fallback on<br/>collision or generic title"]
-        AS_TERM["Decide terminal status<br/>0 pages crawled → failed<br/>empty primary + optional → failed<br/>≥ 5 attempts && < 50 %<br/>&nbsp;&nbsp;success → partial<br/>else → complete"]
+        AS_SUM["Summary blockquote"]
+        AS_PRE["LLM intro paragraph"]
+        AS_NOTE["Robots disallow-all notice"]
+        AS_FILE["Build markdown file"]
+        AS_TERM["Set terminal status"]
     end
 
     In --> CR_RB --> CR_SM --> CR_HP --> CR_SPA

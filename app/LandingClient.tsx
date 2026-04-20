@@ -196,20 +196,31 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
           </p>
 
           <form className="max-w-lg mx-auto" onSubmit={handleSubmit}>
-            {/* flex-col on mobile so the Generate button stacks below
-                the URL field — keeps the input from getting crushed on
-                narrow screens. sm:flex-row restores the inline layout
-                on tablets and desktop. */}
+            {/* Mobile: URL box is its own bordered card; Generate
+                button sits below as a separate full-width button (no
+                shared border). sm+: both live inside one bordered
+                container for the pill-form look. We swap which
+                element "owns" the border via sm: prefixed classes —
+                outer is bordered at sm+, inner URL wrapper is
+                bordered below sm. */}
             <div
-              className={`flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-0 bg-white border rounded-xl p-1.5 shadow-sm transition-all duration-200 ${
+              className={`flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-0 sm:bg-white sm:border sm:rounded-xl sm:p-1.5 sm:shadow-sm sm:transition-all sm:duration-200 ${
                 focused
-                  ? "border-zinc-900 shadow-[0_0_0_3px_rgba(9,9,11,0.06)]"
+                  ? "sm:border-zinc-900 sm:shadow-[0_0_0_3px_rgba(9,9,11,0.06)]"
                   : error
-                  ? "border-red-400"
-                  : "border-zinc-200 hover:border-zinc-300"
+                  ? "sm:border-red-400"
+                  : "sm:border-zinc-200 sm:hover:border-zinc-300"
               }`}
             >
-              <div className="flex items-center flex-1 min-w-0">
+              <div
+                className={`flex items-center flex-1 min-w-0 bg-white border rounded-xl p-1.5 shadow-sm transition-all duration-200 sm:border-transparent sm:rounded-none sm:p-0 sm:shadow-none ${
+                  focused
+                    ? "border-zinc-900 shadow-[0_0_0_3px_rgba(9,9,11,0.06)]"
+                    : error
+                    ? "border-red-400"
+                    : "border-zinc-200 hover:border-zinc-300"
+                }`}
+              >
                 <Globe size={15} className="ml-2.5 text-zinc-400 shrink-0" />
                 <input
                   ref={inputRef}
@@ -233,7 +244,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
               <button
                 type="submit"
                 disabled={loading || !url.trim()}
-                className="flex items-center justify-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-4 py-2.5 sm:py-2 rounded-[9px] hover:bg-zinc-800 active:scale-95 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+                className="flex items-center justify-center gap-1.5 bg-zinc-950 text-white text-sm font-medium px-4 py-3 sm:py-2 w-full sm:w-auto rounded-xl sm:rounded-[9px] hover:bg-zinc-800 active:scale-95 disabled:cursor-not-allowed transition-all whitespace-nowrap"
               >
                 {loading ? (
                   <><Loader2 size={13} className="animate-spin" /> Generating…</>
