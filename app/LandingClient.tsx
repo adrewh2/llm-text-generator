@@ -214,7 +214,10 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
                 onFocus={() => setFocused(true)}
                 onBlur={() => setFocused(false)}
                 placeholder="https://your-website.com"
-                className="flex-1 px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 bg-transparent outline-none font-mono"
+                // Font size stays ≥16px on mobile so iOS Safari / Android
+                // Chrome don't auto-zoom the viewport on focus. Drops to
+                // text-sm (14px) at sm+ where the compact look is fine.
+                className="flex-1 px-3 py-2 text-base sm:text-sm text-zinc-900 placeholder-zinc-400 bg-transparent outline-none font-mono"
                 required
                 disabled={loading}
                 aria-label="Website URL"
