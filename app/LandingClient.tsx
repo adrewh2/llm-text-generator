@@ -195,7 +195,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
             in seconds.
           </p>
 
-          <form className="max-w-lg mx-auto" onSubmit={handleSubmit}>
+          <form className="max-w-lg mx-auto" onSubmit={handleSubmit} noValidate>
             {/* Mobile: URL box is its own bordered card; Generate
                 button sits below as a separate full-width button (no
                 shared border). sm+: both live inside one bordered
@@ -224,7 +224,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
                 <Globe size={15} className="ml-2.5 text-zinc-400 shrink-0" />
                 <input
                   ref={inputRef}
-                  type="text"
+                  type="url"
                   value={url}
                   onChange={(e) => { setUrl(e.target.value); setError(""); setShowSignInHint(false) }}
                   onFocus={() => setFocused(true)}
@@ -234,18 +234,18 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
                   // Chrome don't auto-zoom the viewport on focus. Drops to
                   // text-sm (14px) at sm+ where the compact look is fine.
                   className="flex-1 min-w-0 px-3 py-2 text-base sm:text-sm text-zinc-900 placeholder-zinc-400 bg-transparent outline-none font-mono"
-                  // URL-specific input hints suppress iOS Safari's
-                  // passwords / cards / contacts autofill toolbar (it
-                  // appears by default above the keyboard for generic
-                  // text inputs) and bring up a URL-friendly keyboard
-                  // with "." and "/" keys. autoCorrect + autoCapitalize
-                  // off so typed URLs aren't mangled into
-                  // "Https://Your-Site.Com". Kept as type="text" (not
-                  // "url") to avoid layering HTML5 validation on top of
-                  // clientValidateUrl, which already handles bare
-                  // domains like "example.com".
+                  // type="url" + inputMode="url" tells iOS this is a URL
+                  // field: the keyboard swaps to the ".", "/", ".com"
+                  // variant and the QuickType accessory bar above the
+                  // keyboard (Passwords / Payment / Contacts) is
+                  // suppressed — those only surface on fields iOS reads
+                  // as credential / payment / address. autoComplete="off"
+                  // blocks Safari's own URL-history dropdown so nothing
+                  // else rides in on top. HTML5 validation is off at the
+                  // <form> level (noValidate) so bare domains like
+                  // "example.com" still flow through clientValidateUrl.
                   inputMode="url"
-                  autoComplete="url"
+                  autoComplete="off"
                   autoCorrect="off"
                   autoCapitalize="none"
                   spellCheck={false}
