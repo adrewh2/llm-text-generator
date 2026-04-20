@@ -118,10 +118,27 @@ function resolveDisplayLabels(pages: ScoredPage[], siteName: string): Map<string
   const siteNorm = siteName.trim().toLowerCase()
   const labels = new Map<string, string>()
 
-  // Pass 1: site-name-as-title → URL label.
+  // A page title that shows up on many pages is a site-wide tagline,
+  // not a per-page title — typically an SPA that forgot to update
+  // document.title on route change (duolingo.com's "Learn a language
+  // for free" was the motivating case). Treat it the same as
+  // `title === siteName`: fall back to a URL-derived label so each
+  // entry is actually distinguishable. Threshold of 3 keeps us from
+  // misfiring on real 2-page collisions that Pass 2 handles fine.
+  const titleCounts = new Map<string, number>()
+  for (const p of pages) {
+    const t = (p.title || "").trim().toLowerCase()
+    if (t) titleCounts.set(t, (titleCounts.get(t) ?? 0) + 1)
+  }
+  const GENERIC_TITLE_THRESHOLD = 3
+  const isGenericTitle = (lower: string): boolean =>
+    (titleCounts.get(lower) ?? 0) >= GENERIC_TITLE_THRESHOLD
+
+  // Pass 1: site-name-as-title OR site-wide-repeated tagline → URL label.
   for (const p of pages) {
     const t = (p.title || "").trim()
-    if (t && t.toLowerCase() === siteNorm) {
+    const tLower = t.toLowerCase()
+    if (t && (tLower === siteNorm || isGenericTitle(tLower))) {
       const derived = urlToLabel(p.url)
       if (derived) labels.set(p.url, derived)
       continue
