@@ -1,6 +1,5 @@
 # Screenshots
 
-Visual tour of the llms.txt Generator.
 
 <!--
   Paste images below. Two common ways that both work on GitHub:
