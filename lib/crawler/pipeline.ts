@@ -390,13 +390,31 @@ async function runPipelineInner(
     signal.throwIfAborted()
     await updateJob(jobId, { status: "scoring" })
 
-    // Derive blockquote summary from homepage description
+    const scored = scorePages(successful, genre, primaryLang, enrichment)
+
+    // Blockquote summary = homepage's post-enrichment description.
+    //
+    // Two reasons we look at the scored pages, not `homepageMeta`:
+    //   1. The LLM enrichment rewrites the description when it can
+    //      produce something better — google.com's raw extraction
+    //      falls back to a cleaned body excerpt ("AboutStoreWhat's
+    //      on your mind?" — nav goo), but the LLM's replacement
+    //      ("Google's main search engine homepage…") is what we want.
+    //   2. Only accept the summary when its provenance is a trusted
+    //      structured source (`json_ld` / `og` / `meta` / `llm`).
+    //      `excerpt` and `heading` fallbacks are unreliable for a
+    //      user-facing blockquote — better to ship no blockquote
+    //      than a garbage one.
+    const homepageScored = scored.find((p) => p.url === baseUrl)
     const summary =
-      homepageMeta.description && homepageMeta.descriptionProvenance !== "none"
-        ? homepageMeta.description
+      homepageScored?.description &&
+      (homepageScored.descriptionProvenance === "json_ld" ||
+        homepageScored.descriptionProvenance === "og" ||
+        homepageScored.descriptionProvenance === "meta" ||
+        homepageScored.descriptionProvenance === "llm")
+        ? homepageScored.description
         : undefined
 
-    const scored = scorePages(successful, genre, primaryLang, enrichment)
     const withSections = assignSections(scored)
     const { primary, optional } = filterAndSelectPages(withSections, baseUrl)
 
