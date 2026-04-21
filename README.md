@@ -5,9 +5,6 @@ A web app that turns any website into a spec-compliant [`llms.txt`](https://llms
 Enter a URL and get back a curated `llms.txt`: an H1 with the site's name, a short intro, and the site's most important pages grouped into sections like Docs, Guides, Products, etc. Sign in to save a history of everything you've generated and export the collection as a zip.
 
 <img width="1798" height="1008" alt="image" src="https://github.com/user-attachments/assets/2e4f0078-9d42-4e81-9ebf-4fdba9128ba3" />
-<img width="1798" height="1887" alt="image" src="https://github.com/user-attachments/assets/4b218d25-8e4e-4643-906e-4b4ab951597c" />
-<img width="1798" height="1008" alt="image" src="https://github.com/user-attachments/assets/26f9c34d-10f3-4a1a-bb26-b6eeb3179598" />
-<img width="1798" height="1008" alt="image" src="https://github.com/user-attachments/assets/0cfa98c9-38d8-4cbe-a5d0-cd351cc19d26" />
 
 ## What it does
 
