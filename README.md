@@ -1,5 +1,7 @@
 # llms.txt Generator
 
+[![llmstxt.sh](https://img.shields.io/website?url=https%3A%2F%2Fllmstxt.sh&label=llmstxt.sh&up_message=live&down_message=down&style=flat-square)](https://llmstxt.sh)
+
 A web app that turns any website into a spec-compliant [`llms.txt`](https://llmstxt.org) file — a machine-readable index an LLM can use to understand what the site is and which pages matter.
 
 Enter a URL and get back a curated `llms.txt`: an H1 with the site's name, a short intro, and the site's most important pages grouped into sections like Docs, Guides, Products, etc. Sign in to save a history of everything you've generated and export the collection as a zip.
