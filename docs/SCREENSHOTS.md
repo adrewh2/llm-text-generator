@@ -16,12 +16,16 @@ Visual tour of the llms.txt Generator.
 
 ## Landing page
 
-<!-- paste screenshot here -->
+<img width="1798" height="1887" alt="image" src="https://github.com/user-attachments/assets/4b218d25-8e4e-4643-906e-4b4ab951597c" />
+
+## Dashboard
+
+<img width="1798" height="1008" alt="image" src="https://github.com/user-attachments/assets/26f9c34d-10f3-4a1a-bb26-b6eeb3179598" />
 
 ## Generating a file
 
-<!-- paste screenshot here -->
+<img width="1798" height="1008" alt="image" src="https://github.com/user-attachments/assets/416acb0c-e1ee-4e73-a812-0878faef8950" />
 
 ## Result view
 
-<!-- paste screenshot here -->
+<img width="1798" height="1008" alt="image" src="https://github.com/user-attachments/assets/0cfa98c9-38d8-4cbe-a5d0-cd351cc19d26" />
