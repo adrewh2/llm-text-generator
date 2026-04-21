@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { bumpPageRequest, getPageById, getPageStatusById } from "@/lib/store"
+import { getPageById, getPageStatusById } from "@/lib/store"
 import { scrubError } from "./scrubError"
 
 export const runtime = "nodejs"
@@ -24,13 +24,7 @@ export async function GET(
   const isTerminalStatus = status.status === "complete" || status.status === "partial"
   const job = isTerminalStatus ? ((await getPageById(id)) ?? status) : status
 
-  // Count a view as "active use" so the monitor sweeper keeps the page.
-  // Fire-and-forget — this write doesn't gate the response. Awaiting
-  // it added a DB roundtrip to every view latency for no user benefit;
-  // the sweeper is eventually-consistent.
-  if (job.status !== "failed") {
-    bumpPageRequest(job.url).catch(() => {})
-  }
+  // Pure read — bumpPageRequest fires on the /p/[id] RSC render, not per poll.
 
   // Terminal success → long-lived edge cache; `updateJob` revalidates
   // the path on the next re-crawl. `failed` is kept short because it

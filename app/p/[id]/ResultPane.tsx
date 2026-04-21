@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { formatDistanceToNowStrict } from "date-fns"
 import { Check, Copy, Download, Link2, RefreshCw, Save } from "lucide-react"
-import { crawler } from "@/lib/config"
+import { crawler, ui } from "@/lib/config"
 import type { ApiJob } from "./types"
 
 const STALE_AFTER_MS = crawler.PAGE_TTL_HOURS * 60 * 60 * 1000
@@ -41,6 +41,17 @@ export default function ResultPane({ job, signedIn }: Props) {
   const isStale = lastCheckedAt
     ? Date.now() - lastCheckedAt.getTime() >= STALE_AFTER_MS
     : false
+
+  // Tick state forces a re-render on an interval so formatDistanceToNowStrict
+  // re-evaluates against the fresh clock — "35 seconds ago" → "1 minute ago"
+  // without needing a page refresh. Matches the dashboard MonitorStatus
+  // cadence (`ui.MONITOR_STATUS_TICK_MS`).
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (!lastCheckedAt) return
+    const id = setInterval(() => setTick((n) => n + 1), ui.MONITOR_STATUS_TICK_MS)
+    return () => clearInterval(id)
+  }, [lastCheckedAt])
 
   // Clear pending "Copied!" timers on unmount so they don't fire on
   // an unmounted component (React 19 no-ops this quietly but we'd
@@ -116,11 +127,10 @@ export default function ResultPane({ job, signedIn }: Props) {
     setRefreshing(true)
     setRefreshError(null)
     try {
-      // Same endpoint the landing-page Generate button uses — preserves
-      // the existing rate limiting (SUBMIT + NEW_CRAWL buckets) and
-      // getActiveJobForUrl attach logic. If another viewer just clicked
-      // Refresh on the same URL, our POST attaches to their in-flight
-      // job rather than spawning a duplicate crawl.
+      // Same endpoint + same payload the landing-page Generate button
+      // uses. The server decides whether to crawl: cache hit → return
+      // cached; in-flight → attach; TTL-stale → signature check,
+      // crawl only on drift; missing → crawl. No special flag needed.
       const res = await fetch("/api/p", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

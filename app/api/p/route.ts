@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 import { randomUUID } from "crypto"
 import { waitUntil } from "@vercel/functions"
-import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, upsertUserRequest } from "@/lib/store"
+import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, recordMonitorCheck, upsertUserRequest } from "@/lib/store"
 import { altWwwForm, isValidHttpUrl, normalizeUrl } from "@/lib/crawler/net/url"
 import { resolveCanonicalUrl } from "@/lib/crawler/net/canonicalUrl"
 import { assertSafeUrl, UnsafeUrlError } from "@/lib/crawler/net/ssrf"
+import { detectChange } from "@/lib/crawler/monitor"
 import { clientIp, consumeRateLimit, isAllowedOrigin } from "@/lib/upstash/rateLimit"
 import { api, rateLimit } from "@/lib/config"
 import { enqueueCrawl } from "@/lib/upstash/jobQueue"
@@ -134,6 +135,29 @@ export async function POST(req: NextRequest) {
   if (!preKeys.includes(canonicalUrl)) {
     const res = await tryServeAt(canonicalUrl)
     if (res) return res
+  }
+
+  // TTL-stale page: run the monitor's signature check before crawling.
+  // No drift → serve cache. Drift or uncomputable → fall through.
+  const staleExisting = await getPageByUrl(canonicalUrl)
+  if (staleExisting) {
+    const { changed, newSignature } = await detectChange(
+      canonicalUrl,
+      staleExisting.contentSignature,
+    )
+    await recordMonitorCheck(canonicalUrl, newSignature)
+
+    const unchanged = !changed && newSignature !== null
+    if (unchanged) {
+      runAfterResponse("bumpPageRequest", bumpPageRequest(canonicalUrl))
+      if (user) runAfterResponse("upsertUserRequest", upsertUserRequest(user.id, canonicalUrl))
+      return NextResponse.json(
+        { page_id: staleExisting.pageId, cached: true },
+        { status: 200 },
+      )
+    }
+    // Drift detected, or we couldn't compute a fresh signature (both
+    // fetches failed). Fall through to dispatch a fresh crawl.
   }
 
   // About to dispatch a fresh crawl — this is the expensive path, so

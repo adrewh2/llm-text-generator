@@ -245,16 +245,24 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
 
 
 /**
- * Returns the page's UUID (user-facing id) plus TTL staleness for a
- * given canonical URL, or undefined if no terminal result exists yet.
- * Callers use `pageId` to build the `/p/{id}` redirect and `isStale`
- * to decide whether to dispatch a fresh crawl.
+ * Returns the page's UUID (user-facing id), TTL staleness, and the
+ * stored drift signature for a given canonical URL, or undefined if
+ * no terminal result exists yet.
+ *
+ * `pageId` is the `/p/{id}` redirect target; `isStale` decides whether
+ * the caller tries the fast cache-hit path; `contentSignature` lets
+ * the TTL-stale path run a signature check (same logic the monitor
+ * cron uses) before deciding whether a full re-crawl is actually
+ * needed — so a user submitting a URL whose site hasn't changed
+ * doesn't burn an LLM budget on a redundant crawl.
  */
-export async function getPageByUrl(url: string): Promise<{ pageId: string; isStale: boolean } | undefined> {
+export async function getPageByUrl(url: string): Promise<
+  { pageId: string; isStale: boolean; contentSignature: string | null } | undefined
+> {
   const supabase = getClient()
   const { data: page } = await supabase
     .from("pages")
-    .select("id, updated_at")
+    .select("id, updated_at, content_signature")
     .eq("url", url)
     .not("result", "is", null)
     .maybeSingle()
@@ -262,7 +270,11 @@ export async function getPageByUrl(url: string): Promise<{ pageId: string; isSta
 
   const ageHours = (Date.now() - new Date(page.updated_at).getTime()) / 3_600_000
   const isStale = ageHours >= PAGE_TTL_HOURS
-  return { pageId: page.id, isStale }
+  return {
+    pageId: page.id,
+    isStale,
+    contentSignature: page.content_signature ?? null,
+  }
 }
 
 /**
@@ -381,25 +393,12 @@ export async function sweepStaleMonitoredPages(staleAfterDays: number): Promise<
  * without the client polling, because the terminal poll response is
  * CDN-cached and wouldn't reach our server).
  *
- * Per-instance cooldown: the sweeper only cares about freshness
- * within `monitor.STALE_DAYS` (5 d), so the first bump per window
- * writes and subsequent bumps inside the window are no-ops. Worst-
- * case staleness across Fluid instances is `BUMP_COOLDOWN_MS`, which
- * is negligible against a 5-day cutoff.
- *
  * No-op if the page doesn't exist yet (UPDATE with no matching row).
  * Errors go to Sentry so a Supabase outage here doesn't silently
  * drift sweeper decisions — the caller doesn't wait on this
  * (fire-and-forget) so we log instead of throwing.
  */
-const BUMP_COOLDOWN_MS = 5 * 60 * 1000
-const lastBumpAt = new Map<string, number>()
 export async function bumpPageRequest(pageUrl: string): Promise<void> {
-  const now = Date.now()
-  const last = lastBumpAt.get(pageUrl) ?? 0
-  if (now - last < BUMP_COOLDOWN_MS) return
-  lastBumpAt.set(pageUrl, now)
-
   const supabase = getClient()
   const { error } = await supabase
     .from("pages")
