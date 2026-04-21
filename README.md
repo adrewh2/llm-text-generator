@@ -16,7 +16,7 @@ Enter a URL and get back a curated `llms.txt`: an H1 with the site's name, a sho
 - **Account features** for signed-in users: dashboard of every URL you've generated, infinite scroll + bulk ZIP export, one-click "add to dashboard" when viewing a shared result URL.
 - **Production-hardened**: SSRF guards on every outbound fetch (with per-redirect re-validation), two-bucket rate limiter (SUBMIT floor + NEW_CRAWL quota), prompt-injection defence on every LLM call, Row-Level Security on every table, Sentry error tracking, and a durable QStash queue for crawl dispatch with fallback systems for local dev.
 
-Full detail on any of these lives in the docs under [`docs/`](./docs) — see [Further reading](#further-reading) below.
+See [`docs/SCREENSHOTS.md`](./docs/SCREENSHOTS.md) for a visual tour. Full detail on any of the features above lives in the docs under [`docs/`](./docs) — see [Further reading](#further-reading) below.
 
 ## Prerequisites
 
@@ -213,6 +213,7 @@ The deeper picture — component diagram, crawl-request lifecycle, pipeline stag
 
 ## Further reading
 
+- [`docs/SCREENSHOTS.md`](./docs/SCREENSHOTS.md) — visual tour of the UI
 - [`docs/DESIGN.md`](./docs/DESIGN.md) — pipeline rationale, crawl strategy, LLM prompt design, tradeoffs
 - [`docs/SYSTEM-DESIGN.md`](./docs/SYSTEM-DESIGN.md) — Mermaid diagrams: component graph + crawl-request lifecycle
 - [`docs/SECURITY.md`](./docs/SECURITY.md) — threat model and implemented controls

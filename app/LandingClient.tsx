@@ -400,9 +400,11 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
         </div>
       </section>
 
-      {/* Footer */}
+      {/* Footer — flex spans the full viewport so the brand label hugs the
+          left edge and the "built with" line hugs the right edge, not just
+          the inner 6xl container's boundaries. */}
       <footer className="border-t border-zinc-100">
-        <div className="max-w-6xl mx-auto px-6 py-8 flex items-center justify-between">
+        <div className="px-6 py-8 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-5 h-5 bg-zinc-950 rounded-[4px] flex items-center justify-center">
               <span className="text-white font-mono text-[8px] font-bold">{"//"}</span>
