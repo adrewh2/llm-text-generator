@@ -4,6 +4,11 @@ A web app that turns any website into a spec-compliant [`llms.txt`](https://llms
 
 Enter a URL and get back a curated `llms.txt`: an H1 with the site's name, a short intro, and the site's most important pages grouped into sections like Docs, Guides, Products, etc. Sign in to save a history of everything you've generated and export the collection as a zip.
 
+<img width="1971" height="1887" alt="image" src="https://github.com/user-attachments/assets/c5ce8bda-9cc7-49be-bc5a-af3c36111912" />
+<img width="1971" height="1036" alt="image" src="https://github.com/user-attachments/assets/d859082d-e16b-4f28-8088-c2114ef06d62" />
+<img width="1971" height="1036" alt="image" src="https://github.com/user-attachments/assets/1bba10eb-43bb-4690-977c-b004c6da285b" />
+
+
 ## What it does
 
 - **Crawls a site intelligently.** Reads the site's `sitemap.xml` and `robots.txt`, explores outward from the homepage, and — when a site is a JavaScript shell (SPA) — renders it through headless Chromium. Before crawling, an LLM re-orders the candidate URLs by likely value so the page budget is spent on the pages an LLM reader would actually want.
