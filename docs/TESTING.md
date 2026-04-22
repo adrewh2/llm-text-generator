@@ -602,9 +602,11 @@ curl -s -X DELETE "$BASE_URL/api/p/request?pageUrl=https://nextjs.org" \
 ```bash
 # Find a terminal job:
 JOB=$(psql "$DATABASE_URL" -t -A -c "SELECT id FROM jobs WHERE status IN ('complete','partial','failed') ORDER BY created_at DESC LIMIT 1;")
-curl -sI "$BASE_URL/api/p/$JOB" | grep -i "^cache-control:"
+curl -sI "$BASE_URL/api/p/$JOB" | grep -iE "^(cache-control|x-vercel-cache|age):"
 ```
-**Expect:** `cache-control: public, s-maxage=86400, stale-while-revalidate=604800`.
+**Expect (localhost / direct origin):** `cache-control: public, s-maxage=86400, stale-while-revalidate=604800`.
+
+**Expect (production, through the Vercel edge):** `cache-control: public` alone — `s-maxage` and `stale-while-revalidate` are CDN-only directives that the edge consumes when it caches and strips from the downstream response. Confirm caching is live via `x-vercel-cache: HIT` + a non-zero `age:` header after a second request.
 
 ### 8.2 In-flight job responses are no-store
 
@@ -762,12 +764,14 @@ Protection).
 ### 11.2 QStash worker rejects unsigned requests
 
 ```bash
-# Direct POST to the worker without a QStash signature header should 401
+# Direct POST to the worker without a QStash signature header should 403
 curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BASE_URL/api/worker/crawl" \
   -H "Content-Type: application/json" \
   -d "{\"jobId\":\"00000000-0000-0000-0000-000000000000\",\"url\":\"https://example.com\"}"
 ```
-**Expect:** `401` (Upstash signature verification failed).
+**Expect:** `403` (Upstash `verifySignatureAppRouter` rejects the missing
+signature). Either `401` or `403` would be semantically correct — current
+SDK returns `403`.
 
 ### 11.3 Sentry captures errors
 
