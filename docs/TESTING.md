@@ -182,12 +182,10 @@ internal `Unsafe URL (forbidden IP range …)` message).
 ### 3.2 Loopback hostname rejected
 
 ```bash
-JOB=$(curl -s -X POST "$BASE_URL/api/p" \
-  -H "Content-Type: application/json" -d '{"url":"http://localhost/"}' | jq -r '.page_id')
-sleep 2
-curl -s "$BASE_URL/api/p/$JOB" | jq '{status, error}'
+curl -s -X POST "$BASE_URL/api/p" \
+  -H "Content-Type: application/json" -d '{"url":"http://localhost/"}' | jq
 ```
-**Expect:** `status=failed`, `error="This URL can't be crawled."`.
+**Expect:** HTTP 400 with body `{"error":"URL is not reachable or not allowed."}`. `localhost` resolves to `127.0.0.1`, which `assertSafeUrl()` blocks before a job is created.
 
 ### 3.3 IPv6 loopback / link-local rejected
 
@@ -204,12 +202,10 @@ done
 ### 3.4 IPv4-mapped IPv6 rejected
 
 ```bash
-JOB=$(curl -s -X POST "$BASE_URL/api/p" \
-  -H "Content-Type: application/json" -d '{"url":"http://[::ffff:127.0.0.1]/"}' | jq -r '.page_id')
-sleep 2
-curl -s "$BASE_URL/api/p/$JOB" | jq -r '.error'
+curl -s -X POST "$BASE_URL/api/p" \
+  -H "Content-Type: application/json" -d '{"url":"http://[::ffff:127.0.0.1]/"}' | jq
 ```
-**Expect:** `This URL can't be crawled.`
+**Expect:** HTTP 400 with body `{"error":"URL is not reachable or not allowed."}`. The IPv4-mapped form must be treated the same as raw `127.0.0.1`.
 
 ### 3.5 Non-default port rejected
 
@@ -246,18 +242,29 @@ these will actually try to crawl the site):
 
 ### 3.6 Error-scrub doesn't leak internals
 
-Verify the **internal** `jobs.error` row contains the resolved-IP
-details, but the **API** response doesn't:
+The submit-time SSRF gate rejects direct private IPs before a row is
+written, so reproducing the scrubbed SSRF error via `POST /api/p`
+isn't possible with the URLs above. The scrub path still fires when
+an unsafe URL slips past submit — typically a mid-crawl redirect to
+a private IP caught by `safeFetch` — and for other raw internal
+messages (`exceeded time budget`, `browser render failed`, `http
+403`, etc.).
+
+To verify the scrubber shape on whatever failed jobs do exist:
 
 ```bash
-psql "$DATABASE_URL" -c "SELECT error FROM jobs WHERE status = 'failed' ORDER BY created_at DESC LIMIT 1;"
-# Internal error may read: "Unsafe URL (forbidden IP range (127.0.0.1)): http://localhost/"
+psql "$DATABASE_URL" -c "SELECT id, error FROM jobs WHERE status = 'failed' ORDER BY created_at DESC LIMIT 3;"
+# Internal error may read any of: "Unsafe URL (forbidden IP range (…)): …",
+#   "Exceeded time budget", "browser render failed: …", "http 403: …", etc.
 
-curl -s "$BASE_URL/api/p/$(psql "$DATABASE_URL" -t -A -c "SELECT id FROM jobs WHERE status='failed' ORDER BY created_at DESC LIMIT 1;")" | jq -r '.error'
-# User-facing: "This URL can't be crawled."
+JOB_ID=$(psql "$DATABASE_URL" -t -A -c "SELECT id FROM jobs WHERE status='failed' ORDER BY created_at DESC LIMIT 1;")
+curl -s "$BASE_URL/api/p/$(psql "$DATABASE_URL" -t -A -c "SELECT id FROM pages WHERE url = (SELECT page_url FROM jobs WHERE id='$JOB_ID');")" | jq -r '.error'
+# User-facing string comes from scrubError() — never includes IPs,
+# paths, or raw stack text.
 ```
-**Expect:** internal message contains IP / forbidden-range detail; API
-response returns a generic string with no IP reference.
+**Expect:** internal `jobs.error` may carry raw detail (IPs, URLs,
+status codes); API response is always one of the short generic
+strings in `app/api/p/[id]/scrubError.ts`.
 
 ---
 
@@ -538,17 +545,29 @@ curl -s -o /dev/null -w "%{http_code}\n" -X DELETE "$BASE_URL/api/p/request?page
 
 As user A, submit URL `X`. Sign out; sign in as user B. **Expect:**
 - User B's `/dashboard` does not list URL `X`.
-- User B can still view `$BASE_URL/p/<X's job id>` directly (jobs are
-  public-read by design; history is private).
+- User B can still view `$BASE_URL/p/<X's page id>` directly. This
+  is an API-layer choice, not an RLS policy: our `/api/p/[id]` route
+  uses the service-role key and serves the page to anyone who knows
+  the UUID. The result view is public by design (shareable links);
+  the user→URLs history is what RLS keeps private.
 
-Verify RLS at the DB level (service-role bypasses it, so direct SQL
-with the anon key is the real check):
+Verify RLS at the DB level — the anon key is the real check, since
+the service-role key bypasses RLS:
 ```bash
-# With anon key — user_requests should require auth context
+# user_requests has a user_id-scoped policy; no session → 0 rows.
 curl -s "$NEXT_PUBLIC_SUPABASE_URL/rest/v1/user_requests?select=page_url" \
   -H "apikey: $NEXT_PUBLIC_SUPABASE_ANON_KEY" | jq
+
+# pages and jobs have no anon-accessible policies at all — default-deny
+# should return an empty array (or a "permission denied" object,
+# depending on PostgREST version), never a list of rows.
+curl -s "$NEXT_PUBLIC_SUPABASE_URL/rest/v1/pages?select=url" \
+  -H "apikey: $NEXT_PUBLIC_SUPABASE_ANON_KEY" | jq
+curl -s "$NEXT_PUBLIC_SUPABASE_URL/rest/v1/jobs?select=id" \
+  -H "apikey: $NEXT_PUBLIC_SUPABASE_ANON_KEY" | jq
 ```
-**Expect:** empty array `[]` (RLS blocks anon reads).
+**Expect:** all three return `[]` (or a PostgREST permission-denied
+body) — direct anon access to any of the three tables is blocked.
 
 ### 7.5 [browser] SIGNED_OUT clears client cache
 

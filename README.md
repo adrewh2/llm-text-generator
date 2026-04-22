@@ -16,7 +16,7 @@ Enter a URL and get back a curated `llms.txt`: an H1 with the site's name, a sho
 - **Assembles a spec-compliant file**: H1 + blockquote summary + intro paragraph + `## Section` headings with importance-ordered bullet lists. Curated external references (spec links, upstream docs, related projects the site links to itself) are included.
 - **Caches globally.** One canonical result per URL, shared across all users. A daily cron detects site changes via a signature over the sitemap + homepage and re-crawls only when something actually drifted. User re-requests can also trigger a regeneration if the page's TTL expired.
 - **Account features** for signed-in users: dashboard of every URL you've generated, infinite scroll + bulk ZIP export, one-click "add to dashboard" when viewing a shared result URL.
-- **Production-hardened**: SSRF guards on every outbound fetch (with per-redirect re-validation), two-bucket rate limiter (SUBMIT floor + NEW_CRAWL quota), prompt-injection defence on every LLM call, Row-Level Security on every table, Sentry error tracking, and a durable QStash queue for crawl dispatch with fallback systems for local dev.
+- **Production-hardened**: SSRF guards on every outbound fetch (with per-redirect re-validation), two-bucket rate limiter (SUBMIT floor + NEW_CRAWL quota), prompt-injection defence on every LLM call, Row-Level Security with anon-deny defaults on `pages` / `jobs` and a per-user policy on `user_requests`, Sentry error tracking, and a durable QStash queue for crawl dispatch with fallback systems for local dev.
 
 See [`docs/SCREENSHOTS.md`](./docs/SCREENSHOTS.md) for a visual tour. Full detail on any of the features above lives in the docs under [`docs/`](./docs) — see [Further reading](#further-reading) below.
 
@@ -30,7 +30,7 @@ See [`docs/SCREENSHOTS.md`](./docs/SCREENSHOTS.md) for a visual tour. Full detai
   - **Upstash QStash** — durable crawl queue
   - **Sentry** — error tracking
 
-For **local development** the Upstash / QStash / Sentry pieces are optional: `rateLimit.ts` falls back to in-memory buckets, `jobQueue.ts` falls back to `waitUntil` in-process, and the Sentry SDK no-ops without a DSN. You can run end-to-end with just Supabase + Anthropic.
+For **local development** the Upstash / QStash / Sentry pieces are optional: `lib/upstash/rateLimit.ts` falls back to in-memory buckets, `lib/upstash/jobQueue.ts` falls back to `waitUntil` in-process, and the Sentry SDK no-ops without a DSN. You can run end-to-end with just Supabase + Anthropic.
 
 ## Running locally
 
@@ -46,7 +46,7 @@ auth, session cookie). Walk through this in order:
 
 ```bash
 # Step 1 — clone + install
-git clone https://github.com/hanstah/llm-text-generator.git
+git clone https://github.com/adrewh2/llm-text-generator.git
 cd llm-text-generator
 npm install
 
@@ -62,7 +62,7 @@ Open <http://localhost:3000>.
 ### Creating the Supabase project
 
 1. Create a new project at [supabase.com/dashboard](https://supabase.com/dashboard).
-2. Open **SQL Editor** → paste the contents of [`supabase/migration.sql`](./supabase/migration.sql) → **Run**. This creates the `pages`, `jobs`, and `user_requests` tables along with RLS policies.
+2. Open **SQL Editor** → paste the contents of [`supabase/migration.sql`](./supabase/migration.sql) → **Run**. This creates the `pages`, `jobs`, and `user_requests` tables, enables RLS on all three, and adds the single `user_id`-scoped policy on `user_requests` (anon access to `pages` / `jobs` is blocked by RLS default-deny).
 3. In **Project Settings → API**, copy:
    - `Project URL` → `NEXT_PUBLIC_SUPABASE_URL`
    - `anon` `public` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
@@ -110,7 +110,7 @@ The full redirect chain is: browser → GitHub/Google (which has the Supabase ca
 npm run dev         # next dev (localhost:3000)
 npm run build       # production build
 npm start           # serve the production build locally
-npm run lint        # eslint
+npm run lint        # next lint
 npm run typecheck   # tsc --noEmit
 ```
 
@@ -128,7 +128,7 @@ Each manual call does the full cron cycle: force-fail stuck jobs → sweep stale
 
 ## Deploying to Vercel
 
-The repo is already configured for Vercel (see [`vercel.json`](./vercel.json)): 300s max duration on the crawl + monitor + worker routes, and a daily cron on `/api/monitor`.
+The repo is already configured for Vercel (see [`vercel.json`](./vercel.json)): 300s max duration on `/api/p`, `/api/monitor`, and `/api/worker/crawl`, and a daily cron on `/api/monitor`.
 
 ### 1. Import the repo
 
@@ -137,14 +137,15 @@ The repo is already configured for Vercel (see [`vercel.json`](./vercel.json)): 
 
 ### 2. Provision Marketplace integrations
 
-Three integrations handle infrastructure. All are one-click installs from the Vercel dashboard that auto-inject env vars into **Production** + **Preview** scopes.
+Three integrations handle core infrastructure, plus an optional fourth for log aggregation. All are one-click installs from the Vercel dashboard that auto-inject env vars into **Production** + **Preview** scopes.
 
-1. **Upstash** (Redis + QStash) — Dashboard → your project → **Integrations** tab → Marketplace → **Upstash** → Add Integration → this project. Provisions a Redis instance (rate limiter) and a QStash account (crawl queue) together. Injects `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `QSTASH_TOKEN`, `QSTASH_URL`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY`.
-2. **Sentry** — **Integrations** tab → Marketplace → **Sentry** → Add Integration. Creates or links a Sentry project and injects `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT` for build-time source-map upload. Then copy the DSN from Sentry → Project Settings → Client Keys and add it as `NEXT_PUBLIC_SENTRY_DSN`:
+1. **Upstash Redis** — Dashboard → your project → **Integrations** tab → Marketplace → **Upstash Redis** → Add Integration → this project. Provisions the Redis instance backing the rate limiter. Injects `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`.
+2. **Upstash QStash** — **Integrations** tab → Marketplace → **Upstash QStash** → Add Integration → this project. Provisions the durable crawl queue. Injects `QSTASH_TOKEN`, `QSTASH_URL`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY`.
+3. **Sentry** — **Integrations** tab → Marketplace → **Sentry** → Add Integration. Creates or links a Sentry project and injects `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT` for build-time source-map upload. Then copy the DSN from Sentry → Project Settings → Client Keys and add it as `NEXT_PUBLIC_SENTRY_DSN`:
    ```bash
    vercel env add NEXT_PUBLIC_SENTRY_DSN production
    ```
-3. **(Optional) Log drain for deeper log aggregation** — Axiom / Datadog / Better Stack via the same Integrations Marketplace. Requires Vercel **Pro**. Not necessary for the take-home; see [`docs/OBSERVABILITY.md`](./docs/OBSERVABILITY.md) for the rationale.
+4. **(Optional) Log drain for deeper log aggregation** — Axiom / Datadog / Better Stack via the same Integrations Marketplace. Requires Vercel **Pro**. Not necessary for the take-home; see [`docs/OBSERVABILITY.md`](./docs/OBSERVABILITY.md) for the rationale.
 
 ### 3. Set the remaining env vars
 
@@ -209,7 +210,7 @@ Finally, open the site, sign in with GitHub or Google, generate a URL, and check
 
 ## Architecture at a glance
 
-Next.js App Router on Vercel Fluid Compute, Supabase Postgres for durable state, Upstash Redis + QStash for rate-limit state and the crawl queue, Claude Haiku for LLM work. Three Supabase tables — `pages` (canonical per-URL result cache), `jobs` (one row per crawl execution), `user_requests` (signed-in history) — with Row-Level Security on all three.
+Next.js App Router on Vercel Fluid Compute, Supabase Postgres for durable state, Upstash Redis + QStash for rate-limit state and the crawl queue, Claude Haiku 4.5 for LLM work. Three Supabase tables — `pages` (canonical per-URL result cache), `jobs` (one row per crawl execution), `user_requests` (signed-in history) — with RLS enabled on all three: `pages` and `jobs` are anon-deny by default (reads go through the service-role key server-side), and `user_requests` has a `user_id`-scoped policy.
 
 The deeper picture — component diagram, crawl-request lifecycle, pipeline stages, threat model, performance ceilings — is in [`docs/`](./docs). Start with [`SYSTEM-DESIGN.md`](./docs/SYSTEM-DESIGN.md) for the visual overview, then [`DESIGN.md`](./docs/DESIGN.md) for the rationale.
 

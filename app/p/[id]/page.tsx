@@ -23,14 +23,11 @@ export default async function PageViewPage({
   ])
   if (!jobResult) notFound()
 
-  // Record the navigation as user activity on the page. Critical for
-  // cached-page views reached from the dashboard: once the result is
-  // terminal, every subsequent `GET /api/p/[id]` is served from the
-  // Vercel edge CDN and wouldn't reach our server — the client also
-  // skips polling when SSR seeded a terminal job. Without bumping
-  // here, an actively-read page looks dormant to the monitor sweeper,
-  // which would unmonitor it after 5 days. Fire-and-forget: debounced
-  // per Fluid instance, re-asserts `monitored = true` on the way.
+  // Record the navigation as user activity. Once a result is terminal,
+  // subsequent GET /api/p/[id] polls are edge-cached and never reach
+  // the server, so without bumping here an actively-read page would
+  // look dormant and age out of the monitor rotation after 5 days.
+  // Failed pages are skipped on purpose — we want them to age out.
   if (jobResult.status !== "failed") {
     bumpPageRequest(jobResult.url).catch(() => {})
   }

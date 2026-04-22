@@ -82,17 +82,22 @@ specific target becoming a customer complaint).
   cron's per-URL failure lines (`${url}: ${message}`) surface as
   grouped Sentry issues instead of only console lines.
 
-Two call sites skip Sentry on purpose:
+One call site skips Sentry on purpose:
 
-- **`lib/upstash/rateLimit.ts`** — the `console.warn` on Upstash fail-open
-  goes direct to stdout, not through `errorLog`. Rationale: we want
-  it in the Vercel logs feed but don't want to page on every transient
-  Redis blip. If a persistent Redis outage ever becomes a problem,
-  wire `errorLog` in here so it promotes to a Sentry issue.
-- **`lib/upstash/jobQueue.ts`** — the `[enqueueCrawl] branch=…` info line is
-  `console.info` only. A sustained jump in `fallback:*` events would
-  mean QStash state has drifted; worth re-examining the routing
-  strategy, not worth alerting on every occurrence.
+- **`lib/upstash/jobQueue.ts`** — the `[enqueueCrawl] branch=… jobId=…`
+  info line is `console.info` only. A sustained jump in `fallback:*`
+  events would mean QStash state has drifted; worth re-examining the
+  routing strategy, not worth alerting on every occurrence.
+
+One call site promotes to Sentry on purpose:
+
+- **`lib/upstash/rateLimit.ts`** — the Upstash fail-open path routes
+  through `errorLog("rateLimit.upstash", …)` so a persistent Redis
+  outage surfaces as a Sentry issue. A misconfigured `UPSTASH_*` env
+  would otherwise *silently disable* rate limiting platform-wide,
+  which is a security concern that warrants alerting, not just a log
+  line. Transient blips will still hit Sentry; grouping by context
+  makes it easy to see whether it's a one-off or a pattern.
 
 ---
 

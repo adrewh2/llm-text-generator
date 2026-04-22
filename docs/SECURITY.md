@@ -166,7 +166,7 @@ Server-only secrets:
 
 `app/auth/callback/route.ts` receives a `next` query param and redirects there after the OAuth handoff. Classic footgun: a scheme-relative URL (`//evil.com`) or a browser/proxy normalisation quirk can turn "same-origin path" into "external redirect".
 
-`sanitizeNext()` only accepts simple same-origin absolute paths (`/dashboard/...`) and rejects anything with protocol-relative prefixes, control / whitespace characters, or encodings that a proxy could normalise into a redirect. Any value that doesn't match a strict allowlist falls back to `/dashboard`. Canonical patterns live in the function itself.
+`sanitizeNext()` only accepts simple same-origin absolute paths (`/dashboard/...`) and rejects anything with protocol-relative prefixes, control / whitespace characters, or encodings that a proxy could normalise into a redirect. Any value that doesn't match a strict allowlist falls back to `/`. Canonical patterns live in the function itself.
 
 ---
 

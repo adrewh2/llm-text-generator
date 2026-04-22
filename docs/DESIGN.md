@@ -1,4 +1,12 @@
-# llms.txt Generator — System Design
+# llms.txt Generator — Design
+
+This doc is the narrative: data model, API surface, pipeline decisions,
+trade-offs, config surface, and repo layout. For the visual-first
+shape (component + sequence diagrams, stage-by-stage UI narrative) see
+[`SYSTEM-DESIGN.md`](./SYSTEM-DESIGN.md). For threat model, rate
+limits, and RLS policies see [`SECURITY.md`](./SECURITY.md).
+
+---
 
 ## 1. Overview
 
@@ -45,7 +53,7 @@ Three long-running routes (`app/api/p/route.ts`, `app/api/monitor/route.ts`, `ap
 
 ## 3. Data Model
 
-Three tables. The canonical DDL, indexes, and RLS policies are in `supabase/migration.sql`; the per-table RLS policy rationale is in [`SECURITY.md §4`](./SECURITY.md#4-authentication-and-authorization). This section covers the shape and why.
+Three tables. The canonical DDL, indexes, and RLS setup (enablement on all three + the single `user_requests` policy) are in `supabase/migration.sql`; per-table rationale is in [`SECURITY.md §4`](./SECURITY.md#4-authentication-and-authorization). This section covers the shape and why.
 
 ### `pages` — canonical per-URL cache
 
@@ -117,16 +125,17 @@ Every new-crawl request lands here. The flow is four gates then a branch:
 Past the gates, the route tries to avoid work:
 
 - **Cache / in-flight check** — we try up to three keys (raw, `www.`-alternate, and canonical-after-HEAD-probe) because most repeat submissions match one of the first two without paying for a HEAD request. Canonicalisation uses a dual www/non-www probe (via `resolveCanonicalUrl` in `lib/crawler/net/canonicalUrl.ts`) and strips tracking + per-request session/OAuth tokens so the cache key stays stable across resubmissions. Any hit (cached terminal result or in-flight job we can attach to) returns the matching `page_id` immediately.
-- **New crawl** — on a full miss: charge the NEW_CRAWL bucket, insert a `jobs` row, and call `enqueueCrawl(jobId, url)` (QStash in prod, `waitUntil` fallback in dev). The HTTP response returns immediately; the actual pipeline runs later in the worker (`app/api/worker/crawl/route.ts` under QStash, the caller's own Fluid Compute instance under the dev fallback).
+- **TTL-stale signature check** — if a cached row exists but is past `PAGE_TTL_HOURS`, run the same signature probe the monitor cron uses (`detectChange` → sitemap + homepage hash). `recordMonitorCheck` stamps `last_checked_at` regardless of outcome, and if the signature hasn't drifted we return the existing result as a cache hit without burning NEW_CRAWL budget. Drift or an uncomputable signature falls through to the new-crawl branch.
+- **New crawl** — on a full miss (or on drift from the branch above): charge the NEW_CRAWL bucket, insert a `jobs` row, and call `enqueueCrawl(jobId, url)` (QStash in prod, `waitUntil` fallback in dev). The HTTP response returns immediately; the actual pipeline runs later in the worker (`app/api/worker/crawl/route.ts` under QStash, the caller's own Fluid Compute instance under the dev fallback).
 
-On every branch — cache hit, in-flight attach, new crawl — a signed-in caller gets an `upsertUserRequest` written to their dashboard history (idempotent against `UNIQUE(user_id, page_url)`).
+On every branch — cache hit, in-flight attach, TTL-stale-unchanged, new crawl — `bumpPageRequest` fires and a signed-in caller gets an `upsertUserRequest` written to their dashboard history (idempotent against `UNIQUE(user_id, page_url)`).
 
 ### `GET /api/p/[id]` — the poll target
 
 Client polls every `ui.POLL_INTERVAL_MS` until the job is terminal. The route:
 
 - Looks up the page by UUID, joining to the latest job for status/progress/error and (when terminal) the cached `result` + `crawled_pages`.
-- Bumps `last_requested_at` on non-failed polls so active pages stay monitored. The bump is debounced per Fluid instance (5 min cooldown) — the sweeper only cares about day-scale freshness, so we don't need a Postgres write per poll.
+- Does not touch `last_requested_at` — the poll is a pure read. `bumpPageRequest` fires on every `POST /api/p` branch and on the `/p/[id]` RSC render for non-failed pages (failed pages are intentionally left to age out of the monitor rotation), so the sweeper already sees user activity without one write per poll.
 - Scrubs the `error` field (see [`SECURITY.md §9`](./SECURITY.md#9-error-information-disclosure)) so user-facing text doesn't leak resolved IPs or SSRF detail.
 - Sets a long public Cache-Control on terminal responses so Vercel's CDN handles repeat polls. Freshness comes from **write-side invalidation** — `updateJob` calls `revalidatePath` on the page's `/api/p/{id}` whenever a terminal result is written — rather than the TTL. The TTL is a safety net for dropped revalidations, schema changes, or direct-SQL writes; the common path never waits for it. In-flight polls return `no-store` so progress stays live.
 
@@ -138,7 +147,7 @@ See §8.
 
 ## 6. Crawl Pipeline
 
-`runCrawlPipeline(jobId, targetUrl)` in `lib/crawler/pipeline.ts` is the entry point. For the stage-by-stage narrative (discovery → enrichment → scoring → assembly) see [`SYSTEM-DESIGN.md §3`](./SYSTEM-DESIGN.md#3--pipeline-stages-what-the-progress-ui-shows); this section covers the pipeline decisions that narrative doesn't: where the LLM/deterministic line is drawn, how scoring selects pages, how the pipeline self-terminates, and the SPA fallback.
+`runCrawlPipeline(jobId, targetUrl)` in `lib/crawler/pipeline.ts` is the entry point. For the stage-by-stage narrative (discovery → enrichment → scoring → assembly) see [`SYSTEM-DESIGN.md §3`](./SYSTEM-DESIGN.md#3-pipeline-stages-what-the-progress-ui-shows); this section covers the pipeline decisions that narrative doesn't: where the LLM/deterministic line is drawn, how scoring selects pages, how the pipeline self-terminates, and the SPA fallback.
 
 ### Where the LLM line is drawn
 
@@ -351,7 +360,7 @@ Organised by concern, not by file. Individual filenames drift; folder purpose do
   - **`enrich/`** — turning raw pages into scored, classified data (metadata extraction, genre detection, brand-name cleanup, LLM enrichment, scoring, section assignment).
   - **`output/`** — final markdown assembly + spec validator (the latter also runs client-side on the result page).
   - `pipeline.ts` — the entry point the worker calls. `monitor.ts` — signature computation + change detection for the cron.
-- **`supabase/migration.sql`** — full schema (pages, jobs, user_requests, indexes, RLS policies). Canonical.
+- **`supabase/migration.sql`** — full schema (pages, jobs, user_requests, indexes, RLS enablement + the single `user_requests` policy). Canonical.
 - **`middleware.ts`** — Supabase SSR session refresh + `/dashboard` gate.
 - **`next.config.ts`** — CSP and other security headers, `withSentryConfig` wrapper.
 - **`vercel.json`** — `maxDuration` overrides on the long-running routes + the cron schedule.

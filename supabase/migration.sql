@@ -64,9 +64,12 @@ CREATE TABLE user_requests (
 CREATE INDEX idx_user_requests_user_created
   ON user_requests(user_id, created_at DESC);
 
--- Backs the dashboard's "latest terminal job per page" lookup:
---   WHERE page_url IN (?) AND status IN ('complete','partial')
---   ORDER BY created_at DESC
+-- Backs the dashboard's "latest job per page" lookup:
+--   WHERE page_url IN (?) ORDER BY created_at DESC
+-- The dashboard surfaces the newest job's status (any status) so
+-- monitor re-crawls render as "Refreshing…" even while pages.result
+-- still holds the last terminal output. The `status` column is
+-- carried in the index for covering-read purposes.
 CREATE INDEX idx_jobs_page_status_created
   ON jobs(page_url, status, created_at DESC);
 

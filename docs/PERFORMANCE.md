@@ -62,7 +62,7 @@ Per cache-hit request (fast path):
 | Resource | Typical usage |
 |---|---|
 | Supabase reads | 1 (existing `pages.result` lookup by primary key) |
-| Supabase writes | 1 (`bumpPageRequest` + `upsertUserRequest` if signed-in) |
+| Supabase writes | 1–2 (`bumpPageRequest`, plus `upsertUserRequest` if signed-in) |
 | Upstash Redis commands | 2–3 (SUBMIT bucket check only — cache-hit path skips the NEW_CRAWL bucket) |
 | Anthropic calls | **0** |
 | QStash messages | **0** |
@@ -155,7 +155,7 @@ The honest high-water mark for a full-quality enterprise deployment: new crawls 
 
 Even with unlimited budget:
 
-1. **Anthropic TPM** remains the core ceiling for LLM-enriched output. Each crawl's ~21 K tokens is the lever to cut if we want more throughput per dollar — smaller prompts, fewer enrich batches, or cheaper-model-per-step routing.
+1. **Anthropic TPM** remains the core ceiling for LLM-enriched output. Each crawl's ~20 K tokens is the lever to cut if we want more throughput per dollar — smaller prompts, fewer enrich batches, or cheaper-model-per-step routing.
 2. **Puppeteer memory for SPA-heavy workloads** — only if we skip the Browserless offload.
 3. **Target-site politeness** is an inherent ceiling; crawling any single domain faster than ~5 req/s is rude regardless of our capacity.
 

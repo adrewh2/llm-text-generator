@@ -1,7 +1,10 @@
-# System Design
+# llms.txt Generator — System Shape
 
-A visual overview. `docs/DESIGN.md` has the narrative; this file
-exists so a reviewer can pattern-match the shape before reading prose.
+Visual-first overview: component diagram, request lifecycle, and the
+four pipeline stages the progress UI renders. Concrete thresholds,
+config values, and rationale for the decisions below live in
+[`DESIGN.md`](./DESIGN.md) — this file is the shape, that one is the
+reasoning.
 
 ---
 
@@ -168,17 +171,15 @@ Three small signals get computed up front. The **brand name** is the LLM's pick 
 
 We also do a small de-duplication pass here: if a sub-page's meta description is literally the homepage tagline, we blank it out. Otherwise that same line repeats down the file and the output looks stuck on loop.
 
-The expensive step is the per-page enrichment itself. We chunk pages into batches of 20 and send each batch to the LLM in parallel, asking for three fields per page: the section it belongs in, an importance score from 0 to 10, and a short description. Batching is how we keep the stage cheap — a 25-page crawl is one or two LLM calls here, not 25.
+The expensive step is the per-page enrichment itself. We chunk pages into batches and send each batch to the LLM in parallel, asking for three fields per page: the section it belongs in, an importance score, and a short description. Batching is how we keep the stage cheap — a full crawl is one or two LLM calls here, not one per page. Batch size and page budget are in `lib/config.ts`.
 
 ### 3 · Scoring & classifying
 
 This stage is pure TypeScript, no LLM calls. The enrichment map from stage 2 is one input; a handful of signals from the pages themselves is the other. For each crawled page we answer: does this belong in the final file, and if so, as a **Primary** entry or just an **Optional** one?
 
-Every page gets a score on a roughly 0–100 scale. Having a real meta description, having a `.md` sibling (per the `llms.txt` spec), having structured data — those push the score up. Pagination, tag / category / archive pages, print-view URLs push it down. The LLM's importance rating maps onto a roughly ±23-point swing. Pages whose URL path or `<html lang>` indicates a non-primary language take a soft penalty rather than getting filtered outright — it's a preference, not a rule.
+Every page gets a numeric score. Having a real meta description, a `.md` sibling (per the `llms.txt` spec), or structured data pushes it up. Pagination, tag / category / archive pages, and print-view URLs push it down. The LLM's importance rating contributes a meaningful swing on top. Pages whose URL path or `<html lang>` indicates a non-primary language take a soft penalty rather than getting filtered outright — it's a preference, not a rule. Exact weights and thresholds live in [`DESIGN.md §6`](./DESIGN.md#6-crawl-pipeline) and `lib/crawler/enrich/score.ts`.
 
-Then we bucket. Below 15, dropped. 15 to 40, Optional. Above 40, we try the LLM's suggested section (Docs, Guides, API, Blog, and so on), falling back to a section inferred from the URL path if the LLM declined to pick one. A final pass collapses URL variants that the normalizer missed (`/foo` vs `/foo/index.html`, the homepage itself, query-param duplicates) and caps output size: 50 Primary, 10 Optional.
-
-There's one rescue case worth calling out: if both buckets come back empty — usually a tiny single-page site — we force the homepage into Optional so the resulting file isn't degenerate.
+Then we bucket: dropped, Optional, or Primary (try the LLM's suggested section first, fall back to path-regex inference). A final pass collapses URL variants the normalizer missed (`/foo` vs `/foo/index.html`, query-param duplicates) and caps the output. If both buckets come back empty — usually a tiny single-page site — we force the homepage into Optional so the resulting file isn't degenerate.
 
 ### 4 · Assembling file
 
@@ -188,7 +189,7 @@ The **summary blockquote** comes straight from the homepage's meta description. 
 
 Each link line is `- [label](url): description`. Labels come from the page title when it's unique and distinct from the site name. When a title repeats across many pages (a very common SPA failure mode where `document.title` never updates) we fall back to a URL-derived label, and if there are still collisions we prefix the first differing path segment to break them.
 
-The last thing this stage decides is the terminal status of the crawl. If we didn't produce any output at all, it's **failed**. If we fetched at least a handful of URLs but lost more than half of them along the way, it's **partial**. Otherwise it's **complete**. That status is what the browser polls for and what shows up in the user's dashboard history.
+The last thing this stage decides is the terminal status of the crawl — **complete**, **partial**, or **failed**. Exact rules in [`DESIGN.md §6`](./DESIGN.md#6-crawl-pipeline). That status is what the browser polls for and what shows up in the user's dashboard history.
 
 ---
 
