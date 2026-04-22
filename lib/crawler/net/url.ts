@@ -129,7 +129,11 @@ export function shouldSkipUrl(url: string): boolean {
     if (/\/\d{6,}(\/|$)/.test(path)) return true
 
     // User/profile paths
-    if (/^\/(user|users|u|profile|profiles|@|member|members)\//.test(path)) return true
+    if (/^\/(user|users|u|profile|profiles|member|members)\//.test(path)) return true
+    // Fused-@ handles (Twitter, Medium, Mastodon, TikTok, Threads): the
+    // real-world form is `/@username`, not `/@/username`. A single char
+    // after `@` is enough to qualify — no trailing slash required.
+    if (/^\/@[^/]/.test(path)) return true
 
     // Short-form video or individual content paths (e.g. /shorts/, /clip/, /reel/)
     if (/\/(shorts|clips?|reels?|watch)\b/.test(path)) return true
@@ -209,11 +213,14 @@ export function clientValidateUrl(raw: string):
     return { ok: false, reason: "localhost URLs aren't allowed" }
   }
 
-  // IPv6 literals — `new URL()` strips the surrounding brackets on
-  // `hostname`. Detect via colon and validate against the shared
-  // ranges module.
+  // IPv6 literals — `new URL().hostname` keeps the surrounding
+  // brackets (per WHATWG URL), so strip them before classifying.
+  // Detect via colon and validate against the shared ranges module.
   if (lowered.includes(":")) {
-    if (isForbiddenIpv6(lowered)) {
+    const stripped = lowered.startsWith("[") && lowered.endsWith("]")
+      ? lowered.slice(1, -1)
+      : lowered
+    if (isForbiddenIpv6(stripped)) {
       return { ok: false, reason: "Private or reserved IP ranges aren't allowed" }
     }
     return { ok: true }

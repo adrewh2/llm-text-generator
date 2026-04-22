@@ -7,6 +7,15 @@ local dev server; production variants called out per-test.
 Targets about 15 minutes end-to-end; individual layers are independent
 and can be re-run in isolation.
 
+## Automated tests
+
+A small `node:test` suite under [`tests/`](../tests) covers the pure
+security-critical helpers (SSRF IP-range classifiers + client-side URL
+validator). Run with `npm test` (see [`README.md` → Scripts](../README.md#scripts));
+CI runs the same command on every PR. The rest of this document is the
+manual playbook for the integrated behavior those unit tests can't
+reach — crawl pipeline, RLS, monitor cron, QStash, browser flows.
+
 ---
 
 ## 0. Prereqs

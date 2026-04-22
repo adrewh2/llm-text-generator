@@ -11,6 +11,7 @@ export function isForbiddenIpv4(ip: string): boolean {
   if (a === 10)                                   return true // 10.0.0.0/8
   if (a === 100 && b >= 64 && b <= 127)           return true // 100.64.0.0/10 CGNAT (RFC 6598)
   if (a === 127)                                  return true // loopback
+  if (a === 168 && b === 63 && parts[2] === 129 && parts[3] === 16) return true // Azure Instance Metadata Service
   if (a === 169 && b === 254)                     return true // link-local + AWS metadata 169.254.169.254
   if (a === 172 && b >= 16 && b <= 31)            return true // 172.16.0.0/12
   if (a === 192 && b === 168)                     return true // 192.168.0.0/16
@@ -29,5 +30,15 @@ export function isForbiddenIpv6(ip: string): boolean {
   // IPv4-mapped: ::ffff:a.b.c.d — validate the embedded v4
   const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
   if (mapped) return isForbiddenIpv4(mapped[1])
+  // IPv4-mapped, hex-pair form (::ffff:hi:lo) — this is the form the
+  // WHATWG URL parser actually emits, e.g. `http://[::ffff:10.0.0.1]/`
+  // normalises to hostname `[::ffff:a00:1]`. Decode the two hex pairs
+  // back to four octets and validate via isForbiddenIpv4.
+  const mappedHex = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+  if (mappedHex) {
+    const hi = parseInt(mappedHex[1], 16)
+    const lo = parseInt(mappedHex[2], 16)
+    return isForbiddenIpv4(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`)
+  }
   return false
 }
