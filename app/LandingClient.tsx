@@ -195,7 +195,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
             in seconds.
           </p>
 
-          <form className="max-w-lg mx-auto" onSubmit={handleSubmit} noValidate>
+          <form className="max-w-lg mx-auto relative" onSubmit={handleSubmit} noValidate>
             {/* Mobile: URL box is its own bordered card; Generate
                 button sits below as a separate full-width button (no
                 shared border). sm+: both live inside one bordered
@@ -258,22 +258,27 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
                 )}
               </button>
             </div>
-            {error ? (
-              <p id="url-error" role="alert" className="text-xs text-red-500 mt-2 text-left">
-                {error}
-                {showSignInHint && (
-                  <>
-                    {" "}
-                    <Link href="/login" className="underline font-medium text-red-600 hover:text-red-700">
-                      Sign in
-                    </Link>{" "}
-                    for higher limits.
-                  </>
-                )}
-              </p>
-            ) : validationHint ? (
-              <p className="text-xs text-zinc-500 mt-2 text-left">{validationHint}</p>
-            ) : null}
+            {/* Hint / error floats below the form without reflowing the
+                page — there's plenty of space above the example-output
+                section for it. */}
+            <div className="absolute left-0 right-0 top-full mt-2 text-left">
+              {error ? (
+                <p id="url-error" role="alert" className="text-xs text-red-500">
+                  {error}
+                  {showSignInHint && (
+                    <>
+                      {" "}
+                      <Link href="/login" className="underline font-medium text-red-600 hover:text-red-700">
+                        Sign in
+                      </Link>{" "}
+                      for higher limits.
+                    </>
+                  )}
+                </p>
+              ) : validationHint ? (
+                <p className="text-xs text-zinc-500">{validationHint}</p>
+              ) : null}
+            </div>
           </form>
         </div>
       </section>
