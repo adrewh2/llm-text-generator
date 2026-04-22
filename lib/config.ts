@@ -71,7 +71,7 @@ export const crawler = {
    * social / tracking / footer noise.
    */
   EXTERNAL_REFS_MAX_KEEP: 8,
-} as const
+} as const;
 
 // ─── LLM enrichment ─────────────────────────────────────────────────────────
 
@@ -103,7 +103,7 @@ export const llm = {
   DESCRIPTION_MAX_CHARS: 240,
   /** Upper bound on the section name the LLM can return (chars). */
   SECTION_MAX_CHARS: 30,
-}
+};
 
 /**
  * Suggested section names for the LLM to consider when grouping pages.
@@ -131,7 +131,7 @@ export const SECTION_HINTS: readonly string[] = [
   "Blog",
   "Resources",
   "Optional",
-]
+];
 
 // ─── API surface ────────────────────────────────────────────────────────────
 
@@ -143,7 +143,7 @@ export const api = {
   PAGES_MAX_LIMIT: 50,
   /** How many pages the user history zip endpoint loads at once. */
   DOWNLOAD_MAX_ENTRIES: 500,
-}
+};
 
 // ─── Rate limiting ──────────────────────────────────────────────────────────
 
@@ -178,7 +178,7 @@ export const rateLimit = {
    * looping the endpoint for amplification.
    */
   AUTH_ZIP_DOWNLOAD: { capacity: 1, refillPerSec: 1 / 86400 },
-}
+};
 
 // ─── Monitoring cron ────────────────────────────────────────────────────────
 
@@ -196,7 +196,7 @@ export const monitor = {
    * healthy retries never trip it. 15 minutes is comfortable headroom.
    */
   STUCK_JOB_AFTER_MS: 15 * 60 * 1000,
-}
+};
 
 // ─── Client UI timing ───────────────────────────────────────────────────────
 
@@ -211,9 +211,9 @@ export const ui = {
   /** Minimum time each live-crawl step stays on screen. */
   LIVE_MIN_STEP_DWELL_MS: 1_200,
   /** Simulated-progress step durations for cached results (one per step). */
-  SIM_STEP_DURATIONS_MS: [1800, 1600, 1400, 1200] as const,
+  SIM_STEP_DURATIONS_MS: [2000, 1800, 1800, 1800] as const,
   /** How often the "Refreshed X ago" label re-renders. */
   MONITOR_STATUS_TICK_MS: 10_000,
   /** LRU cap on the client-side per-tab job metadata cache. */
   JOB_CACHE_MAX: 30,
-}
+};

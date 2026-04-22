@@ -1,18 +1,10 @@
 import type { NextConfig } from "next"
 import { withSentryConfig } from "@sentry/nextjs"
 
-// Ship a conservative, modern security-header set on every response.
-// `unsafe-inline` / `unsafe-eval` on script-src is the price of
-// Next.js's RSC bootstrap + HMR tooling — without it React never
-// hydrates and the page appears frozen. The principled alternative
-// is per-request nonces via middleware; shipping that is a bigger
-// change for a take-home and we'd still want `'unsafe-eval'` in
-// dev anyway. `style-src 'unsafe-inline'` is likewise for Next's
-// emitted hashed <style> tags.
-//
-// `*.ingest.sentry.io` is on connect-src so the Sentry browser SDK
-// can post events; `*.sentry.io` covers session-replay / tunnel
-// routes. worker-src allows the replay SDK's blob-backed worker.
+// script-src 'unsafe-inline' + 'unsafe-eval' are required by Next's
+// RSC bootstrap and HMR; style-src 'unsafe-inline' by its hashed
+// <style> tags. Sentry domains are allowed on connect-src + worker-src
+// for event posting and session replay.
 const CSP = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
@@ -46,23 +38,14 @@ const config: NextConfig = {
 }
 
 export default withSentryConfig(config, {
-  // Source-map upload uses the Vercel-injected SENTRY_AUTH_TOKEN /
-  // SENTRY_ORG / SENTRY_PROJECT. On local dev without those vars the
-  // wrapper skips the upload step silently. Source maps are deleted
-  // from the build folder after upload (SDK default), so they don't
-  // ship in the public bundle — internals stay Sentry-only.
+  // Source-map upload is a no-op locally (env vars only present on
+  // Vercel). Maps are deleted post-upload so they never ship publicly.
   org: process.env.SENTRY_ORG,
   project: process.env.SENTRY_PROJECT,
   authToken: process.env.SENTRY_AUTH_TOKEN,
-  // Quiet CLI output unless we're on CI and want the upload
-  // confirmation in the build log.
   silent: !process.env.CI,
   webpack: {
-    // Strip Sentry's debug-logging branch from the client bundle —
-    // we don't need its log output in production and it adds bytes.
     treeshake: { removeDebugLogging: true },
-    // We already have a monitor cron and a stuck-job sweeper; no
-    // need for Sentry Crons to double-track.
     automaticVercelMonitors: false,
   },
 })

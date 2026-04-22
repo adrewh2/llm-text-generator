@@ -63,7 +63,6 @@ function PageViewInner({
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const simTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const simulationStarted = useRef(false)
   // Ref, not state — otherwise fetchJob's useCallback identity would
   // churn when we strip ?simulate=1 from the URL and the parent effect
   // would clean up simTimerRef mid-simulation.
@@ -137,17 +136,13 @@ function PageViewInner({
 
       if (isDone || isFailed) {
         if (intervalRef.current) clearInterval(intervalRef.current)
-        if (isDone && shouldSimulateRef.current && !simulationStarted.current) {
-          simulationStarted.current = true
+        if (isDone && shouldSimulateRef.current) {
           startSimulation()
           // Clean the URL so the stepper-simulation isn't replayed for
           // anyone who bookmarks, refreshes, or shares this page.
-          // `simulationStarted.current` guards re-entry — even if
-          // useSearchParams somehow re-fires with simulate gone, we
-          // won't double-start.
           stripQueryParam("simulate")
         }
-      } else if (shouldSimulateRef.current && !simulationStarted.current) {
+      } else if (shouldSimulateRef.current) {
         // Job still running but URL asked to simulate — show real progress.
         setSimulatedStep(null)
       }
@@ -172,7 +167,15 @@ function PageViewInner({
     const initiallyTerminal = job
       ? ["complete", "partial", "failed"].includes(job.status)
       : false
-    if (!initiallyTerminal) {
+    if (initiallyTerminal) {
+      // ?simulate=1 on a cached result: startSimulation normally fires from
+      // inside fetchJob, but we don't poll terminal seeds. Trigger it here.
+      const isDone = job?.status === "complete" || job?.status === "partial"
+      if (isDone && shouldSimulateRef.current) {
+        startSimulation()
+        stripQueryParam("simulate")
+      }
+    } else {
       fetchJob()
       intervalRef.current = setInterval(fetchJob, POLL_INTERVAL_MS)
     }

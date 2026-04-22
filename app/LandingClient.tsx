@@ -324,8 +324,8 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
           <div className="grid md:grid-cols-3 gap-10">
             {[
               { icon: Globe, step: 1, title: "Crawl", desc: "We traverse the site via sitemap.xml, robots.txt, and link discovery — respecting robots.txt rules and prioritizing high-value pages." },
-              { icon: Zap, step: 2, title: "Enrich", desc: "An LLM classifies each page, assigns it to a meaningful section, scores its importance, and writes a concise description." },
-              { icon: CheckCircle, step: 3, title: "Generate", desc: "A spec-compliant llms.txt is assembled with a preamble and importance-ordered sections." },
+              { icon: Zap, step: 2, title: "Enrich", desc: "An LLM classifies each page, scores its importance, assigns it to a meaningful section, and writes a concise description." },
+              { icon: CheckCircle, step: 3, title: "Generate", desc: "The output is a single spec-compliant llms.txt file — ready to copy, download, or host at your own /llms.txt." },
             ].map(({ icon: Icon, step, title, desc }) => (
               <div key={step} className="group">
                 <div className="w-9 h-9 bg-white border border-zinc-200 rounded-xl flex items-center justify-center mb-4 shadow-sm">

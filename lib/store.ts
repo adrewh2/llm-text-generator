@@ -24,25 +24,17 @@ function getClient(): SupabaseClient {
 // ─── Jobs ────────────────────────────────────────────────────────────────────
 
 /**
- * Upsert the page row (FK target, monitoring re-enabled) and insert a
- * new crawl job against it. Returns the page's UUID — the user-facing
- * identifier that /p/{pageId} routes against. `jobId` stays internal:
- * the worker uses it to update row status; no URL references it.
+ * Upsert the page row and insert a crawl job. Returns the page's UUID —
+ * the user-facing id behind /p/{pageId}. `jobId` stays internal.
  */
 export async function createJob(jobId: string, url: string): Promise<{ pageId: string }> {
-  // Defense-in-depth: every job-creation path (submit, monitor
-  // re-crawl, future callers) flows through here, so re-validate the
-  // URL even if the caller already did. Blocks loopback / private /
-  // metadata / non-default-port / DNS-unresolvable targets before we
-  // upsert a pages row or insert a jobs row — makes it impossible to
-  // persist a job for an unreachable or unsafe page. Throws
-  // UnsafeUrlError; callers at HTTP boundaries translate to 400.
+  // Defense-in-depth: re-validate even if the caller already did, so
+  // every job-creation path is covered. Throws UnsafeUrlError.
   await assertSafeUrl(url)
 
   const supabase = getClient()
-  // pages row must exist before the job (FK). `DEFAULT gen_random_uuid()`
-  // generates `id` on INSERT and leaves existing rows' ids untouched on
-  // conflict — one page URL maps to exactly one UUID for its lifetime.
+  // pages row must exist before the job (FK). UUID generated on INSERT,
+  // preserved on conflict — one URL ↔ one page id for its lifetime.
   const { data: page, error: pageErr } = await supabase
     .from("pages")
     .upsert({ url, monitored: true }, { onConflict: "url" })
@@ -62,19 +54,9 @@ export async function createJob(jobId: string, url: string): Promise<{ pageId: s
 }
 
 /**
- * Lightweight status lookup for the /api/p/[id] poll path.
- *
- * Returns everything the UI needs to render an *in-flight* crawl —
- * status, progress, error, site metadata — while deliberately
- * skipping `pages.result` and `pages.crawled_pages`. Those two
- * columns hold the terminal payload (~a few KB of markdown + ~10 KB
- * of scored-page JSONB) and are only useful once the job is
- * terminal. Pulling them on every poll also drags the previous
- * terminal value along during monitor-triggered re-crawls, which is
- * pure wire-waste since the route would drop them before responding.
- *
- * Poll path shape: light query here first. If status is terminal,
- * the route falls back to `getPageById` to include the payload.
+ * Lightweight status lookup for the /api/p/[id] poll path — skips the
+ * terminal payload (`result` + `crawled_pages`). Route falls back to
+ * `getPageById` when the status is terminal.
  */
 export async function getPageStatusById(pageId: string): Promise<CrawlJob | undefined> {
   const supabase = getClient()
@@ -115,17 +97,12 @@ export async function getPageStatusById(pageId: string): Promise<CrawlJob | unde
 }
 
 /**
- * Full page lookup including the terminal payload (`result` +
- * `crawled_pages`). Used by the /p/[id] RSC first-paint and by the
- * /api/p/[id] poll path on terminal status only. For in-flight polls
- * use `getPageStatusById` — cheaper, skips the TOAST fetch.
+ * Full page lookup including terminal payload. Used by /p/[id] RSC
+ * first-paint and the poll path once terminal. For in-flight polls,
+ * prefer `getPageStatusById`.
  */
 export async function getPageById(pageId: string): Promise<CrawlJob | undefined> {
   const supabase = getClient()
-  // Single round-trip: fetch the page row plus its latest job via
-  // PostgREST's embedded-resource syntax against the jobs_page_url_fkey
-  // foreign key. `!` disambiguates the FK path, and the inner
-  // order/limit narrow the embedded array to exactly the newest job.
   const { data: page } = await supabase
     .from("pages")
     .select(`
@@ -144,9 +121,8 @@ export async function getPageById(pageId: string): Promise<CrawlJob | undefined>
     .maybeSingle()
   if (!page) return undefined
 
-  // A monitor-triggered re-crawl in flight should surface as a non-
-  // terminal status even when `pages.result` is still the previous
-  // terminal output, so the UI can show "Refreshing…".
+  // A monitor-triggered re-crawl should surface as non-terminal even
+  // while `pages.result` still holds the previous output (UI: "Refreshing…").
   const job = Array.isArray(page.jobs) ? page.jobs[0] : null
   if (!job) return undefined
 
@@ -179,10 +155,9 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
   if (updates.siteName !== undefined) jobRow.site_name = updates.siteName
   if (updates.error !== undefined) jobRow.error = updates.error
 
-  // Write the pages row FIRST (before the job status flip) so polling
-  // clients never see status=complete with result=null. Skip if
-  // updates.result is empty so a failed re-crawl can't wipe the last
-  // good result.
+  // Write pages BEFORE the job status flip so polling clients never
+  // see status=complete with result=null. Skip empty writes so a failed
+  // re-crawl can't wipe the last good result.
   if (updates.result !== undefined && updates.result.trim().length > 0) {
     const { data: job, error: lookupErr } = await supabase
       .from("jobs")
@@ -197,26 +172,19 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
     }
 
     if (job) {
-      // Build the upsert payload so an omitted `pages` leaves the prior
-      // `crawled_pages` alone. A callsite that writes a fresh `result`
-      // but doesn't re-submit the page list (e.g. a future re-assembly
-      // path) would otherwise wipe the cached explorer data on every
-      // write.
+      // Only set `crawled_pages` when the caller supplies it — an
+      // omitted list must not wipe the cached explorer data.
       const pagesUpdate: Record<string, unknown> = {
         url: job.page_url,
         result: updates.result,
         site_name: updates.siteName ?? job.site_name ?? null,
         genre: updates.genre ?? job.genre ?? null,
-        // A fresh crawl is itself the strongest check signal — set
-        // last_checked_at so the dashboard doesn't dangle on "Awaiting
-        // check" until the next cron tick.
+        // A fresh crawl is the strongest check signal — stamp
+        // last_checked_at so the dashboard doesn't wait for the cron.
         last_checked_at: now,
         updated_at: now,
       }
       if (updates.pages !== undefined) pagesUpdate.crawled_pages = updates.pages
-      // Returning the id from the upsert saves an extra SELECT on the
-      // revalidation path — previously we upserted, then re-queried
-      // the same row just to learn its UUID.
       const { data: pageRow, error: pagesErr } = await supabase
         .from("pages")
         .upsert(pagesUpdate, { onConflict: "url" })
@@ -227,9 +195,6 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
         throw new Error(pagesErr.message)
       }
 
-      // /api/p/:pageId is 1:1 with this page row (page id stays stable
-      // across re-crawls), so a single revalidation covers the
-      // terminal-response cache.
       if (pageRow) revalidatePath(`/api/p/${pageRow.id}`)
     }
   }
@@ -245,16 +210,10 @@ export async function updateJob(id: string, updates: Partial<CrawlJob>): Promise
 
 
 /**
- * Returns the page's UUID (user-facing id), TTL staleness, and the
- * stored drift signature for a given canonical URL, or undefined if
- * no terminal result exists yet.
- *
- * `pageId` is the `/p/{id}` redirect target; `isStale` decides whether
- * the caller tries the fast cache-hit path; `contentSignature` lets
- * the TTL-stale path run a signature check (same logic the monitor
- * cron uses) before deciding whether a full re-crawl is actually
- * needed — so a user submitting a URL whose site hasn't changed
- * doesn't burn an LLM budget on a redundant crawl.
+ * Returns the page's UUID, TTL staleness, and drift signature for a
+ * canonical URL — or undefined if no terminal result exists yet. The
+ * signature lets the TTL-stale path skip a redundant re-crawl when
+ * the site hasn't changed.
  */
 export async function getPageByUrl(url: string): Promise<
   { pageId: string; isStale: boolean; contentSignature: string | null } | undefined
@@ -278,14 +237,10 @@ export async function getPageByUrl(url: string): Promise<
 }
 
 /**
- * Returns the page's UUID if a crawl is in flight for that URL (no
- * terminal status, updated within the stuck-job window). Used by
- * POST /api/p to attach a new submission to an existing run instead
- * of kicking off a duplicate. Returns undefined otherwise.
- *
- * Ignores stale non-terminal jobs (updated_at older than
- * STUCK_JOB_AFTER_MS) so a dead waitUntil() doesn't trap future
- * submissions until the daily monitor sweep force-fails the row.
+ * Returns the page's UUID if a crawl is in flight — used by POST /api/p
+ * to attach to an existing run. Ignores stale non-terminal jobs
+ * (updated_at older than STUCK_JOB_AFTER_MS) so a dead waitUntil()
+ * doesn't trap future submissions.
  */
 export async function getActiveJobForUrl(url: string): Promise<{ pageId: string } | undefined> {
   const supabase = getClient()
@@ -344,12 +299,9 @@ export async function recordMonitorCheck(
 }
 
 /**
- * Mark jobs wedged in a non-terminal status past the pipeline budget
- * as failed. QStash retries up to 3×, then drops the message; a worker
- * crash on the final attempt otherwise leaves the job row in
- * `crawling` forever, which `getActiveJobForUrl` then keeps returning
- * as a phantom "in-flight" job to every future submitter. Cheap
- * cleanup — runs at the head of the monitor cron.
+ * Fail jobs wedged in non-terminal status past the pipeline budget,
+ * so `getActiveJobForUrl` doesn't keep returning a phantom "in-flight"
+ * job after a worker crash on the final QStash retry.
  */
 export async function sweepStuckJobs(staleAfterMs: number): Promise<number> {
   const supabase = getClient()
@@ -381,22 +333,10 @@ export async function sweepStaleMonitoredPages(staleAfterDays: number): Promise<
 }
 
 /**
- * Record user activity on a page's URL: refresh `last_requested_at`
- * (so the daily sweeper keeps the page in the monitor rotation) and
- * re-assert `monitored = true` (recovery if a prior sweep had flipped
- * it off and the user has now come back).
- *
- * Fired from every user-facing entry point to a page: POST /api/p
- * on all three branches, GET /api/p/[id] on non-failed polls, and
- * the /p/[id] RSC render (the important one — it catches users who
- * click into a cached page from their dashboard and then read it
- * without the client polling, because the terminal poll response is
- * CDN-cached and wouldn't reach our server).
- *
- * No-op if the page doesn't exist yet (UPDATE with no matching row).
- * Errors go to Sentry so a Supabase outage here doesn't silently
- * drift sweeper decisions — the caller doesn't wait on this
- * (fire-and-forget) so we log instead of throwing.
+ * Record user activity on a page: refresh `last_requested_at` to keep
+ * it in the monitor rotation, and re-assert `monitored = true` to
+ * recover a page that had been swept while the user was away.
+ * Fire-and-forget; errors log instead of throw.
  */
 export async function bumpPageRequest(pageUrl: string): Promise<void> {
   const supabase = getClient()
@@ -404,9 +344,6 @@ export async function bumpPageRequest(pageUrl: string): Promise<void> {
     .from("pages")
     .update({
       last_requested_at: new Date().toISOString(),
-      // Recover the monitor flag on user activity. Without this, a page
-      // that was swept while the user was away stays out of the monitor
-      // rotation even as they come back and keep viewing it.
       monitored: true,
     })
     .eq("url", pageUrl)
@@ -419,12 +356,9 @@ export async function bumpPageRequest(pageUrl: string): Promise<void> {
 
 export async function upsertUserRequest(userId: string, pageUrl: string): Promise<void> {
   const supabase = getClient()
-  // Explicitly pass created_at so re-requesting a URL refreshes the
-  // timestamp (on conflict the upsert writes whatever we send; the
-  // DEFAULT NOW() only fires on INSERT). This makes the dashboard
-  // order-by created_at DESC surface the most recently-asked-about
-  // page at the top — a user who's made many requests shouldn't have
-  // to page past history to find a URL they just re-submitted.
+  // Explicit created_at refreshes the timestamp on conflict (DEFAULT
+  // NOW() only fires on INSERT), so re-submitted pages bubble to the
+  // top of the dashboard's created_at DESC list.
   await supabase.from("user_requests").upsert(
     { user_id: userId, page_url: pageUrl, created_at: new Date().toISOString() },
     { onConflict: "user_id,page_url" }
@@ -437,9 +371,8 @@ export async function removeUserRequest(userId: string, pageUrl: string): Promis
 }
 
 /**
- * Check whether a (user, page_url) association exists. Cheap lookup
- * against the UNIQUE(user_id, page_url) index — used by the result
- * page to decide whether to show the "Add to dashboard" affordance.
+ * Whether a (user, page_url) association exists. Used by the result
+ * page to toggle the "Add to dashboard" affordance.
  */
 export async function hasUserRequest(userId: string, pageUrl: string): Promise<boolean> {
   const supabase = getClient()
@@ -464,11 +397,9 @@ export interface UserPageEntry {
 }
 
 /**
- * Fetch pages in a user's history along with their current llms.txt
- * results. Used by /api/pages/download to build the zip archive. Rows
- * without a result (crawl not yet complete) are skipped. `limit`
- * caps the query so a user with thousands of pages can't OOM the
- * download function.
+ * Pages in a user's history with their current llms.txt results.
+ * Used by /api/pages/download. Rows without a result are skipped;
+ * `limit` bounds memory for large histories.
  */
 export async function getUserPageResults(
   userId: string,
@@ -519,16 +450,13 @@ export async function getUserPages(
 
   const pageUrls = data.map((r) => r.page_url)
 
-  // Fetch page metadata — `id` is the dashboard-row link target.
   const { data: pages } = await supabase
     .from("pages")
     .select("id, url, site_name, genre, monitored, last_checked_at")
     .in("url", pageUrls)
 
-  // Fetch the latest job status per page_url (any status). A monitor-
-  // triggered re-crawl should surface as "Refreshing…" on the row
-  // even while the page still has a cached terminal result, so we
-  // look at the newest job, not just terminal ones.
+  // Newest job (any status) so in-flight re-crawls surface as
+  // "Refreshing…" even when pages.result still holds the last output.
   const { data: jobs } = await supabase
     .from("jobs")
     .select("page_url, status, created_at")
@@ -536,8 +464,6 @@ export async function getUserPages(
     .order("created_at", { ascending: false })
 
   const pageMap = new Map((pages ?? []).map((p) => [p.url, p]))
-  // Keep only the most recent job's status per page_url. `jobs` was
-  // ordered created_at DESC, so the first one seen per url wins.
   const statusMap = new Map<string, string>()
   for (const j of (jobs ?? [])) {
     if (!statusMap.has(j.page_url)) statusMap.set(j.page_url, j.status)

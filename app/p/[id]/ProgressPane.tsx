@@ -130,9 +130,7 @@ export default function ProgressPane({
             <div className="flex items-center gap-2 px-4 py-2.5 border-b border-zinc-200">
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
               <span className="text-zinc-500 text-xs font-mono">
-                {isSimulated
-                  ? `${domain} · retrieving cached result`
-                  : `${job.progress.discovered} URLs discovered · ${job.progress.crawled} crawled`}
+                {job.progress.discovered} URLs discovered · {job.progress.crawled} crawled
               </span>
             </div>
             <div className="min-h-20 sm:min-h-24 flex flex-col items-center justify-center gap-1 px-4 py-3 sm:p-4">

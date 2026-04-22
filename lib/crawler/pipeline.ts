@@ -28,13 +28,8 @@ class PipelineTimeoutError extends Error {
 }
 
 export async function runCrawlPipeline(jobId: string, targetUrl: string): Promise<void> {
-  // AbortController lets the inner pipeline self-terminate at stage
-  // boundaries instead of running orphaned LLM + DB work after the
-  // outer await has given up. On timeout the signal goes aborted;
-  // the inner loop calls throwIfAborted at each stage to bail early.
-  // Previously we used Promise.race which returned promptly but left
-  // the inner pipeline running indefinitely in the background, still
-  // consuming compute + Anthropic spend on work no one was waiting for.
+  // Budget timeout via AbortController so stages can bail at boundaries
+  // instead of orphaning LLM + DB work in the background.
   const ac = new AbortController()
   const timeoutHandle = setTimeout(() => {
     ac.abort(new PipelineTimeoutError())
@@ -66,10 +61,8 @@ async function runPipelineInner(
 
     const baseUrl = normalizeUrl(targetUrl) || targetUrl
 
-    // SSRF: block attempts to point the crawler at private/loopback/
-    // metadata IPs before the first network call. Individual fetches
-    // (fetchPage, sitemap, etc.) also pre-flight — this guards the
-    // hot path and fails the job with a clear reason.
+    // SSRF: block private/loopback/metadata IPs up front. Individual
+    // fetches also pre-flight; this fails the job with a clear reason.
     try {
       await assertSafeUrl(baseUrl)
     } catch (err) {
@@ -111,10 +104,8 @@ async function runPipelineInner(
       progress: { discovered: discoveredUrls.size, crawled: 0, failed: 0 },
     })
 
-    // Fetch homepage with plain HTTP first to detect SPA. If it fails
-    // (bot-block, 4xx, timeout), fall through to the Puppeteer path
-    // below — claude.ai and similar sites 403 against a plain fetch but
-    // render fine in a real browser.
+    // Plain HTTP first; fall through to Puppeteer on failure or when
+    // the response looks like a JS shell / bot challenge.
     signal.throwIfAborted()
     const homepageFetch = await fetchPage(baseUrl)
     const rawHomepageHtml = homepageFetch.ok ? homepageFetch.html ?? null : null
@@ -152,11 +143,8 @@ async function runPipelineInner(
       return
     }
 
-    // Surface the crawl mode to the progress UI. This is the first
-    // point at which we know whether the rest of the crawl will go
-    // through plain fetch (N workers in parallel) or Puppeteer
-    // (single Chromium, serial). The ProgressPane's terminal line
-    // reads this to explain why the browser path takes longer.
+    // Surface the crawl mode so ProgressPane can warn that browser
+    // renders are slower (single Chromium, serial vs. N plain workers).
     await updateJob(jobId, {
       progress: {
         discovered: discoveredUrls.size,
@@ -191,31 +179,18 @@ async function runPipelineInner(
     const cappedSet = new Set(cappedUrls)
     queue.splice(0, queue.length, ...queue.filter((q) => cappedSet.has(q.url)))
 
-    // LLM ranking: intelligently select the most valuable URLs to crawl.
-    // Preserve the LLM's output order — it has the full site context
-    // (name, genre, homepage excerpt, complete URL set) and is better
-    // placed to set priority than a path-based regex. The path regex
-    // survives only as a tiebreaker below.
+    // LLM ranks the candidate URLs using full site context. Its order
+    // wins; path-based regex is only a tiebreaker downstream.
     const siteName0 = extractSiteName(homepageHtml, new URL(baseUrl).hostname)
     const homepageExcerpt = homepageMeta.bodyExcerpt || ""
-    // Site's primary language comes from the homepage's <html lang>
-    // attribute. Defaults to "en" when the site didn't bother setting
-    // one — most such sites are English. Passed to scoring and LLM
-    // prompts so prioritization reflects the site being generated
-    // from, not a hardcoded assumption.
+    // Primary language from <html lang> on the homepage; "en" default.
     const primaryLang = baseLangCode(homepageMeta.lang) ?? "en"
 
-    // Hard filter: drop URLs whose path locale indicates a language
-    // other than primary. apple.com's sitemap exposes /ae-ar/* and
-    // /ja-jp/* alongside the English pages, and the score penalty
-    // alone isn't enough to keep them out of the output because the
-    // optional-section cap (10 slots) fills up with whatever's left
-    // after primary. Removing them here means they never reach the
-    // LLM ranker and never get crawled at all. URLs without a locale
-    // prefix pass through — they're usually the primary-language
-    // pages. Safety floor: if this would leave the queue empty (a
-    // site that's ONLY locale-prefixed URLs), skip the filter so we
-    // still produce some output.
+    // Hard-drop URLs whose path locale is not the primary language
+    // (e.g. /ja-jp/* on an en-primary site). Score penalty alone is
+    // insufficient — optional-section slots would fill with localised
+    // dupes. Pass through URLs with no locale prefix. Safety floor:
+    // skip the filter if it would empty the queue.
     const preFiltered = queue.filter((q) => {
       const locale = urlLocaleCode(q.url)
       return !locale || locale === primaryLang
@@ -242,12 +217,9 @@ async function runPipelineInner(
       progress: { discovered: discoveredUrls.size, crawled, failed, mode },
     })
 
-    // robots.txt Crawl-delay: gated through a shared `nextSlot`
-    // across workers because per-worker sleeps don't space requests
-    // when CONCURRENCY > 1. Capped at MAX_CRAWL_DELAY_MS so a hostile
-    // `Crawl-delay: 99999` can't eat the pipeline budget. Without a
-    // directive we fall back to per-worker politeness (HTTP only;
-    // browser renders pace themselves).
+    // Shared `nextSlot` gates Crawl-delay across workers (per-worker
+    // sleeps don't space requests when CONCURRENCY > 1). Capped to
+    // MAX_CRAWL_DELAY_MS to bound hostile values.
     const crawlDelayMs = robots.crawlDelay != null
       ? Math.min(Math.max(0, Math.round(robots.crawlDelay * 1000)), MAX_CRAWL_DELAY_MS)
       : null
@@ -261,12 +233,8 @@ async function runPipelineInner(
       if (wait > 0) await delay(wait)
     }
 
-    // Debounce progress writes. Previously we wrote after every page —
-    // 25 crawled pages = 25 extra DB round-trips on the pipeline's hot
-    // path. Now we batch on a min-interval AND a min-page count; the
-    // polling UI refreshes every few seconds anyway, so sub-second
-    // precision on `discovered` / `crawled` / `failed` doesn't buy
-    // anything.
+    // Debounce progress writes — polling UI tick is seconds, so
+    // sub-second precision isn't worth a DB round-trip per page.
     const PROGRESS_MIN_INTERVAL_MS = 500
     let lastProgressAt = 0
     const flushProgress = async (force = false): Promise<void> => {
@@ -337,10 +305,8 @@ async function runPipelineInner(
       }
     }
 
-    // Site-name LLM call only needs the homepage's extracted
-    // candidates — no dependency on crawled subpages — so kick it off
-    // in parallel with the worker pool. Recovers ~5-10s on typical
-    // sites where the LLM rate-limited or responded slowly.
+    // Kick off the site-name LLM call in parallel with the worker
+    // pool — it only needs the homepage, not the crawled subpages.
     const hostname = new URL(baseUrl).hostname
     const deterministicName = extractSiteName(homepageHtml, hostname)
     const nameCandidates = extractSiteNameCandidates(homepageHtml, hostname)
@@ -368,11 +334,8 @@ async function runPipelineInner(
         return p
       })
 
-    // External references: homepage outbound anchors, LLM-ranked,
-    // each fetched once for metadata only — never followed further.
-    // Budget stays within MAX_PAGES: whatever slots the internal
-    // crawl didn't use, external refs can fill. At worst the cap is
-    // hit by internals alone and no externals are fetched.
+    // External refs fill any unused MAX_PAGES budget. Each is fetched
+    // once for metadata only — never followed further.
     const externalBudget = Math.max(0, MAX_PAGES - internalSuccessful.length)
     const externalRefs = externalBudget > 0
       ? await resolveExternalReferences(
@@ -392,19 +355,9 @@ async function runPipelineInner(
 
     const scored = scorePages(successful, genre, primaryLang, enrichment)
 
-    // Blockquote summary = homepage's post-enrichment description.
-    //
-    // Two reasons we look at the scored pages, not `homepageMeta`:
-    //   1. The LLM enrichment rewrites the description when it can
-    //      produce something better — google.com's raw extraction
-    //      falls back to a cleaned body excerpt ("AboutStoreWhat's
-    //      on your mind?" — nav goo), but the LLM's replacement
-    //      ("Google's main search engine homepage…") is what we want.
-    //   2. Only accept the summary when its provenance is a trusted
-    //      structured source (`json_ld` / `og` / `meta` / `llm`).
-    //      `excerpt` and `heading` fallbacks are unreliable for a
-    //      user-facing blockquote — better to ship no blockquote
-    //      than a garbage one.
+    // Blockquote summary uses the post-enrichment homepage description,
+    // gated on trusted provenance — body-excerpt / heading fallbacks
+    // often surface nav goo that reads badly in a blockquote.
     const homepageScored = scored.find((p) => p.url === baseUrl)
     const summary =
       homepageScored?.description &&
@@ -435,18 +388,10 @@ async function runPipelineInner(
       : undefined
     const result = assembleFile(siteName, primary, optional, summary, preamble, robotsNotice)
 
-    // "partial" fires when a meaningful majority of fetch attempts
-    // failed. Use total attempts (not just successes) as the denominator
-    // so small crawls don't trip on a single failure. Require at least
-    // 5 attempts before the rule kicks in — a 2-page site with 1
-    // timeout shouldn't read as "partial".
-    //
-    // Also fail outright when we end up with zero useful pages in
-    // the output (primary + optional both empty). This happens on
-    // JS-only SPAs that our SPA detector missed *and* whose Puppeteer
-    // render produced nothing meaningful either — without this the
-    // assembler would emit a degenerate `# <siteName>` stub with no
-    // sections. A clear failure is a better UX than a useless file.
+    // "partial" when >50% of attempts failed (min 5 attempts so a
+    // 2-page site with 1 timeout doesn't trip it). Fail outright when
+    // the output would have no sections — better than shipping a
+    // degenerate `# <siteName>` stub.
     const attempted = crawled + failed
     const successRate = attempted > 0 ? crawled / attempted : 0
     const status =
