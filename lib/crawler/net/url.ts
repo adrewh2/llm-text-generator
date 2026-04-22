@@ -209,11 +209,14 @@ export function clientValidateUrl(raw: string):
     return { ok: false, reason: "localhost URLs aren't allowed" }
   }
 
-  // IPv6 literals — `new URL()` strips the surrounding brackets on
-  // `hostname`. Detect via colon and validate against the shared
-  // ranges module.
+  // IPv6 literals — `new URL().hostname` keeps the surrounding
+  // brackets (per WHATWG URL), so strip them before classifying.
+  // Detect via colon and validate against the shared ranges module.
   if (lowered.includes(":")) {
-    if (isForbiddenIpv6(lowered)) {
+    const stripped = lowered.startsWith("[") && lowered.endsWith("]")
+      ? lowered.slice(1, -1)
+      : lowered
+    if (isForbiddenIpv6(stripped)) {
       return { ok: false, reason: "Private or reserved IP ranges aren't allowed" }
     }
     return { ok: true }
