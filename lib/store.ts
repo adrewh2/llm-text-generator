@@ -295,7 +295,22 @@ export async function recordMonitorCheck(
   // here means "detection failed this cycle", keep the previous sig so
   // we can still diff next time.
   if (signature !== null) patch.content_signature = signature
-  await supabase.from("pages").update(patch).eq("url", pageUrl)
+  // Surface both transport errors and zero-row updates: a silent no-op
+  // (e.g. URL-form mismatch between the monitored row and the value the
+  // cron passes back) would otherwise leave last_checked_at frozen
+  // indefinitely with no log trail to diagnose.
+  const { error, count } = await supabase
+    .from("pages")
+    .update(patch, { count: "exact" })
+    .eq("url", pageUrl)
+  if (error) {
+    errorLog("store.recordMonitorCheck", new Error(`${pageUrl}: ${error.message}`))
+    throw new Error(error.message)
+  }
+  if (count === 0) {
+    errorLog("store.recordMonitorCheck", new Error(`${pageUrl}: no row matched`))
+    throw new Error(`recordMonitorCheck: no row matched for ${pageUrl}`)
+  }
 }
 
 /**
