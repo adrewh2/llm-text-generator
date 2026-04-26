@@ -24,12 +24,14 @@ export default function MonitorStatus({ monitored, lastCheckedAt, running }: Pro
     return () => clearInterval(id)
   }, [lastCheckedAt])
 
-  if (!monitored) return null
   const label = running
     ? "Refreshing…"
     : lastCheckedAt
     ? `Refreshed ${formatDistanceToNowStrict(lastCheckedAt, { addSuffix: true })}`
-    : "Awaiting refresh"
+    : monitored
+    ? "Awaiting refresh"
+    : null
+  if (!label) return null
   return (
     <span
       title="We re-check this site's sitemap and homepage on a schedule and refresh the llms.txt when it changes"

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { randomUUID } from "crypto"
 import { waitUntil } from "@vercel/functions"
+import * as Sentry from "@sentry/nextjs"
 import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, recordMonitorCheck, upsertUserRequest } from "@/lib/store"
 import { altWwwForm, isValidHttpUrl, normalizeUrl } from "@/lib/crawler/net/url"
 import { resolveCanonicalUrl } from "@/lib/crawler/net/canonicalUrl"
@@ -19,6 +20,10 @@ function runAfterResponse(context: string, p: Promise<unknown>): void {
   waitUntil(
     p.catch((err) => errorLog(`api/p.${context}`, err instanceof Error ? err : new Error(String(err))))
   )
+}
+
+function safeHost(url: string): string {
+  try { return new URL(url).host } catch { return "invalid" }
 }
 
 export const runtime = "nodejs"
@@ -63,6 +68,27 @@ export async function POST(req: NextRequest) {
   }
 
   const user = await getCurrentUser()
+  const ip = clientIp(req)
+
+  // Stamp the Sentry scope with who submitted this request and what
+  // they submitted. Scopes are request-isolated via AsyncLocalStorage,
+  // so this attaches to the auto-created transaction and any error
+  // captured downstream — including from `runAfterResponse` callbacks
+  // that fire after the user has already navigated away.
+  Sentry.setUser({ id: user?.id, email: user?.email, ip_address: ip })
+  Sentry.setTag("submitted_host", safeHost(trimmed))
+  Sentry.setContext("submission", {
+    url: trimmed,
+    authenticated: !!user,
+    user_id: user?.id ?? null,
+    ip,
+  })
+  Sentry.addBreadcrumb({
+    category: "api.p",
+    message: "POST /api/p",
+    level: "info",
+    data: { url: trimmed, authenticated: !!user, ip },
+  })
 
   // Two-bucket rate limiting. Keys are prefixed per-bucket so the
   // limiters never share Redis entries. SUBMIT is a loose abuse
@@ -70,7 +96,7 @@ export async function POST(req: NextRequest) {
   // (URL validation + HEAD probe + DB lookups) can run. NEW_CRAWL
   // is the tight quota charged only when a submission actually
   // dispatches a fresh crawl; see further down.
-  const principal = user ? `user:${user.id}` : `ip:${clientIp(req)}`
+  const principal = user ? `user:${user.id}` : `ip:${ip}`
   const submit = await consumeRateLimit(
     `submit:${principal}`,
     user ? rateLimit.AUTH_SUBMIT : rateLimit.ANON_SUBMIT,
