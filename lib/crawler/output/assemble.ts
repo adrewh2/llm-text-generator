@@ -120,8 +120,7 @@ function resolveDisplayLabels(pages: ScoredPage[], siteName: string): Map<string
 
   // A page title that shows up on many pages is a site-wide tagline,
   // not a per-page title — typically an SPA that forgot to update
-  // document.title on route change (duolingo.com's "Learn a language
-  // for free" was the motivating case). Treat it the same as
+  // document.title on route change. Treat it the same as
   // `title === siteName`: fall back to a URL-derived label so each
   // entry is actually distinguishable. Threshold of 3 keeps us from
   // misfiring on real 2-page collisions that Pass 2 handles fine.

@@ -4,12 +4,11 @@ import { useEffect, useState } from "react"
 import { FolderDown, Loader2 } from "lucide-react"
 import ConfirmDialog from "@/app/components/ConfirmDialog"
 
-// Client-side download orchestration. Using a plain <a download>
-// here was a trap: on a 429 the browser happily wrote the JSON
-// error body to disk as "download.json" with no feedback to the
-// user. We now fetch the endpoint, check the status, and either
-// stream the Blob into a temporary <a> or surface the server's
-// error message inline.
+// Client-side download orchestration. We fetch the endpoint
+// ourselves, check the status, and either stream the Blob into a
+// temporary <a> or surface the server's error message inline. A
+// plain <a download> would silently write the JSON error body to
+// disk as "download.json" on a 429 — invisible to the user.
 export default function DownloadButton() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)

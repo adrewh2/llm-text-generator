@@ -40,11 +40,11 @@ function extractTitle($: CheerioAPI): string {
   const og = $('meta[property="og:title"]').attr("content")?.trim()
   if (og) return cleanTitle(og)
 
-  // Scope to head so SVG <title> elements (used for icon
-  // accessibility — "Back Button", "Search Icon", "Filter Icon" on
-  // sony.com was the motivating case) don't get concatenated into
-  // the page title. `$("title").text()` matches every title in the
-  // DOM and glues them together.
+  // Scope to head so SVG <title> elements used for icon accessibility
+  // ("Back Button", "Search Icon", "Filter Icon") don't get
+  // concatenated into the page title. `$("title").text()` matches
+  // every <title> in the DOM — head and SVG alike — and glues them
+  // together.
   const tag = $("head > title").first().text().trim()
   if (tag) return cleanTitle(tag)
 
