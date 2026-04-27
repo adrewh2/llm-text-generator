@@ -112,13 +112,18 @@ npm run build       # production build
 npm start           # serve the production build locally
 npm run lint        # next lint
 npm run typecheck   # tsc --noEmit
-npm test            # node:test suite under tests/ (pure security-critical helpers)
+npm test            # node:test suite under tests/ (pure helpers + security-critical units)
 ```
 
-`npm test` covers the SSRF IP-range classifiers and the client-side URL
-validator. CI runs it on every PR alongside build + lint. The broader
-integrated behavior — crawl pipeline, RLS, monitor cron, QStash — is
-covered by the manual playbook in [`docs/TESTING.md`](./docs/TESTING.md).
+`npm test` covers the pure helpers — SSRF IP-range classifiers, URL
+normalisation, the client-side URL validator, error scrubbing,
+`llms.txt` validation, sitemap / robots / SPA-shape detection,
+filename mapping, rate-limit math, bounded-read streaming, and the
+file-assembly output. CI runs it on every PR alongside build + lint.
+The broader integrated behavior — full crawl pipeline against live
+target sites, RLS against a real Supabase, monitor cron, QStash
+delivery — is covered by the manual playbook in
+[`docs/TESTING.md`](./docs/TESTING.md).
 
 ### Running the monitor cron locally
 

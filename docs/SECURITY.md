@@ -242,7 +242,7 @@ Prompts + crawled content are sent to Anthropic under their default data retenti
 
 ## 13. Deliberately deferred
 
-Security-adjacent deferrals. Scope-level deferrals (webhooks, update delivery, locale overrides, test suite) live in [`DESIGN.md §13`](./DESIGN.md). The concurrent cache-miss race is documented as a callout in [`DESIGN.md §15`](./DESIGN.md) with its benign failure mode and a concrete fix.
+Security-adjacent deferrals. Scope-level deferrals (webhooks, update delivery, locale overrides, integration test coverage) live in [`DESIGN.md §13`](./DESIGN.md). The concurrent cache-miss race is documented as a callout in [`DESIGN.md §15`](./DESIGN.md) with its benign failure mode and a concrete fix.
 
 - **No structured audit log** of auth events or rate-limit denials. Vercel + Supabase logs cover most forensic needs at this scale.
 - **No CAPTCHA** on the landing page. Anon rate limits (3/hr NEW_CRAWL) make CAPTCHA overkill at current traffic; revisit if bot volume becomes a cost problem.

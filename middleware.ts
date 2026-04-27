@@ -40,19 +40,20 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   // Scope: only routes that actually need the session cookie kept
-  // fresh. Previously this ran on every non-static request — every
-  // public /p/{id} view triggered a Supabase `getUser()` roundtrip
-  // for anons, which the anon-readable page doesn't use.
+  // fresh. Public routes (`/`, `/p/{id}`, `/jobs/{id}`) skip the
+  // middleware entirely so anon viewers don't pay for a Supabase
+  // `getUser()` roundtrip the anon-readable page doesn't use.
   //
   // Covered:
   //   - /dashboard/*   — server-gated to signed-in users
   //   - /login         — reads session to auto-redirect if signed in
   //   - /auth/*        — OAuth callback exchanges code for session
   //   - /api/*         — auth-gated endpoints (submit, history,
-  //                      download, request). /api/p/{id} GET is
-  //                      public but still runs through Supabase for
-  //                      other reasons; the small extra round-trip
-  //                      here is cheaper than excluding it precisely.
+  //                      download, request). /api/p/{id} and
+  //                      /api/jobs/{id} GETs are public but still
+  //                      run through Supabase for other reasons;
+  //                      the small extra round-trip here is cheaper
+  //                      than excluding them precisely.
   matcher: [
     "/dashboard/:path*",
     "/login",

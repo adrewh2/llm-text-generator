@@ -7,11 +7,14 @@ import type { ReactNode } from "react"
 export const HEADER_BUTTON_CLASS =
   "flex items-center gap-1.5 text-sm text-zinc-700 hover:text-zinc-900 px-3 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-colors"
 
-// Shared top nav across landing, dashboard, login, and /p/{id}. The
-// logo is locked to the left `px-6` edge so it sits in the same spot
-// on every page. `center` takes page-specific inline content (e.g.
-// the current domain + spec chip on /p/{id}); `right` takes the
-// shrink-0 right-aligned actions (NavAuth, Generate button, etc.).
+// Shared top nav across every page. Used directly by /p/{id} and
+// /jobs/{id} (each renders its own page-specific center slot — the
+// domain + spec chip on /p/{id}, the domain + "Generating…" pill on
+// /jobs/{id}); GlobalHeader wraps it for landing, dashboard, and
+// login. The logo is locked to the left `px-6` edge so it sits in
+// the same spot on every page. `center` takes page-specific inline
+// content; `right` takes the shrink-0 right-aligned actions
+// (NavAuth, Generate button, etc.).
 export default function AppHeader({
   center,
   right,
