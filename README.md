@@ -116,10 +116,11 @@ npm test            # node:test suite under tests/ (pure helpers + security-crit
 ```
 
 `npm test` covers the pure helpers — SSRF IP-range classifiers, URL
-normalisation, the client-side URL validator, error scrubbing,
-`llms.txt` validation, sitemap / robots / SPA-shape detection,
-filename mapping, rate-limit math, bounded-read streaming, and the
-file-assembly output. CI runs it on every PR alongside build + lint.
+normalisation + path-prefix capping, the client-side URL validator,
+error scrubbing, `llms.txt` validation, sitemap / robots / SPA-shape
+detection, filename mapping, rate-limit math, bounded-read streaming,
+the file-assembly output, and the no-LLM heuristic ranker fallback.
+CI runs it on every PR alongside build + lint.
 The broader integrated behavior — full crawl pipeline against live
 target sites, RLS against a real Supabase, monitor cron, QStash
 delivery — is covered by the manual playbook in

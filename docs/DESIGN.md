@@ -165,7 +165,7 @@ The LLM does **not** decide:
 
 ### Scoring and selection
 
-`scorePages` produces a numeric score per page by combining structural quality signals (description presence, `.md` sibling, JSON-LD, headings, body length — all additive) with URL-shape anti-patterns (pagination, print/export, tag/category/archive/author paths — all subtractive) and the LLM's importance rating folded in as `(importance − 5.5) × 5`, giving roughly a ±23-point swing on top of base signals that cap around +75. There's also a soft off-primary-language penalty so locale duplicates sink below their primary-language twins (see `language.ts`).
+`scorePages` produces a numeric score per page by combining structural quality signals (description presence, `.md` sibling, JSON-LD, headings, body length — all additive) with URL-shape anti-patterns (pagination, print/export, tag/category/archive/author paths, plus affiliate / sponsored / deals patterns — all subtractive) and the LLM's importance rating folded in as `(importance − 5.5) × 5`, giving roughly a ±23-point swing on top of base signals that cap around +75. There's also a soft off-primary-language penalty so locale duplicates sink below their primary-language twins (see `language.ts`). The deals / coupons / promotions penalty is genre-aware: skipped on `ecommerce_store` and `marketplace` sites where those paths are first-party catalogue (Best Buy, Amazon), applied everywhere else where they're affiliate-revenue ads (foxnews.com/deals/X).
 
 Three thresholds, all in `lib/crawler/enrich/score.ts` (`PRIMARY_SCORE_THRESHOLD`, `INCLUDE_SCORE_THRESHOLD`):
 
@@ -203,7 +203,7 @@ Same-domain filtering on the crawl queue is correct (a single outbound anchor wo
 
 Five call sites, all pinned to the model in `llm.MODEL`:
 
-1. **`rankCandidateUrls`** — reorders the candidate URL list by likely value. Takes the whole list + site name + homepage excerpt; skipped entirely for small lists where ranking doesn't buy anything. Caps in `lib/config.ts`.
+1. **`rankCandidateUrls`** — reorders the candidate URL list by likely value. Takes the whole list + site name + homepage excerpt; skipped entirely for small lists where ranking doesn't buy anything. Caps in `lib/config.ts`. When the LLM is unavailable (no API key, billing exhausted, transient SDK error), falls back to a deterministic `heuristicRank` that prefers shorter paths and known structural first segments (`/about`, `/products`, `/research`, `/careers`, `/docs`, `/api`, `/support`, `/pricing`, `/news`, `/investors`, `/sustainability`, `/patients`, `/industries`, …) over deep slug-y leaves and date-y paths — so a no-LLM run still produces a useful file instead of degenerating to "whatever the sitemap listed first".
 2. **`enrichBatch`** (via `llmEnrichPages`) — processes pages in parallel batches and returns `importance` (1–10), `section` label, and `description` per page. `section` is the primary signal for pages above the primary threshold; the path-regex inference only runs when the LLM didn't return a usable section. Pages below the primary threshold always land in `Optional` regardless of what the LLM said.
 3. **`rankExternalReferences`** — curates homepage outbound anchors, keeping spec / upstream / related-project links and dropping social / tracking / hosting-badge noise. Skipped when there's nothing to prune.
 4. **`llmSiteName`** — picks a clean brand name from deterministic homepage candidates. Falls back to a deterministic guess if the LLM is unavailable or returns something unusable.

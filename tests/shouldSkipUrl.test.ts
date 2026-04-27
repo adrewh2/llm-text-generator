@@ -192,4 +192,32 @@ describe("capByPathPrefix", () => {
     const out = capByPathPrefix(["not a url", "also not"], 1, 1)
     assert.equal(out.length, 2)
   })
+
+  test("within a bucket, prefers shorter paths (section index over leaf)", () => {
+    // Sitemap order puts the deep leaf first, but the cap should still
+    // pick the section index — that's what tells an LLM reader what
+    // the section IS.
+    const urls = [
+      "https://example.com/about/board-directors/john-doe",
+      "https://example.com/about/board-directors/",
+      "https://example.com/about/board-directors/jane-smith",
+    ]
+    const out = capByPathPrefix(urls, 1, 2)
+    assert.deepEqual(out, ["https://example.com/about/board-directors/"])
+  })
+
+  test("depth tie-break is order-stable inside a bucket", () => {
+    const urls = [
+      "https://example.com/about/board-directors/john-doe",
+      "https://example.com/about/board-directors/jane-smith",
+      "https://example.com/about/board-directors/alice-roe",
+    ]
+    // All three are depth 3 — none is a shorter index — so the cap
+    // should keep them in input order.
+    const out = capByPathPrefix(urls, 2, 2)
+    assert.deepEqual(out, [
+      "https://example.com/about/board-directors/john-doe",
+      "https://example.com/about/board-directors/jane-smith",
+    ])
+  })
 })

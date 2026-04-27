@@ -313,7 +313,7 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7, 12]`
 
     const text = message.content[0]?.type === "text" ? message.content[0].text : ""
     const match = text.match(/\[[\d,\s]+\]/)
-    if (!match) return candidates.slice(0, maxKeep)
+    if (!match) return heuristicRank(candidates, maxKeep)
 
     const indices: number[] = JSON.parse(match[0])
     const kept = indices
@@ -324,11 +324,92 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7, 12]`
     // `visited` in the pipeline already dedupes the actual fetch, but
     // duplicates on this list inflate the prompt of later LLM passes.
     const deduped = Array.from(new Set(kept))
-    return deduped.length > 0 ? deduped : candidates.slice(0, maxKeep)
+    return deduped.length > 0 ? deduped : heuristicRank(candidates, maxKeep)
   } catch (err) {
     debugLog("llmEnrich.rankCandidateUrls", err)
-    return candidates.slice(0, maxKeep)
+    return heuristicRank(candidates, maxKeep)
   }
+}
+
+// Known structural section names — if the first path segment matches
+// one of these, the URL is much more likely to be a section index that
+// helps an LLM understand what the site offers (vs. a leaf article /
+// person bio / dated post). Conservative: only includes labels that
+// are nearly always structural across SaaS, marketing, retail,
+// pharma, news, and corporate sites.
+const STRUCTURAL_FIRST_SEGMENTS = new Set([
+  "about", "company", "team", "people", "leadership",
+  "products", "product", "solutions", "services", "platform", "features",
+  "research", "innovation", "science", "technology", "labs", "engineering",
+  "docs", "documentation", "guides", "tutorials", "examples", "reference",
+  "api", "developers", "developer", "sdk",
+  "support", "help", "faq", "contact",
+  "pricing", "plans",
+  "careers", "jobs", "join-us",
+  "investors", "investor-relations", "ir",
+  "sustainability", "esg", "responsibility", "impact",
+  "news", "newsroom", "press", "media",
+  "blog", "insights", "stories",
+  "resources", "library", "learn",
+  "industries", "use-cases", "customers", "case-studies",
+  "shop", "store", "marketplace", "catalog",
+  "patients", "professionals", "providers",
+])
+
+/**
+ * Deterministic fallback used when the LLM ranker is unavailable
+ * (no API key, billing exhausted, transient SDK error). Sorts the
+ * candidate list by structural-likely heuristics so a non-LLM run
+ * still produces a useful llms.txt instead of degenerating to
+ * "whatever the sitemap listed first":
+ *   - Shorter paths win (section-index pages over deep leaves).
+ *   - Known structural first segments win (/about, /products,
+ *     /research, /careers, …) over arbitrary slugs.
+ *   - Date-y path segments lose (/2024/, /q3/) — those are
+ *     individual content items.
+ *   - Stable on tied scores (preserve caller order).
+ */
+export function heuristicRank(candidates: string[], maxKeep: number): string[] {
+  const scored = candidates.map((url, idx) => ({
+    url,
+    idx,
+    score: heuristicScore(url),
+  }))
+  scored.sort((a, b) => (b.score - a.score) || (a.idx - b.idx))
+  return scored.slice(0, maxKeep).map((s) => s.url)
+}
+
+function heuristicScore(url: string): number {
+  let score = 0
+  let segments: string[]
+  try {
+    segments = new URL(url).pathname.split("/").filter(Boolean)
+  } catch {
+    return -100
+  }
+
+  // Prefer shorter paths. Depth 1 → +30, 2 → +20, 3 → +10, 4 → 0,
+  // 5+ → negative. Section indexes almost always sit at depth 1–2.
+  score += Math.max(-10, 40 - segments.length * 10)
+
+  // Boost when the first segment is a known structural section.
+  if (segments[0] && STRUCTURAL_FIRST_SEGMENTS.has(segments[0].toLowerCase())) {
+    score += 25
+  }
+
+  // Penalize date-y segments — these are almost always individual
+  // content items (news posts, quarterly reports, etc.).
+  for (const seg of segments) {
+    if (/^(19|20)\d{2}$/.test(seg)) { score -= 15; break }
+    if (/^q[1-4]$/i.test(seg)) { score -= 15; break }
+  }
+
+  // Penalize deep slug-y leaves (4+ word kebab segments) — these are
+  // typically article titles, person names, or product pages.
+  const last = segments[segments.length - 1] ?? ""
+  if (segments.length >= 3 && last.split("-").length >= 3) score -= 5
+
+  return score
 }
 
 /**

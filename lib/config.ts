@@ -22,7 +22,8 @@ export const crawler = {
    * a content-heavy site (e.g. 500 /watch URLs) from flooding the
    * queue the LLM ranks over. Bounds the prompt size; the cap could
    * be dropped entirely if the LLM ranker proved sufficient on its
-   * own.
+   * own. Within each bucket the shorter-path URL wins (the section
+   * index over individual leaf pages — see capByPathPrefix).
    */
   URLS_PER_PREFIX_CAP: 5,
   /** Path segments that form the prefix-bucket key. `/docs/api/x` + depth 2 → bucket `docs/api`. */
