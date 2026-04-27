@@ -36,6 +36,24 @@ export function scorePages(
     if (/\/(print|export)\//.test(page.url)) score -= 20
     if (/\/(tag|category|archive|author)\//.test(page.url)) score -= 25
 
+    // Always-affiliate paths: paid placement / commission revenue
+    // regardless of what kind of site hosts them. Heavier penalty
+    // than tag/archive because base content signals (description +
+    // body + headings) are usually fully populated on these pages,
+    // so a smaller penalty wouldn't sink them below the include
+    // threshold.
+    if (/\/(sponsored?|affiliate|giveaways?|sweepstakes|partner-?content)\//.test(page.url)) score -= 35
+
+    // Deals / coupons / promotions: affiliate noise on news /
+    // blog / marketing / SaaS sites (foxnews.com/deals/best-buy-
+    // weekly-deals — Fox is a news site, the deals are commission
+    // revenue), but FIRST-PARTY content on retail / marketplace
+    // sites (bestbuy.com/deals, amazon.com/deals — the deals are
+    // the product). Skip the penalty for ecommerce / marketplace
+    // genres so legitimate sale-section pages can still surface.
+    const isCommerceGenre = genre === "ecommerce_store" || genre === "marketplace"
+    if (!isCommerceGenre && /\/(deals?|coupons?|promo(?:tions?|s)?)\//.test(page.url)) score -= 35
+
     // Off-primary-language penalty — preference, not a filter.
     // Enough to push a localized duplicate below its primary-language
     // twin (which usually clears the 50-point primary/optional
