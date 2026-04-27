@@ -206,7 +206,13 @@ function PageViewInner({
       : { ...job, status: visibleStatus }
     : null
   const isDone = !!displayJob && (displayJob.status === "complete" || displayJob.status === "partial")
-  const showResult = isDone && simulatedStep === null
+  // Show cached content whenever it exists — a re-crawl in flight on a
+  // previously-successful page should keep the prior llms.txt visible
+  // (with a "Re-crawling…" pill) rather than swap to ProgressPane.
+  // ProgressPane is reserved for first-time crawls (no prior result)
+  // and for the simulated stepper.
+  const showResult = !!job?.result && simulatedStep === null
+  const refreshing = showResult && !isDone
   const domain = job ? hostnameOf(job.url) : ""
   const crawledCount = (job?.pages ?? []).filter((p) => p.fetchStatus === "ok").length
   // Only validate once we have a non-empty result — otherwise a
@@ -321,7 +327,7 @@ function PageViewInner({
             <Loader2 size={24} className="text-zinc-400 animate-spin" />
           </div>
         ) : showResult && job.result ? (
-          <ResultPane job={job} signedIn={!!user} />
+          <ResultPane job={job} signedIn={!!user} refreshing={refreshing} />
         ) : displayJob ? (
           <ProgressPane
             job={displayJob}

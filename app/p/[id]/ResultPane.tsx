@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { formatDistanceToNowStrict } from "date-fns"
-import { Check, Copy, Download, Link2, RefreshCw, Save } from "lucide-react"
+import { Check, Copy, Download, Link2, Loader2, RefreshCw, Save } from "lucide-react"
 import { crawler, ui } from "@/lib/config"
 import type { ApiJob } from "./types"
 
@@ -13,9 +13,11 @@ interface Props {
   job: ApiJob
   /** Whether the current viewer is signed in — gates the "Add to dashboard" button. */
   signedIn: boolean
+  /** True while a server-side re-crawl is in flight; renders the "Re-crawling…" pill. */
+  refreshing?: boolean
 }
 
-export default function ResultPane({ job, signedIn }: Props) {
+export default function ResultPane({ job, signedIn, refreshing = false }: Props) {
   const router = useRouter()
   const content = job.result ?? ""
   const [copied, setCopied] = useState(false)
@@ -26,7 +28,10 @@ export default function ResultPane({ job, signedIn }: Props) {
   //   true    = already in history → hide button
   const [inHistory, setInHistory] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
+  // Local "the click round-trip is in flight" flag. Distinct from the
+  // `refreshing` prop, which stays true for the lifetime of the
+  // server-side re-crawl.
+  const [submitting, setSubmitting] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const copyLinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -123,8 +128,8 @@ export default function ResultPane({ job, signedIn }: Props) {
   }
 
   const handleRefresh = async () => {
-    if (refreshing) return
-    setRefreshing(true)
+    if (submitting || refreshing) return
+    setSubmitting(true)
     setRefreshError(null)
     try {
       // Same endpoint + same payload the landing-page Generate button
@@ -151,7 +156,7 @@ export default function ResultPane({ job, signedIn }: Props) {
     } catch {
       setRefreshError("Network error")
     } finally {
-      setRefreshing(false)
+      setSubmitting(false)
     }
   }
 
@@ -193,6 +198,20 @@ export default function ResultPane({ job, signedIn }: Props) {
           </>
         )}
         <div className="ml-auto flex items-center gap-2">
+          {/* Regenerating pill — visible while a server-side re-crawl
+              is in flight (or the click round-trip itself). The cached
+              llms.txt stays rendered below; polling swaps in the new
+              content the moment the new job lands a result. */}
+          {(refreshing || submitting) && (
+            <span
+              className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-medium text-amber-700 bg-amber-50 ring-1 ring-amber-100 px-2.5 py-1 rounded-full"
+              role="status"
+              aria-live="polite"
+            >
+              <Loader2 size={11} className="animate-spin" />
+              Regenerating…
+            </span>
+          )}
           {/* Transient refresh error — dismisses itself after ~4s.
               Rate-limit denials (429) and network errors both land here. */}
           {refreshError && (
@@ -200,22 +219,22 @@ export default function ResultPane({ job, signedIn }: Props) {
               {refreshError}
             </span>
           )}
-          {/* Refresh button — desktop only, and only when the cache
-              is older than PAGE_TTL_HOURS (matches the POST /api/p
-              staleness rule). Clicking is equivalent to re-submitting
+          {/* Refresh button — desktop only, only when the cache is
+              older than PAGE_TTL_HOURS, and not while a re-crawl is
+              already in flight. Clicking is equivalent to re-submitting
               from the landing form: goes through rate limiting and
               attaches to any in-flight job for the same URL. */}
-          {isStale && (
+          {isStale && !refreshing && (
             <button
               type="button"
               onClick={handleRefresh}
-              disabled={refreshing}
+              disabled={submitting}
               aria-label="Refresh"
               title="Refresh"
               className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-medium text-zinc-500 hover:text-zinc-800 px-2.5 py-1 rounded-md border border-zinc-200 hover:border-zinc-300 transition-colors disabled:opacity-50"
             >
-              <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} />
-              {refreshing ? "Refreshing…" : "Refresh"}
+              <RefreshCw size={11} className={submitting ? "animate-spin" : ""} />
+              {submitting ? "Refreshing…" : "Refresh"}
             </button>
           )}
           {showSave && (
