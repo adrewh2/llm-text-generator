@@ -8,10 +8,18 @@ import type { ApiJob } from "./types"
 
 const { MAX_PAGES } = crawler
 
+// Stage labels are user-facing. They describe what the deterministic
+// + LLM work in each stage actually produces — not the internal
+// status enum values (`enriching`, `scoring`), which the worker
+// continues to write unchanged. Stage 2 says "Analyzing" because the
+// LLM does more than summarize (section + importance + description
+// per page, plus brand name and external-ref ranking). Stage 3 says
+// "filtering" because classification was already the LLM's job in
+// stage 2 — this stage scores + bins (Primary / Optional / drop).
 const STEPS: Array<{ id: JobStatus; label: string }> = [
   { id: "crawling",   label: "Crawling pages" },
-  { id: "enriching",  label: "Enriching with AI" },
-  { id: "scoring",    label: "Scoring & classifying" },
+  { id: "enriching",  label: "Analyzing with AI" },
+  { id: "scoring",    label: "Scoring & filtering" },
   { id: "assembling", label: "Assembling file" },
 ]
 
@@ -142,8 +150,8 @@ function bottomLabel(job: ApiJob, domain: string): string {
   switch (job.status) {
     case "pending":    return "Starting crawl…"
     case "crawling":   return `Crawling ${domain}…`
-    case "enriching":  return "Summarizing pages with AI…"
-    case "scoring":    return "Scoring and ranking pages…"
+    case "enriching":  return "Analyzing each page with AI…"
+    case "scoring":    return "Scoring & filtering pages…"
     case "assembling": return "Assembling llms.txt…"
     default:           return ""
   }
