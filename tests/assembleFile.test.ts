@@ -126,4 +126,82 @@ describe("assembleFile → validateLlmsTxt", () => {
     assert.ok(out.includes("> ⚠️"), "robots notice expected as a warning blockquote")
     assert.equal(validateLlmsTxt(out).valid, true)
   })
+
+  test("structural sections sort above catalogue when LLM importance grades structural pages higher", () => {
+    // LLM-up path: enrichBatch tells the model structural pages
+    // score 8–10 and catalogue entries score 4–7. After that
+    // weighting flows through scorePages, structural pages have
+    // higher final scores and their sections sort to the top via
+    // the avg-score sort — no hardcoded section name needed.
+    const primary: ScoredPage[] = [
+      // Catalogue entries: full-content base (description + headings + body ≈ +45)
+      // + LLM importance 5 → ~ -3 modifier → final ≈ 42 each.
+      page({ url: "https://example.com/listings/a", title: "Listing A", section: "Catalogue", score: 42 }),
+      page({ url: "https://example.com/listings/b", title: "Listing B", section: "Catalogue", score: 42 }),
+      // About pages: weaker base (terse content) + LLM importance 9
+      // → +18 modifier → final ≈ 53 each, even though the page
+      // body itself is shorter than the catalogue items.
+      page({ url: "https://example.com/about", title: "About", section: "About", score: 53 }),
+      page({ url: "https://example.com/team", title: "Team", section: "About", score: 53 }),
+    ]
+    const out = assembleFile("Example", primary, [])
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    assert.deepEqual(h2s, ["## About", "## Catalogue"], `unexpected section order: ${h2s.join(" | ")}`)
+  })
+
+  test("section priority is only a tiebreaker — higher avg-score wins regardless of label", () => {
+    // Even though Catalogue isn't on the SECTION_PRIORITY list and
+    // About is at 100, when Catalogue's avg-score is genuinely higher
+    // it should still win. The judgment lives in the score; priority
+    // only tiebreaks ties.
+    const primary: ScoredPage[] = [
+      page({ url: "https://example.com/listings/a", title: "Listing A", section: "Catalogue", score: 80 }),
+      page({ url: "https://example.com/listings/b", title: "Listing B", section: "Catalogue", score: 80 }),
+      page({ url: "https://example.com/about", title: "About", section: "About", score: 40 }),
+      page({ url: "https://example.com/team", title: "Team", section: "About", score: 40 }),
+    ]
+    const out = assembleFile("Example", primary, [])
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    assert.deepEqual(h2s, ["## Catalogue", "## About"], `unexpected section order: ${h2s.join(" | ")}`)
+  })
+
+  test("on tied avg-score, structural priority breaks the tie", () => {
+    // Two sections with identical per-page scores — without the
+    // priority tiebreaker the order would be Map-insertion / hash
+    // order and unstable across runs. SECTION_PRIORITY pins About
+    // above an unknown label.
+    const primary: ScoredPage[] = [
+      page({ url: "https://example.com/x/a", title: "XA", section: "Discoveries", score: 50 }),
+      page({ url: "https://example.com/x/b", title: "XB", section: "Discoveries", score: 50 }),
+      page({ url: "https://example.com/about", title: "About", section: "About", score: 50 }),
+      page({ url: "https://example.com/team", title: "Team", section: "About", score: 50 }),
+    ]
+    const out = assembleFile("Example", primary, [])
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    assert.deepEqual(h2s, ["## About", "## Discoveries"], `unexpected section order: ${h2s.join(" | ")}`)
+  })
+
+  test("catalogue noun labels are NOT hardcoded — Listings ties against an unknown label by score alone", () => {
+    // SECTION_PRIORITY only carries labels with stable cross-genre
+    // meaning in the llms.txt shape — it doesn't hardcode catalogue-
+    // shaped section nouns. The structural-vs-catalogue judgment is
+    // the LLM's via the per-page importance score. So two unknown
+    // section labels with identical avg-scores both get the neutral
+    // priority default and tie cleanly, instead of one being
+    // arbitrarily penalized for matching a hardcoded list.
+    const primary: ScoredPage[] = [
+      page({ url: "https://example.com/list/a", title: "LA", section: "Listings", score: 60 }),
+      page({ url: "https://example.com/list/b", title: "LB", section: "Listings", score: 60 }),
+      page({ url: "https://example.com/disc/a", title: "DA", section: "Discoveries", score: 60 }),
+      page({ url: "https://example.com/disc/b", title: "DB", section: "Discoveries", score: 60 }),
+    ]
+    const out = assembleFile("Example", primary, [])
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    // Both at neutral priority (50), tied avg-score → stable on
+    // insertion order; the assertion is "neither got a hardcoded
+    // catalogue penalty," not a specific order.
+    assert.equal(h2s.length, 2)
+    assert.ok(h2s.includes("## Listings"))
+    assert.ok(h2s.includes("## Discoveries"))
+  })
 })

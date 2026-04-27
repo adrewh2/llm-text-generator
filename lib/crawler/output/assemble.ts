@@ -208,12 +208,56 @@ function groupBySection(pages: ScoredPage[]): {
     else valid.set(section, ps)
   }
 
-  // Sort sections by average score descending
+  // Sort sections by average score descending. The LLM's per-page
+  // importance signal already encodes structural-vs-catalogue
+  // ranking (the enrichBatch prompt instructs structural pages to
+  // score 8–10 and catalogue entries to score 4–7), so a structural
+  // section's pages outscore a catalogue section's pages on average
+  // and rise to the top naturally. SECTION_PRIORITY breaks ties on
+  // a small set of universally-foundational labels for cases where
+  // the LLM is unavailable (deterministic fallback) or the LLM's
+  // importance scores are too uniform to separate sections.
   const entries = [...valid.entries()].sort((a, b) => {
     const avgA = a[1].reduce((s, p) => s + p.score, 0) / a[1].length
     const avgB = b[1].reduce((s, p) => s + p.score, 0) / b[1].length
-    return avgB - avgA
+    if (avgB !== avgA) return avgB - avgA
+    return sectionPriority(b[0]) - sectionPriority(a[0])
   })
 
   return { sections: new Map(entries), overflow }
+}
+
+// Tiebreaker for sections that arrive with equal average scores —
+// matters most on the no-LLM fallback path, where every page lands
+// at the same base structural score and avg-score is undifferentiated.
+// Limited to labels with stable cross-genre meaning in the llms.txt
+// shape (About is About on every site; Pricing is Pricing on every
+// site). Genre-specific labels and catalogue-shaped section nouns
+// are deliberately NOT in here — that judgment is the LLM's via the
+// per-page importance score.
+const SECTION_PRIORITY: Record<string, number> = {
+  about: 100,
+  company: 100,
+  products: 90,
+  services: 90,
+  pricing: 85,
+  plans: 85,
+  docs: 80,
+  documentation: 80,
+  api: 78,
+  reference: 75,
+  guides: 70,
+  tutorials: 70,
+  examples: 70,
+  support: 60,
+  help: 60,
+  faq: 60,
+  resources: 50,
+  blog: 40,
+  news: 40,
+  changelog: 40,
+}
+
+function sectionPriority(name: string): number {
+  return SECTION_PRIORITY[name.toLowerCase()] ?? 50
 }
