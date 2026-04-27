@@ -26,7 +26,7 @@ In approximate order of which gives first as usage grows:
 |---|---|---|---|
 | **Rate limiter** (`lib/upstash/rateLimit.ts`) | **Shipped.** Two-bucket token limiter (SUBMIT + NEW_CRAWL) backed by Upstash Redis in production, in-memory fallback for local dev. Full table + rationale in [`SECURITY.md §2`](./SECURITY.md#2-abuse--rate-limiting); capacities tunable in `lib/config.ts`. | Production is covered. Local dev still uses per-instance state — fine, since the fallback is only reached without the env vars. | Open follow-up: enable Upstash `analytics` on both `Ratelimit` instances so denial volume per bucket is observable in a dashboard. |
 | **Crawl dispatch** (`lib/upstash/jobQueue.ts`) | **Shipped + verified in production.** QStash (at-least-once, signed webhooks) when `QSTASH_TOKEN` is set; `waitUntil(runCrawlPipeline(...))` fallback otherwise. Worker lives at `/api/worker/crawl`, verified via `verifySignatureAppRouter`. Callback target is the production alias (`VERCEL_PROJECT_PRODUCTION_URL`), not the Deployment-Protection-gated per-deployment URL. | Production runs the pipeline synchronously inside the QStash-signed worker so a mid-pipeline failure is a real retry, not a stuck row. Local dev keeps the in-process path so `npm run dev` needs no publicly reachable callback. | Open follow-up: finer-grained step functions (Inngest-style) would let a partial crawl resume after the pipeline aborts, instead of restarting from scratch on retry. Not worth it at current volume. |
-| **Anthropic API rate limits** | **Shipped.** `getClient()` in `lib/crawler/enrich/llmEnrich.ts` passes `maxRetries: llm.MAX_RETRIES` (5) and `timeout: llm.CALL_TIMEOUT_MS` (60 s) to the SDK, which already retries 408 / 429 / 5xx with exponential backoff and honours `retry-after` / `x-should-retry` response headers. | A bursty minute no longer produces silent quality degradation — calls wait through the backoff window instead of falling through to the deterministic defaults. The 5-retry budget gives ~30 s of total backoff per call, well inside the pipeline budget. | Open follow-up: when the Upstash integration supports concurrency controls (QStash Queues w/ `parallelism`), add a producer-side cap as defence-in-depth. For now the Anthropic tier is the sole concurrency ceiling — plan to upgrade tiers before we hit it. |
+| **Anthropic API rate limits** | **Shipped.** `getClient()` in `lib/crawler/enrich/llmEnrich.ts` passes `maxRetries: llm.MAX_RETRIES` (5) and `timeout: llm.CALL_TIMEOUT_MS` (60 s) to the SDK, which already retries 408 / 429 / 5xx with exponential backoff and honours `retry-after` / `x-should-retry` response headers. | A bursty minute waits through the backoff window instead of falling through to the deterministic LLM fallbacks. The 5-retry budget covers a typical Anthropic 429 burst within the pipeline budget; pathological sustained throttling still falls through to the deterministic path so the crawl completes (degraded quality, no user-visible error). | Open follow-up: when the Upstash integration supports concurrency controls (QStash Queues w/ `parallelism`), add a producer-side cap as defence-in-depth. For now the Anthropic tier is the sole concurrency ceiling — plan to upgrade tiers before we hit it. |
 | **Puppeteer launches** | Fresh Chromium per crawl that needs SPA rendering. 2–5 s cold-start, ~500 MB memory. `SpaBrowser.close()` in `finally`. | Multiple concurrent SPA crawls on one instance OOM before they finish. The ~500 MB per browser is the hard lower bound. | Either (a) share one `SpaBrowser` across concurrent crawls with a per-page pool, or (b) offload rendering to Browserless.io / Playwright Cloud and drop the dependency. Option (b) scales further; (a) is simpler. |
 | **Supabase connection pool** | One service-role client cached per Fluid instance (the `cached` singleton in `lib/store.ts` → `getClient`). PgBouncer fronts the DB on port 6543. | At many concurrent cold-start instances, PgBouncer's connection cap (varies by Supabase plan) becomes the bottleneck. Currently not a problem because instance reuse keeps the open-client count low. | Use Supabase's transaction-mode pooler endpoint — short-lived connections per query instead of one per client. Or move hot reads (`getPageByUrl`) to a read-through cache. |
 | **Result + poll response caching** | **Shipped.** Two endpoints, two cache profiles. `GET /api/p/[id]` is the public cached-result read (consumed by the dashboard's in-flight row poller); terminal statuses respond `Cache-Control: public, s-maxage=86400, stale-while-revalidate=604800` (1 day fresh, 7 days SWR), and `updateJob` calls `revalidatePath('/api/p/{pageId}')` on terminal-result writes so monitor re-crawls invalidate the cached response immediately. `GET /api/jobs/[id]` is the live-poll target on `/jobs/{id}`: it returns `no-store` while the job is in flight and `s-maxage=60` once terminal (the `/jobs/{id}` client redirects away on its next poll). In-flight polls do the cheapest possible work — the route is a pure read with no `bumpPageRequest`, and returns lightweight job state only (no `result` / `crawled_pages`). | In-flight reads still hit Postgres on every poll — one read per concurrent active watcher of `/jobs/{id}`. Multiplier is concurrent-watcher count. Poll cadence is `ui.POLL_INTERVAL_MS` (5 s) — progress counts only tick every few seconds during an active crawl, so a 5 s cadence still feels live while keeping in-flight DB read pressure low. | Open follow-up: short-TTL (~1 s) Redis cache on in-flight job status if concurrent-watcher count per crawl ever becomes a DB-load concern. Collapses N watchers of the same in-flight crawl to ~1 DB read per second. |
@@ -49,8 +49,8 @@ Ordered by value-to-effort ratio:
 
 1. ~~**Redis-backed rate limiter**~~ — *shipped.* One-file swap, same interface; in-memory path kept as a no-env-vars fallback for `npm run dev`.
 2. ~~**Durable queue for crawl execution**~~ — *shipped* via QStash (`lib/upstash/jobQueue.ts` + `app/api/worker/crawl/route.ts`). Worker runs the pipeline synchronously so QStash's retry-on-non-2xx is real durability. Open follow-up: step-function-style checkpoints (Inngest) to resume partial crawls instead of restarting from scratch.
-3. ~~**Anthropic retry wrapper**~~ — *shipped.* Turned out to be a 3-line config change, not a custom wrapper: `@anthropic-ai/sdk` already retries 408 / 429 / 5xx with exponential backoff and `retry-after` honour built in. We just bumped `maxRetries` from its default of 2 up to 5 and added a 60 s per-call timeout (see `lib/config.ts` → `llm.MAX_RETRIES` / `llm.CALL_TIMEOUT_MS`).
-4. ~~**Edge-cache the cached-result endpoint**~~ — *shipped.* `GET /api/p/[id]` (the read powering the `/p/{id}` RSC) carries `Cache-Control: public, s-maxage=86400, stale-while-revalidate=604800` on terminal statuses (1 day fresh, 7 days SWR); `updateJob` revalidates the single `/api/p/{pageId}` path for the touched page on a terminal-result write, so monitor re-crawls invalidate the CDN without waiting for TTL. The long TTL is a safety net — freshness is maintained by the worker-driven invalidation, not the expiry. The separate `GET /api/jobs/[id]` poll endpoint stays `no-store` in flight and short-cached on terminal, since the `/jobs/{id}` client redirects to `/p/{pageId}` on terminal anyway.
+3. ~~**Anthropic retry wrapper**~~ — *shipped.* `@anthropic-ai/sdk` retries 408 / 429 / 5xx with exponential backoff and `retry-after` honour out of the box; `getClient()` in `lib/crawler/enrich/llmEnrich.ts` configures it with `maxRetries: 5` and `timeout: 60_000` (see `lib/config.ts` → `llm.MAX_RETRIES` / `llm.CALL_TIMEOUT_MS`). No custom wrapper required.
+4. ~~**Edge-cache the cached-result endpoint**~~ — *shipped.* `GET /api/p/[id]` (the public cached-result read; consumed by the dashboard's in-flight row poller) carries `Cache-Control: public, s-maxage=86400, stale-while-revalidate=604800` on terminal statuses (1 day fresh, 7 days SWR); `updateJob` revalidates the single `/api/p/{pageId}` path for the touched page on a terminal-result write, so monitor re-crawls invalidate the CDN without waiting for TTL. The long TTL is a safety net — freshness is maintained by the worker-driven invalidation, not the expiry. The separate `GET /api/jobs/[id]` poll endpoint stays `no-store` in flight and short-cached on terminal, since the `/jobs/{id}` client redirects to `/p/{pageId}` on terminal anyway.
 5. **Puppeteer pool or Browserless offload** — depends on whether SPA-heavy sites are a meaningful fraction of traffic. Revisit once we have data. *~1–2 days if we do it.*
 6. **Sharded monitor cron** — only needed past ~100 K monitored URLs. Revisit. *~1 day.*
 7. **Async zip download (QStash + Blob + email)** — only needed once typical histories exceed ~100 entries or `DOWNLOAD_MAX_ENTRIES` grows past 500. Reuses the QStash worker pattern we already run for crawls; adds Vercel Blob (public or private with signed URLs) for storage and a transactional email provider (Resend via the Vercel Marketplace integration is the path of least resistance — one-click, env var injected, 3 k emails/month free tier). *~½ day for the worker + email, plus DNS setup for a verified sender domain.*
@@ -59,44 +59,46 @@ Each step is independently shippable, none depends on a later one.
 
 ---
 
-## 4. Integration gotchas (lessons from shipping phase-2)
+## 4. Integration gotchas (Upstash + QStash on Vercel)
 
-Three real issues surfaced while wiring Upstash + QStash into Vercel
-production. Each one was low-value in isolation but the combination
-caused a stuck job that looked completely silent — POST returned 201,
-no errors in logs, no messages in the QStash console. Worth writing
-down so a future integration against the same stack doesn't rediscover
-them.
+Three traps to know about when wiring Upstash + QStash into Vercel
+production. Each is silent on its own — POST /api/p still returns 201,
+no errors land in logs, the QStash console shows nothing — so the only
+visible symptom is jobs that never advance. The current code addresses
+all three, with the relevant guards called out below.
 
-- **`debugLog` was no-op in production.** The original contract was
-  "quiet in prod to avoid noise". It meant a failed `qstash.publishJSON`
-  threw cleanly into a `catch { debugLog(...) }` that produced nothing
-  visible. Fix: emit `Error` payloads at error level regardless of env;
-  keep string / object payloads dev-only (see `lib/log.ts`). Operational
-  errors should never be gated on `NODE_ENV`.
+- **`debugLog` is not the channel for operational errors.** It silently
+  drops non-Error payloads in production (intentional — keeps trace
+  logs out of serverless output). A failed `qstash.publishJSON` thrown
+  into `catch { debugLog(...) }` would therefore produce nothing
+  visible. Use `errorLog` instead: it always emits, and Error / string
+  payloads forward to Sentry for grouped alerting (`lib/log.ts`).
 
-- **`QSTASH_URL` is region-specific.** The `@upstash/qstash` `Client`
-  defaults its `baseUrl` to `https://qstash.upstash.io` (eu-central-1).
-  Accounts hosted elsewhere (us-east-1, ap-southeast-1, etc.) return 404
-  from that endpoint — but the SDK version we're on doesn't turn that
-  into an exception, so publishes "succeed" and drop on the floor.
-  Fix: always pass `baseUrl: process.env.QSTASH_URL` through the
-  constructor, and log a boot-time warning when `QSTASH_TOKEN` is set
-  without its sibling URL (see `lib/upstash/jobQueue.ts`). The Upstash Vercel
-  integration ships both env vars; the trap is only hitting us when
-  one is missing or forgotten.
+- **`QSTASH_URL` is region-specific.** `@upstash/qstash` `Client`
+  defaults its `baseUrl` to `https://qstash.upstash.io` (eu-central-1);
+  accounts on other regions (us-east-1, ap-southeast-1, …) get 404 from
+  that endpoint, and the SDK doesn't turn the 404 into an exception, so
+  publishes look successful and drop on the floor. Fix already in place:
+  `lib/upstash/jobQueue.ts` passes `baseUrl: process.env.QSTASH_URL`
+  through the constructor, and logs a boot-time warning when
+  `QSTASH_TOKEN` is set without its sibling URL. The Upstash Vercel
+  integration ships both env vars; this trap only hits a misconfigured
+  setup where one is missing.
 
-- **`VERCEL_URL` is gated by Deployment Protection.** Every deployment
-  gets a unique hostname (e.g. `llm-text-generator-giaolx9n2-aesgraph.vercel.app`)
-  and those are behind Vercel Auth out of the box. QStash callbacks
-  landed on the 401 login page. The **production alias**
-  (`llm-text-generator.vercel.app`, exposed as `VERCEL_PROJECT_PRODUCTION_URL`)
-  is publicly routable. Fix: prefer that when resolving the worker URL
-  (see `lib/upstash/jobQueue.ts` `resolveWorkerUrl`). Preview deploys still need
-  either Protection disabled or a bypass token to receive callbacks.
+- **Per-deployment `VERCEL_URL` is gated by Deployment Protection.**
+  Every deployment gets a unique hostname (e.g.
+  `llm-text-generator-giaolx9n2-aesgraph.vercel.app`) that sits behind
+  Vercel Auth out of the box, so QStash callbacks land on the 401 login
+  page. The production alias (`llm-text-generator.vercel.app`, exposed
+  as `VERCEL_PROJECT_PRODUCTION_URL`) is publicly routable.
+  `resolveWorkerUrl` in `lib/upstash/jobQueue.ts` prefers that alias
+  when resolving the worker callback. Preview deploys still need
+  Protection disabled or a bypass token to receive callbacks.
 
-Common thread across all three: failures were silent. Each fix includes
-observable logging so the next silent failure isn't silent.
+Common thread: each failure mode is silent by default. The fixes are in
+the code; the observable-logging hooks (`errorLog`, the boot-time
+QSTASH_URL warning) ensure that any future drift back into one of these
+states surfaces in Sentry instead of going unseen.
 
 ---
 

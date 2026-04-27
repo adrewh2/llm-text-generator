@@ -294,7 +294,7 @@ Every constant that might plausibly be adjusted for business or UX reasons lives
 - **`api`** — input-side caps on the public routes: URL length, pagination defaults/ceiling, zip-export max entries.
 - **`rateLimit`** — token-bucket configs for `POST /api/p` (SUBMIT + NEW_CRAWL, split anon/auth), the `/api/monitor` anti-amplification bucket, and the `/api/pages/download` zip cap. Rationale in [`SECURITY.md §2`](./SECURITY.md#2-abuse--rate-limiting).
 - **`monitor`** — cron sweep sizing: stale-page cutoff in days, batch size per tick, same-host politeness delay, stuck-job timeout.
-- **`ui`** — client-side timing: poll cadence, circuit-breaker threshold, stepper dwell times, cache sizes.
+- **`ui`** — client-side timing: poll cadence, poll-failure circuit-breaker threshold, live-step minimum dwell, freshness-label tick interval.
 
 Code reads these constants by name — no hardcoded magic numbers on the hot paths — so tuning a value in one place propagates everywhere it matters.
 

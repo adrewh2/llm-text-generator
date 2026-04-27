@@ -124,13 +124,17 @@ Sign-in goes through Supabase-hosted OAuth (GitHub, Google). The client never se
 
 | Endpoint | Auth | Notes |
 |---|---|---|
-| `POST /api/p` | optional | Anon allowed, rate-limited harder |
-| `GET /api/p/[id]` | none | The UUID is the access token; results are public by design |
-| `DELETE /api/p/request` | required | Validates user owns the row via `user_id` filter |
-| `GET /api/pages` | required | Filters `user_requests` by `user_id` |
+| `POST /api/p` | optional | Anon allowed, rate-limited harder. Origin-checked. |
+| `GET /api/p/[id]` | none | The UUID is the access token; results are public by design. |
+| `GET /api/jobs/[id]` | none | Same model as `/api/p/[id]` — UUID is the access token, results are public. |
+| `GET /api/p/request` | optional | Read-only. Anon callers always get `{ inHistory: false }`; signed-in callers get the per-user truth. |
+| `POST /api/p/request` | required | Origin-checked. 404s if the URL isn't already in `pages` (prevents orphaning a `user_requests` row under FK cascade). |
+| `DELETE /api/p/request` | required | Origin-checked. Validates user owns the row via `user_id` filter. |
+| `GET /api/pages` | required | Filters `user_requests` by `user_id`. |
 | `GET /api/pages/download` | required | Filters `user_requests` by `user_id` before assembling the zip — the archive only ever contains the caller's own history. Additionally gated by the `AUTH_ZIP_DOWNLOAD` bucket (1 / 24 h per `user.id`) so a compromised session can't be looped for amplification. |
-| `GET /api/monitor` | `CRON_SECRET` | Header check, timing-safe |
-| `GET /auth/callback` | OAuth handoff | `next` param sanitized (see §6) |
+| `GET /api/monitor` | `CRON_SECRET` | Header check, timing-safe. Also gated by the `CRON_MONITOR` bucket. |
+| `POST /api/worker/crawl` | QStash signature | `verifySignatureAppRouter` from `@upstash/qstash/nextjs` rejects anything without a valid `Upstash-Signature` header signed by `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY`. |
+| `GET /auth/callback` | OAuth handoff | `next` param sanitized (see §6). |
 
 ### Row-Level Security
 
@@ -211,7 +215,7 @@ The shape and motivation of the shared-cache data model live in [`DESIGN.md §3`
 - **No cross-user contamination of *content*.** Everyone who generates the same URL sees the same `pages.result`. Refreshes (24 h TTL or monitor-detected drift) overwrite for everyone — the guarantee is that concurrent readers see the same bytes, not that those bytes never change.
 - **History stays private.** `user_requests` is the only table with per-user data. RLS blocks cross-user reads via the anon key.
 - **No PII in `pages`.** It holds an `llms.txt` and crawl metadata for a publicly-crawlable URL. `user_requests` stores `user_id` + `page_url`; email lives in Supabase Auth's own schema and is never joined.
-- **Client-side cache cleared on sign-out.** The result page listens for Supabase's `SIGNED_OUT` event and clears its per-tab job cache, so a prior user's viewed results don't linger in the next user's tab.
+- **No client-side caching of results.** `/p/{id}` is a server-rendered page reading `getPageById` directly per request, and `/jobs/{id}` polls a job-state endpoint that never carries the `result` payload. There is no shared in-memory state across viewers in the same tab, so a prior signed-in viewer's results can't linger after sign-out — the next render reads from Supabase fresh.
 
 ---
 

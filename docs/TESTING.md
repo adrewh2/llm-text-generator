@@ -583,11 +583,13 @@ curl -s "$NEXT_PUBLIC_SUPABASE_URL/rest/v1/jobs?select=id" \
 **Expect:** all three return `[]` (or a PostgREST permission-denied
 body) — direct anon access to any of the three tables is blocked.
 
-### 7.5 [browser] SIGNED_OUT clears client cache
+### 7.5 [browser] Sign-out updates header chrome
 
-As user A, view a result page. Sign out from another tab. Return to
-the result tab — the per-tab `jobCache` should clear via the Supabase
-`onAuthStateChange` listener.
+As user A, view a result page (`/p/{id}`). Sign out from another tab.
+Return to the result tab — the avatar / "Dashboard" button in the
+header should disappear (driven by the `onAuthStateChange` listener
+in `PageView`); the result text itself stays visible because `/p/{id}`
+content is publicly readable by design.
 
 ### 7.6 Delete from history
 
@@ -630,19 +632,24 @@ curl -s -o /dev/null -w "%{http_code}\n" "$BASE_URL/api/p/00000000-0000-0000-000
 ```
 **Expect:** `404`.
 
-### 8.4 GET `/api/p/[id]` bumps `last_requested_at` on any non-failed status
+### 8.4 `/p/[id]` RSC render bumps `last_requested_at` on any non-failed page
 
 ```bash
 TARGET="https://nextjs.org"
-JOB=$(psql "$DATABASE_URL" -t -A -c "SELECT id FROM jobs WHERE page_url = '$TARGET' ORDER BY created_at DESC LIMIT 1;")
+PAGE_ID=$(psql "$DATABASE_URL" -t -A -c "SELECT id FROM pages WHERE url = '$TARGET';")
 BEFORE=$(psql "$DATABASE_URL" -t -A -c "SELECT last_requested_at FROM pages WHERE url = '$TARGET';")
 sleep 2
-curl -s "$BASE_URL/api/p/$JOB" > /dev/null
+# Hit the page route (not the API) — bumpPageRequest fires on the RSC
+# render, not on the /api/p/[id] poll path. Need a fresh request that
+# bypasses any prefetch/CDN caching.
+curl -s "$BASE_URL/p/$PAGE_ID?cache-bust=$(date +%s)" > /dev/null
 AFTER=$(psql "$DATABASE_URL" -t -A -c "SELECT last_requested_at FROM pages WHERE url = '$TARGET';")
 echo "before: $BEFORE"
 echo "after:  $AFTER"
 ```
-**Expect:** `after > before` if the job was not in `failed` status.
+**Expect:** `after > before` when the page's latest job is not in
+`failed` status. `GET /api/p/[id]` is intentionally a pure read and
+does not bump — the test must hit `/p/[id]`.
 
 ---
 
@@ -816,9 +823,11 @@ vercel crons ls
 ### 11.6 Production middleware cookie forward
 
 Visit `/dashboard` unauthenticated — should redirect to `/login` with
-the Supabase session cookie still set (a refresh that would've been
-dropped in the pre-fix middleware). No programmatic check — verify
-by signing in then revisiting `/dashboard`: no re-authentication prompt.
+the Supabase session cookie still set on the redirect response. The
+middleware (`middleware.ts`) attaches any queued Supabase cookies onto
+the redirect so a refreshed token survives across the hop. No
+programmatic check — verify by signing in then revisiting `/dashboard`:
+no re-authentication prompt.
 
 ---
 
