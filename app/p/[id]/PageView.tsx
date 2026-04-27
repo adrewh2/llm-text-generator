@@ -47,14 +47,18 @@ function PageViewInner({
   const shouldSimulate = searchParams?.get("simulate") === "1"
   const pageId = params?.id
 
-  // Seed order: tab-local cache → server-rendered initial → null.
-  // The tab cache wins because it's the freshest snapshot this tab
-  // has seen (including any mid-poll updates); the server-rendered
-  // payload is the next-best thing and removes the empty-shell flash
-  // on first navigation.
-  const [job, setJob] = useState<ApiJob | null>(() =>
-    (pageId ? cacheGetJob(pageId) : null) ?? initialJob,
-  )
+  // Tab cache wins on result/status; initialJob can carry a newer
+  // lastCheckedAt from a no-drift Refresh, so prefer that when newer.
+  const [job, setJob] = useState<ApiJob | null>(() => {
+    const cached = pageId ? cacheGetJob(pageId) : null
+    if (!cached) return initialJob
+    if (!initialJob) return cached
+    const cachedLcA = cached.lastCheckedAt ? Date.parse(cached.lastCheckedAt) : 0
+    const initialLcA = initialJob.lastCheckedAt ? Date.parse(initialJob.lastCheckedAt) : 0
+    return initialLcA > cachedLcA
+      ? { ...cached, lastCheckedAt: initialJob.lastCheckedAt }
+      : cached
+  })
   const [notFound, setNotFound] = useState(false)
   const [user, setUser] = useState<User | null>(initialUser)
   // Seed at step 0 so a cached (already-complete) job doesn't flash the
