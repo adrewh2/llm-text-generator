@@ -212,21 +212,20 @@ export async function POST(req: NextRequest) {
 
   // Stale or new — run a fresh crawl. createJob is the only write
   // that has to block the response: once it returns, the pages + jobs
-  // rows exist so the client's immediate poll for /api/p/[id] finds
-  // a row. Everything after is backgrounded via waitUntil so the
-  // user navigates to /p/{id} without waiting on the QStash publish
-  // (~200 ms) or two small DB writes (~100 ms) — ~500 ms saved on
-  // the cache-miss hot path.
+  // rows exist so the client's first poll of /api/jobs/{job_id} (from
+  // the /jobs/{id} page it navigates to) finds a row. Everything
+  // after is backgrounded via waitUntil so the response returns
+  // without waiting on the QStash publish (~200 ms) or two small DB
+  // writes (~100 ms) — ~500 ms off the cache-miss hot path.
   //
-  // Trade-off on ordering: the old code bumped last_requested_at AFTER
-  // enqueueCrawl so a failed enqueue wouldn't mark the URL as
-  // "actively requested". Under waitUntil they run concurrently, so a
-  // failed enqueue can leave an active-looking last_requested_at on a
-  // URL whose crawl never started. That's tolerable: `sweepStuckJobs`
-  // in the monitor cron force-fails non-terminal jobs past 15 min,
-  // and a failed job naturally ages out of monitoring after 5 days.
-  // The returned `page_id` is the pages.id UUID — stable across every
-  // future re-crawl of this URL.
+  // Concurrent waitUntil ordering means a failed enqueueCrawl can
+  // leave an active-looking last_requested_at on a URL whose crawl
+  // never started. Tolerable: `sweepStuckJobs` in the monitor cron
+  // force-fails non-terminal jobs past 15 min, and a failed job
+  // naturally ages out of monitoring after 5 days. The returned
+  // `page_id` is the pages.id UUID — stable across every future
+  // re-crawl of this URL; `job_id` is the per-execution identifier
+  // the client uses to route to /jobs/{job_id}.
   const jobId = randomUUID()
   const { pageId } = await createJob(jobId, canonicalUrl)
   runAfterResponse("enqueueCrawl", enqueueCrawl(jobId, canonicalUrl))

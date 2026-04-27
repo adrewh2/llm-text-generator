@@ -125,10 +125,10 @@ export async function getPageById(pageId: string): Promise<CrawlJob | undefined>
   if (!job) return undefined
 
   // Always return pages.result when populated, regardless of the
-  // latest job's status. A re-crawl in flight on a previously-
-  // successful page leaves pages.result intact; the UI keeps showing
-  // it (with a "Regenerating…" pill) until the new crawl writes a
-  // replacement.
+  // latest job's status. A re-crawl in flight on a page that already
+  // has a successful result leaves pages.result intact, so /p/{id}
+  // keeps serving the cached file while /jobs/{id} renders the
+  // live-progress view for the new crawl.
   return {
     id: page.id,
     url: page.url,

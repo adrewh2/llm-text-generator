@@ -103,7 +103,7 @@ All routes live under `/app/api`.
 | Method & path | Auth | Purpose |
 |---|---|---|
 | `POST /api/p` | Optional | Kick off a crawl, or return the page's UUID if one is already running / cached. Response body: `{ page_id, job_id?, cached }`. `page_id` is the `pages.id` UUID — `/p/{page_id}` is always the same URL for the same canonical page. `job_id` is set whenever a crawl is in flight (new dispatch or attached to an existing in-flight one); the client routes to `/jobs/{job_id}` for live progress. Cache hits omit `job_id` and the client routes straight to `/p/{page_id}`. |
-| `GET /api/p/[id]` | Public | Page-state read by `pages.id`. Returns the cached `result` + `crawled_pages` when terminal, plus `last_checked_at` for the freshness label. Used by the `/p/{id}` RSC for its initial render; *not* the live-poll target (live polling lives at `/api/jobs/[id]`). Terminal responses get a long edge-cache; in-flight returns `no-store`. |
+| `GET /api/p/[id]` | Public | Page-state read by `pages.id`. Returns status / progress / error and, when terminal, the cached `result` + `crawled_pages`, plus `last_checked_at` for the freshness label. The dashboard polls this endpoint for in-flight rows in the user's history (the `/p/{id}` RSC itself reads `getPageById` from the store directly). Terminal responses get a long edge-cache; in-flight returns `no-store`. |
 | `GET /api/jobs/[id]` | Public | Live job status by `jobs.id`. Returns `{ id, pageId, pageUrl, status, progress, error, ... }` — no `result`, kept lightweight for poll traffic. The `/jobs/{id}` page polls this every `ui.POLL_INTERVAL_MS` and `router.replace`s to `/p/{pageId}` on terminal success. Terminal responses are short-cached; in-flight returns `no-store`. |
 | `GET /api/p/request?pageUrl=…` | Optional | Returns `{ inHistory: boolean }` for the signed-in user; anon callers always get `false`. Powers the result page's conditional "Add to dashboard" button. |
 | `POST /api/p/request?pageUrl=…` | Required | Upsert a `user_requests` row for the signed-in user — used from the result page when a user wants to save a shared URL they didn't originally submit. No crawl is triggered. 404s if the URL isn't already in `pages`. Origin-checked. |
@@ -133,16 +133,16 @@ On every branch — cache hit, in-flight attach, TTL-stale-unchanged, new crawl 
 
 ### `GET /api/p/[id]` — page-state read
 
-Used by the `/p/{id}` RSC for its initial render and as the public read endpoint for the cached result. Not on the client poll path — that lives on `GET /api/jobs/[id]`, below. The route:
+The public read endpoint for the cached result. The dashboard polls it for in-flight rows in the user's history; the `/p/{id}` RSC itself reads `getPageById` from the store directly rather than going through this route. The live-progress poll path is `GET /api/jobs/[id]`, below. The route:
 
-- Looks up the page by UUID, joining to the latest job for status/progress/error and (when terminal) the cached `result` + `crawled_pages`.
+- Looks up the page by UUID, joining to the latest job for status/progress/error and (when terminal) the cached `result` + `crawled_pages`. The route runs `getPageStatusById` first for the cheap path and only falls back to `getPageById` (which pulls `result` + `crawled_pages`) when the status is terminal — in-flight polls never pay for the heavy columns.
 - Does not touch `last_requested_at` — the read is pure. `bumpPageRequest` fires on every `POST /api/p` branch and on the `/p/[id]` RSC render for non-failed pages (failed pages are intentionally left to age out of the monitor rotation).
 - Scrubs the `error` field (see [`SECURITY.md §9`](./SECURITY.md#9-error-information-disclosure)) so user-facing text doesn't leak resolved IPs or SSRF detail.
 - Sets a long public Cache-Control on terminal responses so Vercel's CDN handles repeat reads. Freshness comes from **write-side invalidation** — `updateJob` calls `revalidatePath` on the page's `/api/p/{id}` whenever a terminal result is written — rather than the TTL. The TTL is a safety net for dropped revalidations, schema changes, or direct-SQL writes; the common path never waits for it. In-flight returns `no-store`.
 
 ### `GET /api/jobs/[id]` — the live-poll target
 
-The `/jobs/{id}` progress view polls this every `ui.POLL_INTERVAL_MS`. Returns lightweight job state (status / progress / error / `pageId` / `pageUrl`) — no `result` payload, since the page redirects to `/p/{pageId}` the moment status flips terminal. Terminal responses are short-cached at the edge (`s-maxage=60`) since the client navigates away on its next poll; in-flight returns `no-store`. Errors are scrubbed via the same `scrubError()` used by `/api/p/[id]`.
+The `/jobs/{id}` progress view polls this every `ui.POLL_INTERVAL_MS`. Returns lightweight job state (status / progress / error / `pageId` / `pageUrl`) — no `result` payload, since the page `router.replace`s to `/p/{pageId}` the moment the job hits a terminal-success status (`complete` / `partial`). On `failed` it stays on `/jobs/{id}` so the user sees the scrubbed error and a "try another URL" CTA. Terminal responses are short-cached at the edge (`s-maxage=60`) since the client navigates away on its next poll; in-flight returns `no-store`. Errors are scrubbed via the same `scrubError()` used by `/api/p/[id]`.
 
 ### `GET /api/monitor` — daily sweep
 
@@ -175,7 +175,7 @@ Three thresholds, all in `lib/crawler/enrich/score.ts` (`PRIMARY_SCORE_THRESHOLD
 
 `filterAndSelectPages` then dedupes by hostname+path (so `/foo` and `/foo/index.html` collapse), excludes the base-domain homepage (redundant with the H1), and caps the output at 50 Primary + 10 Optional. A single-page-site rescue puts the homepage back in Optional if both buckets would otherwise be empty — so one-page SPAs still produce a valid (minimal) file rather than failing.
 
-(`scorePages` takes a `genre` argument it currently ignores — an earlier design spec'd genre-specific weight modifiers that were never implemented. Genre is still used by the LLM prompts + preamble.)
+(`scorePages` takes a `genre` argument it currently ignores — kept on the signature so adding genre-weighted modifiers later doesn't churn callers. Genre is used by the LLM prompts + preamble.)
 
 ### Terminal status
 
@@ -187,7 +187,7 @@ At the end of a crawl the job flips to one of three terminal states:
 
 ### Self-termination
 
-The pipeline runs under a `PIPELINE_BUDGET_MS` (currently 270 s — see `lib/config.ts`) timeout driven by an `AbortController`. A `setTimeout(ac.abort, PIPELINE_BUDGET_MS)` fires the signal; the inner pipeline calls `signal.throwIfAborted()` at each stage boundary and bails as soon as the budget is gone. The outer `catch` flips the job to `failed` with a clean error. This replaced an earlier `Promise.race` implementation that returned promptly but left the inner pipeline running orphaned in the background — still consuming compute + Anthropic spend on work no one was waiting for.
+The pipeline runs under a `PIPELINE_BUDGET_MS` (currently 270 s — see `lib/config.ts`) timeout driven by an `AbortController`. A `setTimeout(ac.abort, PIPELINE_BUDGET_MS)` fires the signal; the inner pipeline calls `signal.throwIfAborted()` at each stage boundary and bails as soon as the budget is gone. The outer `catch` flips the job to `failed` with a clean error. The signal-based design ensures the inner pipeline actually stops on timeout — a `Promise.race` would return promptly but leave the inner work running orphaned in the background, still burning compute + Anthropic spend on a result no one is waiting for.
 
 ### SPA handling
 
@@ -233,13 +233,13 @@ Narrower than the crawl pipeline by design: the monitor only fetches `{origin}/s
 
 ### Why stateless
 
-An earlier draft had `monitors` and `monitor_runs` tables and a proper state machine (daily/weekly/monthly frequency, notification email, webhook delivery with HMAC, delivery-attempt tracking). All of that was cut. The product is: the cached result should not drift. A single daily sweep with a content signature hits that goal for a fraction of the complexity, and an update-delivery story (webhooks, email, reverse proxy) only makes sense once users ask for it.
+The product promise is simple: the cached result should not drift. A single daily sweep that compares signatures and dispatches re-crawls hits that goal in ~30 lines, with no `monitors` / `monitor_runs` tables, no per-user frequency state, and no delivery state machine. The richer story (per-user schedules, notification email, webhook delivery with HMAC, delivery-attempt tracking) is a separate product and only worth building once users ask for it — by then the requirements will be clearer than guessing them up front.
 
 ---
 
 ## 9. Frontend
 
-Five routes: `/` (landing with the URL input), `/dashboard` (signed-in history, infinite-scroll), `/jobs/[id]` (live crawl progress), `/p/[id]` (cached-result permalink), `/login` (OAuth picker). Progress and result are split on purpose: `/p/{id}` is a pure permalink that always renders the most-recently-good `llms.txt` for the page (no polling, no progress UI, no `?simulate=` hack); `/jobs/{id}` polls `/api/jobs/[id]` every `ui.POLL_INTERVAL_MS` and `router.replace`s to `/p/{pageId}` the moment the job goes terminal. Cache-miss submissions and Refresh-button clicks that dispatch a fresh crawl land on `/jobs/{id}`; cache-hit submissions and direct visits to a permalink land on `/p/{id}`. The result page validates `llms.txt` against the spec in-browser and surfaces a "Spec valid" / "N issues" badge; signed-in viewers on a shared result URL they don't yet own see an "Add to Dashboard" button that saves the URL without re-crawling.
+Five routes: `/` (landing with the URL input), `/dashboard` (signed-in history, infinite-scroll), `/jobs/[id]` (live crawl progress), `/p/[id]` (cached-result permalink), `/login` (OAuth picker). Progress and result are split on purpose: `/p/{id}` is a pure permalink that always renders the most-recently-good `llms.txt` for the page (no polling, no progress UI); `/jobs/{id}` polls `/api/jobs/[id]` every `ui.POLL_INTERVAL_MS` and `router.replace`s to `/p/{pageId}` on terminal success. On `failed` it stays put so the user sees the scrubbed error and a "try another URL" CTA. Cache-miss submissions and Refresh-button clicks that dispatch a fresh crawl land on `/jobs/{id}`; cache-hit submissions and direct visits to a permalink land on `/p/{id}`. The result page validates `llms.txt` against the spec in-browser and surfaces a "Spec valid" / "N issues" badge; signed-in viewers on a shared result URL they don't yet own see an "Add to Dashboard" button that saves the URL without re-crawling.
 
 If `/p/{id}` is hit before the page has ever produced a result (only-ever-failed crawls, or the rare race where a permalink is visited before the first crawl finishes), the RSC redirects to `/jobs/{activeJobId}` if a job is in flight, otherwise 404s.
 
