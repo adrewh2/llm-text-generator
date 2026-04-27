@@ -121,13 +121,14 @@ export async function getPageById(pageId: string): Promise<CrawlJob | undefined>
     .maybeSingle()
   if (!page) return undefined
 
-  // A monitor-triggered re-crawl should surface as non-terminal even
-  // while `pages.result` still holds the previous output (UI: "Refreshing…").
   const job = Array.isArray(page.jobs) ? page.jobs[0] : null
   if (!job) return undefined
 
-  const isTerminal = job.status === "complete" || job.status === "partial"
-
+  // Always return pages.result when populated, regardless of the
+  // latest job's status. A re-crawl in flight on a previously-
+  // successful page leaves pages.result intact; the UI keeps showing
+  // it (with a "Regenerating…" pill) until the new crawl writes a
+  // replacement.
   return {
     id: page.id,
     url: page.url,
@@ -135,8 +136,8 @@ export async function getPageById(pageId: string): Promise<CrawlJob | undefined>
     progress: job.progress,
     genre: (job.genre ?? page.genre) ?? undefined,
     siteName: (job.site_name ?? page.site_name) ?? undefined,
-    result: isTerminal ? page.result ?? undefined : undefined,
-    pages: isTerminal ? (page.crawled_pages as ScoredPage[] | null) ?? undefined : undefined,
+    result: page.result ?? undefined,
+    pages: (page.crawled_pages as ScoredPage[] | null) ?? undefined,
     error: job.error ?? undefined,
     createdAt: new Date(job.created_at),
     updatedAt: new Date(job.updated_at),

@@ -132,8 +132,18 @@ function PageViewInner({
       }
       pollFailuresRef.current = 0
       const data: ApiJob = await res.json()
-      cacheSetJob(pageId, data)
-      setJob(data)
+      // The poll path's lightweight reader returns no result/pages
+      // for non-terminal statuses, but the UI must keep the cached
+      // payload visible through a re-crawl. Merge: take fresh status/
+      // progress/timestamps, but preserve result+pages until the new
+      // crawl lands a replacement.
+      setJob((prev) => {
+        const merged: ApiJob = prev
+          ? { ...data, result: data.result ?? prev.result, pages: data.pages ?? prev.pages }
+          : data
+        cacheSetJob(pageId, merged)
+        return merged
+      })
 
       const isDone = data.status === "complete" || data.status === "partial"
       const isFailed = data.status === "failed"
