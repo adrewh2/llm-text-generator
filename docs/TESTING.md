@@ -449,7 +449,7 @@ place until the new run completes; the browser routes to
 ### 5.6 www / non-www deduplication
 
 ```bash
-# speedtest.net redirects to www.speedtest.net — we should store one row
+# speedtest.net redirects to www.speedtest.net — only one row should land in pages
 curl -s -X POST "$BASE_URL/api/p" -H "Content-Type: application/json" \
   -d '{"url":"https://speedtest.net"}' | jq -c
 curl -s -X POST "$BASE_URL/api/p" -H "Content-Type: application/json" \
@@ -516,7 +516,7 @@ markdown uses `%28` / `%29` so the link doesn't terminate early.
 ### 6.5 Full-disallow robots.txt produces a notice
 
 ```bash
-# Find a site whose /robots.txt has `Disallow: /` for our UA (try any
+# Find a site whose /robots.txt has `Disallow: /` for the crawler's UA (try any
 # major tracker-blocking site or set up a test site yourself). Submit
 # and inspect:
 curl -s "$BASE_URL/api/p/$JOB" | jq -r '.result' | grep -i "robots.txt"
@@ -560,7 +560,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X DELETE "$BASE_URL/api/p/request?page
 As user A, submit URL `X`. Sign out; sign in as user B. **Expect:**
 - User B's `/dashboard` does not list URL `X`.
 - User B can still view `$BASE_URL/p/<X's page id>` directly. This
-  is an API-layer choice, not an RLS policy: our `/api/p/[id]` route
+  is an API-layer choice, not an RLS policy: the `/api/p/[id]` route
   uses the service-role key and serves the page to anyone who knows
   the UUID. The result view is public by design (shareable links);
   the user→URLs history is what RLS keeps private.

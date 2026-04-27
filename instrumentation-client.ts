@@ -1,11 +1,11 @@
-// Client-side Sentry init. Runs in every browser tab that loads our
-// bundle. DSN is public (NEXT_PUBLIC_*) by design — it's an ingest-
-// only identifier, not a secret.
+// Client-side Sentry init. Runs in every browser tab that loads the
+// app bundle. DSN is public (NEXT_PUBLIC_*) by design — it's an
+// ingest-only identifier, not a secret.
 //
 // Replay config: zero session sampling, 100 % on-error — replays only
-// fire when an error actually occurs, which keeps us well inside the
-// free-tier quota (50 replays/month) while still capturing the
-// sequence that preceded any surfaced issue.
+// fire when an error actually occurs, which keeps replay usage well
+// inside the free-tier quota (50 replays/month) while still capturing
+// the sequence that preceded any surfaced issue.
 
 import * as Sentry from "@sentry/nextjs"
 

@@ -125,8 +125,8 @@ Every new-crawl request lands here. The flow is four gates then a branch:
 
 Past the gates, the route tries to avoid work:
 
-- **Cache / in-flight check** — we try up to three keys (raw, `www.`-alternate, and canonical-after-HEAD-probe) because most repeat submissions match one of the first two without paying for a HEAD request. Canonicalisation uses a dual www/non-www probe (via `resolveCanonicalUrl` in `lib/crawler/net/canonicalUrl.ts`) and strips tracking + per-request session/OAuth tokens so the cache key stays stable across resubmissions. A cached terminal hit returns `{ page_id, cached: true }`; an in-flight attach returns `{ page_id, job_id, cached: false }` so the client can route to `/jobs/{job_id}` for the live view.
-- **TTL-stale signature check** — if a cached row exists but is past `PAGE_TTL_HOURS`, run the same signature probe the monitor cron uses (`detectChange` → sitemap + homepage hash). `recordMonitorCheck` stamps `last_checked_at` regardless of outcome, and if the signature hasn't drifted we return the existing result as a cache hit without burning NEW_CRAWL budget. Drift or an uncomputable signature falls through to the new-crawl branch.
+- **Cache / in-flight check** — the route tries up to three keys (raw, `www.`-alternate, and canonical-after-HEAD-probe) because most repeat submissions match one of the first two without paying for a HEAD request. Canonicalisation uses a dual www/non-www probe (via `resolveCanonicalUrl` in `lib/crawler/net/canonicalUrl.ts`) and strips tracking + per-request session/OAuth tokens so the cache key stays stable across resubmissions. A cached terminal hit returns `{ page_id, cached: true }`; an in-flight attach returns `{ page_id, job_id, cached: false }` so the client can route to `/jobs/{job_id}` for the live view.
+- **TTL-stale signature check** — if a cached row exists but is past `PAGE_TTL_HOURS`, run the same signature probe the monitor cron uses (`detectChange` → sitemap + homepage hash). `recordMonitorCheck` stamps `last_checked_at` regardless of outcome, and if the signature hasn't drifted the existing result is returned as a cache hit without burning NEW_CRAWL budget. Drift or an uncomputable signature falls through to the new-crawl branch.
 - **New crawl** — on a full miss (or on drift from the branch above): charge the NEW_CRAWL bucket, insert a `jobs` row, and call `enqueueCrawl(jobId, url)` (QStash in prod, `waitUntil` fallback in dev). The HTTP response returns immediately; the actual pipeline runs later in the worker (`app/api/worker/crawl/route.ts` under QStash, the caller's own Fluid Compute instance under the dev fallback).
 
 On every branch — cache hit, in-flight attach, TTL-stale-unchanged, new crawl — `bumpPageRequest` fires and a signed-in caller gets an `upsertUserRequest` written to their dashboard history (idempotent against `UNIQUE(user_id, page_url)`).
@@ -181,8 +181,8 @@ Three thresholds, all in `lib/crawler/enrich/score.ts` (`PRIMARY_SCORE_THRESHOLD
 
 At the end of a crawl the job flips to one of three terminal states:
 
-- **`failed`** — no pages were successfully fetched, OR both output buckets (primary + optional) are empty. The second case catches SPAs our detector missed whose Puppeteer render also produced nothing: better a clean failure than a degenerate `# <SiteName>` stub.
-- **`partial`** — we fetched at least a handful of URLs but more than half of the attempts failed along the way. Intentionally gated at ≥ 5 attempts so a 2-page site with one timeout doesn't read as partial.
+- **`failed`** — no pages were successfully fetched, OR both output buckets (primary + optional) are empty. The second case catches SPAs the detector missed whose Puppeteer render also produced nothing: better a clean failure than a degenerate `# <SiteName>` stub.
+- **`partial`** — at least a handful of URLs were fetched but more than half of the attempts failed along the way. Intentionally gated at ≥ 5 attempts so a 2-page site with one timeout doesn't read as partial.
 - **`complete`** — everything else.
 
 ### Self-termination
@@ -191,7 +191,7 @@ The pipeline runs under a `PIPELINE_BUDGET_MS` (currently 270 s — see `lib/con
 
 ### SPA handling
 
-`isSpaHtml(html, bodyExcerpt)` flags a response as SPA when the HTML is large but visible text is tiny, when framework markers (`data-reactroot`, `ng-app`, unexpanded `{{ … }}`) are present, or when the plain fetch was blocked entirely. On an SPA signal the pipeline launches headless Chromium (`@sparticuz/chromium` on Vercel, bundled `puppeteer` locally) with resource-blocking on for images/fonts/media, and uses the rendered DOM for both extraction and link discovery for the rest of the crawl. Puppeteer is single-threaded within a job, so worker-pool concurrency is forced to 1 when the browser path is active. The gate is one-way: once we've fallen back to Chromium we stay there, because a plain fetch that failed on the homepage is overwhelmingly likely to fail on subpages too.
+`isSpaHtml(html, bodyExcerpt)` flags a response as SPA when the HTML is large but visible text is tiny, when framework markers (`data-reactroot`, `ng-app`, unexpanded `{{ … }}`) are present, or when the plain fetch was blocked entirely. On an SPA signal the pipeline launches headless Chromium (`@sparticuz/chromium` on Vercel, bundled `puppeteer` locally) with resource-blocking on for images/fonts/media, and uses the rendered DOM for both extraction and link discovery for the rest of the crawl. Puppeteer is single-threaded within a job, so worker-pool concurrency is forced to 1 when the browser path is active. The gate is one-way: once the pipeline falls back to Chromium it stays there, because a plain fetch that failed on the homepage is overwhelmingly likely to fail on subpages too.
 
 ### External references
 
@@ -213,7 +213,7 @@ The boundaries the LLM does and does not cross are in §6 ("Where the LLM line i
 
 ### Prompt injection defenses
 
-Every chunk of crawled content is sanitised before injection, wrapped in an explicit `<untrusted_pages>` fence the model is told to treat as data, and every LLM output field is re-validated against a strict shape before we use it. Full mechanism (sanitizer details, fence structure, output allowlists) in [`SECURITY.md §3`](./SECURITY.md#3-prompt-injection). The net effect: an attacker can make the LLM return garbage for its own page's description, but they can't poison a different page's output or escape the shape.
+Every chunk of crawled content is sanitised before injection, wrapped in an explicit `<untrusted_pages>` fence the model is told to treat as data, and every LLM output field is re-validated against a strict shape before downstream code consumes it. Full mechanism (sanitizer details, fence structure, output allowlists) in [`SECURITY.md §3`](./SECURITY.md#3-prompt-injection). The net effect: an attacker can make the LLM return garbage for its own page's description, but they can't poison a different page's output or escape the shape.
 
 ---
 
@@ -281,7 +281,7 @@ Service-role key stays server-side (loaded via `requireEnv("SUPABASE_SERVICE_ROL
 
 ### Secret handling
 
-No API key or token ever reaches the log stream. Error messages embedded in job rows are scrubbed before being returned to `/api/p/[id]` — resolved IPs and SSRF-specific detail are stripped so an attacker can't use our error text as a port scanner.
+No API key or token ever reaches the log stream. Error messages embedded in job rows are scrubbed before being returned to `/api/p/[id]` — resolved IPs and SSRF-specific detail are stripped so an attacker can't use the error text as a port scanner.
 
 ---
 
@@ -318,7 +318,7 @@ Secrets come from environment variables, not this file. `NEXT_PUBLIC_SUPABASE_UR
 
 ### Crawl execution backend
 
-*Trade-off:* The same `enqueueCrawl(jobId, url)` helper in `lib/upstash/jobQueue.ts` has two backends chosen at call time. *Why:* production (Vercel + `QSTASH_TOKEN` set) publishes to QStash, which then POSTs the signed job to `/api/worker/crawl`; the worker runs the pipeline synchronously so QStash's retry-on-non-2xx semantics buy us real mid-pipeline durability. Local dev (no `QSTASH_TOKEN`) keeps the pre-queue behaviour — `waitUntil(runCrawlPipeline(...))` in the caller's own Fluid Compute instance — so `npm run dev` works without a publicly reachable callback URL. The caller-side code path is one line in both cases (`await enqueueCrawl(id, url)`).
+*Trade-off:* The same `enqueueCrawl(jobId, url)` helper in `lib/upstash/jobQueue.ts` has two backends chosen at call time. *Why:* production (Vercel + `QSTASH_TOKEN` set) publishes to QStash, which then POSTs the signed job to `/api/worker/crawl`; the worker runs the pipeline synchronously so QStash's retry-on-non-2xx semantics provide real mid-pipeline durability. Local dev (no `QSTASH_TOKEN`) uses an in-process path — `waitUntil(runCrawlPipeline(...))` in the caller's own Fluid Compute instance — so `npm run dev` works without a publicly reachable callback URL. The caller-side code path is one line in both cases (`await enqueueCrawl(id, url)`).
 
 ### Rate limiter backend
 

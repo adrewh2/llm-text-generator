@@ -80,7 +80,7 @@ Still in the Supabase dashboard, open **Authentication → URL Configuration** (
 - **Site URL**: `http://localhost:3000` (dev) or your production origin
 - **Redirect URLs**: add both `http://localhost:3000/auth/callback` and `https://<your-prod-domain>/auth/callback`
 
-The full redirect chain is: browser → GitHub/Google (which has the Supabase callback in its allowlist) → Supabase (which has our `/auth/callback` in its allowlist) → app. Each hop needs its own allowlist entry.
+The full redirect chain is: browser → GitHub/Google (which has the Supabase callback in its allowlist) → Supabase (which has the app's `/auth/callback` in its allowlist) → app. Each hop needs its own allowlist entry.
 
 ### Filling in `.env.local`
 

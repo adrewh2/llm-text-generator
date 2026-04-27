@@ -5,13 +5,13 @@ deferred, and where to look when something breaks in production.
 
 ---
 
-## 1. What we run today
+## 1. What's wired today
 
 **Sentry (error tracking).** Grouped issues, stack traces with source
 maps, on-error session replay, release tagging tied to Vercel deploys.
 The free tier is comfortably enough for this project's volume (see
-Sentry's plans page for current limits); the two constraints we
-actively manage against it are replay sampling (on-error only,
+Sentry's plans page for current limits); the two free-tier constraints
+that need active management are replay sampling (on-error only,
 configured in `instrumentation-client.ts`) and noise filtering
 (§3 below).
 
@@ -32,7 +32,7 @@ Five files, all owned by the Sentry Next.js SDK convention:
 | File | Role |
 |---|---|
 | `instrumentation.ts` | Next.js `register()` hook; loads runtime-specific config at boot and forwards `onRequestError` to `Sentry.captureRequestError`. |
-| `instrumentation-client.ts` | Browser SDK init. Session replay is on-error-only (session sampling 0, error sampling 100 %) so we stay inside the 50/month replay quota. Text masked and media blocked for privacy. |
+| `instrumentation-client.ts` | Browser SDK init. Session replay is on-error-only (session sampling 0, error sampling 100 %) to stay inside the 50/month replay quota. Text masked and media blocked for privacy. |
 | `sentry.server.config.ts` | Node runtime init. Includes `ignoreErrors` for expected-and-handled failures — see §3. |
 | `sentry.edge.config.ts` | Middleware runtime init. |
 | `app/global-error.tsx` | App Router root error boundary. Catches uncaught React render errors that escape every lower boundary and reports them to Sentry before rendering the Next fallback. |
@@ -51,15 +51,15 @@ public bundle.
 ## 3. What Sentry ignores on purpose
 
 `sentry.server.config.ts` → `ignoreErrors` filters the classes of
-failure we expect and already handle. Letting them open as new issues
-would drown the signal. The current list covers:
+failure that are expected and already handled. Letting them open as
+new issues would drown the signal. The current list covers:
 
 - **SSRF rejections** — user submitted a private / metadata / loopback URL. Product behaviour.
-- **Target-site 4xx** — the submitted URL returned 4xx. Not our bug.
+- **Target-site 4xx** — the submitted URL returned 4xx. Not a bug in this app.
 - **Target-site timeouts** — the site didn't respond within the per-fetch budget.
-- **Bot-challenge interstitials** — Cloudflare / PerimeterX / similar WAF pages. Nothing we can fix.
+- **Bot-challenge interstitials** — Cloudflare / PerimeterX / similar WAF pages. Not fixable from this side.
 - **Response-too-large** — target exceeded the configured byte cap. By design.
-- **Pipeline-budget exhaust** — we hit the wall-clock cap; already recorded as `status: failed` on the job row.
+- **Pipeline-budget exhaust** — wall-clock cap hit; already recorded as `status: failed` on the job row.
 
 See the file for the exact regex patterns; that's the source of truth
 and it changes more often than this doc should. Adjust the list if
@@ -128,10 +128,10 @@ Deferred by design; worth listing for a reviewer.
 
 **The big next step — an external log aggregator** (Axiom is the natural choice via the Vercel Marketplace, but Datadog / Better Stack would work too). Sentry answers *what broke*; a log aggregator answers *is the system healthy, are the trends moving the right way* — crawl-duration percentiles, cache-hit ratio, Upstash-fail-open frequency, queue-fallback rate. These signals live in `console.warn` / `console.info` lines today (they don't belong in Sentry), so they're invisible beyond the short Vercel-logs retention window.
 
-The gate on shipping it is Vercel Pro — log drains are a Pro-tier feature. Once we're on Pro, any of the marketplace aggregators is a one-click install; the app's log lines are already `[context] message`-shaped and parse cleanly as events. A polish pass on `lib/log.ts` to emit JSON (e.g. via `pino`) would make field-indexed queries easier, but isn't a prerequisite.
+The gate on shipping it is Vercel Pro — log drains are a Pro-tier feature. Once on Pro, any of the marketplace aggregators is a one-click install; the app's log lines are already `[context] message`-shaped and parse cleanly as events. A polish pass on `lib/log.ts` to emit JSON (e.g. via `pino`) would make field-indexed queries easier, but isn't a prerequisite.
 
 **Other items worth listing:**
 
-- **Sentry Performance sampling.** We ship at 10 %. Raise when actively chasing a perf regression.
+- **Sentry Performance sampling.** Currently 10 %. Raise when actively chasing a perf regression.
 - **Release-health alerts.** One toggle in the Sentry dashboard.
 - **Vercel Speed Insights.** Real-user Core Web Vitals. Flip on if frontend performance starts being a complaint.

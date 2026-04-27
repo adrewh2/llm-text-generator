@@ -1,5 +1,5 @@
-// Edge-runtime Sentry init. Middleware is the only edge surface we
-// ship today, so this catches session-refresh / auth errors that
+// Edge-runtime Sentry init. Middleware is the only edge surface in
+// the project, so this catches session-refresh / auth errors that
 // never reach the Node runtime configs.
 
 import * as Sentry from "@sentry/nextjs"

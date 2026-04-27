@@ -1,8 +1,8 @@
 // Server-side Sentry init. Fires on every Fluid Compute cold start.
 //
-// `ignoreErrors` filters the things we expect and already handle
-// gracefully — without them every SSRF block and bot-challenge hit
-// would surface as a new Sentry issue and drown the signal.
+// `ignoreErrors` filters expected, already-handled failure modes —
+// without them every SSRF block and bot-challenge hit would surface
+// as a new Sentry issue and drown the signal.
 
 import * as Sentry from "@sentry/nextjs"
 
@@ -15,11 +15,11 @@ Sentry.init({
   enabled: process.env.NODE_ENV === "production",
 
   // 10 % sampling on traces is plenty for volume calibration; raise
-  // if we start chasing a specific perf issue.
+  // when actively chasing a specific perf issue.
   tracesSampleRate: 0.1,
 
-  // These are all code paths we're deliberately catching — they're
-  // product behaviour, not errors worth alerting on.
+  // These are all deliberately-caught code paths — product behaviour,
+  // not errors worth alerting on.
   ignoreErrors: [
     /UnsafeUrlError/,
     /Unsafe URL \(/,
