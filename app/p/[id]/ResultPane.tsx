@@ -89,8 +89,8 @@ export default function ResultPane({ job, signedIn, refreshing = false }: Props)
   }, [signedIn, job.url])
 
   const handleCopyLink = async () => {
-    // Build a clean shareable URL — same path, same hash, but drop
-    // any query params (e.g. ?simulate=1 shouldn't travel).
+    // Build a clean shareable URL — same path, same hash, drop any
+    // query params so they don't travel.
     const loc = new URL(window.location.href)
     loc.search = ""
     await navigator.clipboard.writeText(loc.toString())

@@ -210,8 +210,6 @@ export const ui = {
   MAX_POLL_FAILURES: 5,
   /** Minimum time each live-crawl step stays on screen. */
   LIVE_MIN_STEP_DWELL_MS: 1_200,
-  /** Simulated-progress step durations for cached results (one per step). */
-  SIM_STEP_DURATIONS_MS: [2000, 1800, 1800, 1800] as const,
   /** How often the "Refreshed X ago" label re-renders. */
   MONITOR_STATUS_TICK_MS: 10_000,
   /** LRU cap on the client-side per-tab job metadata cache. */

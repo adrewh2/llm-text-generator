@@ -149,7 +149,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
         return
       }
 
-      router.push(`/p/${data.page_id}${data.cached ? "?simulate=1" : ""}`)
+      router.push(`/p/${data.page_id}`)
       // leave loading=true — component unmounts on redirect
     } catch {
       failWith("Network error — please try again")

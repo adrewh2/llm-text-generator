@@ -1,7 +1,7 @@
 "use client"
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useParams, useSearchParams } from "next/navigation"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useParams } from "next/navigation"
 import { LayoutDashboard, Loader2, Plus, Shield } from "lucide-react"
 import Link from "next/link"
 import type { User } from "@supabase/supabase-js"
@@ -16,7 +16,7 @@ import ResultPane from "./ResultPane"
 import { useVisibleStatus } from "./useVisibleStatus"
 import type { ApiJob } from "./types"
 
-const { SIM_STEP_DURATIONS_MS: SIM_STEP_DURATIONS, JOB_CACHE_MAX, POLL_INTERVAL_MS, MAX_POLL_FAILURES } = ui
+const { JOB_CACHE_MAX, POLL_INTERVAL_MS, MAX_POLL_FAILURES } = ui
 const jobCache = new Map<string, ApiJob>()
 function cacheGetJob(id: string): ApiJob | undefined {
   const job = jobCache.get(id)
@@ -32,10 +32,10 @@ function cacheSetJob(id: string, job: ApiJob): void {
     jobCache.delete(oldest)
   }
 }
-// Auth listener lives inside PageViewInner so HMR and unmount clean
-// it up. SIGNED_OUT clears jobCache to prevent cross-session bleed.
+// Auth listener lives inside PageView so HMR and unmount clean it up.
+// SIGNED_OUT clears jobCache to prevent cross-session bleed.
 
-function PageViewInner({
+function PageView({
   initialJob,
   initialUser,
 }: {
@@ -43,8 +43,6 @@ function PageViewInner({
   initialUser: User | null
 }) {
   const params = useParams<{ id: string }>()
-  const searchParams = useSearchParams()
-  const shouldSimulate = searchParams?.get("simulate") === "1"
   const pageId = params?.id
 
   // Tab cache wins on result/status; initialJob can carry a newer
@@ -61,17 +59,8 @@ function PageViewInner({
   })
   const [notFound, setNotFound] = useState(false)
   const [user, setUser] = useState<User | null>(initialUser)
-  // Seed at step 0 so a cached (already-complete) job doesn't flash the
-  // result pane before the simulation timers kick in.
-  const [simulatedStep, setSimulatedStep] = useState<number | null>(shouldSimulate ? 0 : null)
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const simTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Ref, not state — otherwise fetchJob's useCallback identity would
-  // churn when we strip ?simulate=1 from the URL and the parent effect
-  // would clean up simTimerRef mid-simulation.
-  const shouldSimulateRef = useRef(shouldSimulate)
-  useEffect(() => { shouldSimulateRef.current = shouldSimulate }, [shouldSimulate])
   // Circuit breaker: stop polling after MAX_POLL_FAILURES in a row.
   const pollFailuresRef = useRef(0)
   const [pollDead, setPollDead] = useState(false)
@@ -100,21 +89,6 @@ function PageViewInner({
       },
     )
     return () => subscription.unsubscribe()
-  }, [])
-
-  const startSimulation = useCallback(() => {
-    setSimulatedStep(0)
-    let step = 0
-    const advance = () => {
-      step++
-      if (step >= SIM_STEP_DURATIONS.length) {
-        setSimulatedStep(null)
-        return
-      }
-      setSimulatedStep(step)
-      simTimerRef.current = setTimeout(advance, SIM_STEP_DURATIONS[step])
-    }
-    simTimerRef.current = setTimeout(advance, SIM_STEP_DURATIONS[0])
   }, [])
 
   const fetchJob = useCallback(async () => {
@@ -150,15 +124,6 @@ function PageViewInner({
 
       if (isDone || isFailed) {
         if (intervalRef.current) clearInterval(intervalRef.current)
-        if (isDone && shouldSimulateRef.current) {
-          startSimulation()
-          // Clean the URL so the stepper-simulation isn't replayed for
-          // anyone who bookmarks, refreshes, or shares this page.
-          stripQueryParam("simulate")
-        }
-      } else if (shouldSimulateRef.current) {
-        // Job still running but URL asked to simulate — show real progress.
-        setSimulatedStep(null)
       }
     } catch (err) {
       debugLog("PageView.fetchJob", err)
@@ -168,7 +133,7 @@ function PageViewInner({
         setPollDead(true)
       }
     }
-  }, [pageId, startSimulation])
+  }, [pageId])
 
   useEffect(() => {
     // Skip the initial fetch + polling when SSR already seeded a
@@ -181,26 +146,17 @@ function PageViewInner({
     const initiallyTerminal = job
       ? ["complete", "partial", "failed"].includes(job.status)
       : false
-    if (initiallyTerminal) {
-      // ?simulate=1 on a cached result: startSimulation normally fires from
-      // inside fetchJob, but we don't poll terminal seeds. Trigger it here.
-      const isDone = job?.status === "complete" || job?.status === "partial"
-      if (isDone && shouldSimulateRef.current) {
-        startSimulation()
-        stripQueryParam("simulate")
-      }
-    } else {
+    if (!initiallyTerminal) {
       fetchJob()
       intervalRef.current = setInterval(fetchJob, POLL_INTERVAL_MS)
     }
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
-      if (simTimerRef.current) clearTimeout(simTimerRef.current)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchJob])
 
-  const visibleStatus = useVisibleStatus(job, simulatedStep !== null)
+  const visibleStatus = useVisibleStatus(job)
 
   // Derive render data BEFORE any conditional early return — the
   // useMemo below must not sit after a conditional `return`
@@ -208,20 +164,15 @@ function PageViewInner({
   // every render; only `validation` is memoised because regex-parsing
   // the full llms.txt every poll tick would be wasteful.
   //
-  // Simulating → pass the raw status; live → clamp to visibleStatus
-  // so fast transitions stay paced.
-  const displayJob: ApiJob | null = job
-    ? simulatedStep !== null
-      ? job
-      : { ...job, status: visibleStatus }
-    : null
+  // visibleStatus paces fast status transitions so the progress
+  // stepper doesn't flicker; the raw `job.status` drives `isDone`.
+  const displayJob: ApiJob | null = job ? { ...job, status: visibleStatus } : null
   const isDone = !!displayJob && (displayJob.status === "complete" || displayJob.status === "partial")
   // Show cached content whenever it exists — a re-crawl in flight on a
-  // previously-successful page should keep the prior llms.txt visible
-  // (with a "Re-crawling…" pill) rather than swap to ProgressPane.
-  // ProgressPane is reserved for first-time crawls (no prior result)
-  // and for the simulated stepper.
-  const showResult = !!job?.result && simulatedStep === null
+  // previously-successful page keeps the prior llms.txt visible (with
+  // a "Regenerating…" pill) rather than swap to ProgressPane.
+  // ProgressPane is reserved for first-time crawls (no prior result).
+  const showResult = !!job?.result
   const refreshing = showResult && !isDone
   const domain = job ? hostnameOf(job.url) : ""
   const crawledCount = (job?.pages ?? []).filter((p) => p.fetchStatus === "ok").length
@@ -339,10 +290,7 @@ function PageViewInner({
         ) : showResult && job.result ? (
           <ResultPane job={job} signedIn={!!user} refreshing={refreshing} />
         ) : displayJob ? (
-          <ProgressPane
-            job={displayJob}
-            simulatedStep={simulatedStep !== null ? simulatedStep : undefined}
-          />
+          <ProgressPane job={displayJob} />
         ) : null}
       </div>
     </div>
@@ -353,37 +301,4 @@ function hostnameOf(url: string): string {
   try { return new URL(url).hostname } catch { return url }
 }
 
-/** Remove a single query param from the browser URL without routing. */
-function stripQueryParam(name: string): void {
-  if (typeof window === "undefined") return
-  const url = new URL(window.location.href)
-  if (!url.searchParams.has(name)) return
-  url.searchParams.delete(name)
-  const qs = url.searchParams.toString()
-  window.history.replaceState(
-    null, "",
-    `${url.pathname}${qs ? `?${qs}` : ""}${url.hash}`,
-  )
-}
-
-function PageViewFallback() {
-  return (
-    <div className="h-dvh flex items-center justify-center bg-white">
-      <Loader2 size={24} className="text-zinc-400 animate-spin" />
-    </div>
-  )
-}
-
-export default function PageView({
-  initialJob,
-  initialUser,
-}: {
-  initialJob: ApiJob | null
-  initialUser: User | null
-}) {
-  return (
-    <Suspense fallback={<PageViewFallback />}>
-      <PageViewInner initialJob={initialJob} initialUser={initialUser} />
-    </Suspense>
-  )
-}
+export default PageView
