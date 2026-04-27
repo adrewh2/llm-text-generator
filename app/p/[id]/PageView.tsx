@@ -1,253 +1,72 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useParams } from "next/navigation"
-import { LayoutDashboard, Loader2, Plus, Shield } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import { LayoutDashboard, Plus, Shield } from "lucide-react"
 import Link from "next/link"
 import type { User } from "@supabase/supabase-js"
 import { validateLlmsTxt } from "@/lib/crawler/output/validate"
 import { createClient } from "@/lib/supabase/client"
-import { debugLog } from "@/lib/log"
-import { ui } from "@/lib/config"
 import AppHeader, { HEADER_BUTTON_CLASS } from "@/app/components/AppHeader"
 import UserMenu from "@/app/components/UserMenu"
-import ProgressPane from "./ProgressPane"
 import ResultPane from "./ResultPane"
-import { useVisibleStatus } from "./useVisibleStatus"
 import type { ApiJob } from "./types"
 
-const { JOB_CACHE_MAX, POLL_INTERVAL_MS, MAX_POLL_FAILURES } = ui
-const jobCache = new Map<string, ApiJob>()
-function cacheGetJob(id: string): ApiJob | undefined {
-  const job = jobCache.get(id)
-  if (job) { jobCache.delete(id); jobCache.set(id, job) } // touch
-  return job
-}
-function cacheSetJob(id: string, job: ApiJob): void {
-  if (jobCache.has(id)) jobCache.delete(id)
-  jobCache.set(id, job)
-  while (jobCache.size > JOB_CACHE_MAX) {
-    const oldest = jobCache.keys().next().value
-    if (oldest === undefined) break
-    jobCache.delete(oldest)
-  }
-}
-// Auth listener lives inside PageView so HMR and unmount clean it up.
-// SIGNED_OUT clears jobCache to prevent cross-session bleed.
-
-function PageView({
+// /p/{id} is a stable cached-result view. The RSC guarantees we
+// always have a non-empty `initialJob.result` here (otherwise it
+// would have redirected to /jobs/{jobId} or 404'd).
+export default function PageView({
   initialJob,
   initialUser,
 }: {
-  initialJob: ApiJob | null
+  initialJob: ApiJob
   initialUser: User | null
 }) {
-  const params = useParams<{ id: string }>()
-  const pageId = params?.id
-
-  // Tab cache wins on result/status; initialJob can carry a newer
-  // lastCheckedAt from a no-drift Refresh, so prefer that when newer.
-  const [job, setJob] = useState<ApiJob | null>(() => {
-    const cached = pageId ? cacheGetJob(pageId) : null
-    if (!cached) return initialJob
-    if (!initialJob) return cached
-    const cachedLcA = cached.lastCheckedAt ? Date.parse(cached.lastCheckedAt) : 0
-    const initialLcA = initialJob.lastCheckedAt ? Date.parse(initialJob.lastCheckedAt) : 0
-    return initialLcA > cachedLcA
-      ? { ...cached, lastCheckedAt: initialJob.lastCheckedAt }
-      : cached
-  })
-  const [notFound, setNotFound] = useState(false)
   const [user, setUser] = useState<User | null>(initialUser)
 
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  // Circuit breaker: stop polling after MAX_POLL_FAILURES in a row.
-  const pollFailuresRef = useRef(0)
-  const [pollDead, setPollDead] = useState(false)
-
-  // Track auth state for the lifetime of this page. `getUser` settles
-  // the initial value; `onAuthStateChange` covers subsequent
-  // sign-in / sign-out / token-refresh events (including the
-  // INITIAL_SESSION event Supabase fires on first subscribe when a
-  // user is already authenticated). The SIGNED_OUT branch clears the
-  // per-tab job cache so a prior user's in-flight data can't leak
-  // into the next session on a shared device.
+  // Track auth state for the lifetime of this page so the avatar +
+  // Dashboard button stay accurate across sign-in / sign-out events
+  // in another tab. INITIAL_SESSION fires synchronously with whatever
+  // the client can resolve from cookies at that instant — we trust
+  // the server-resolved initialUser instead until a real auth event.
   useEffect(() => {
     const supabase = createClient()
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        // Ignore INITIAL_SESSION — it fires synchronously on subscribe
-        // with whatever the client can resolve from cookies at that
-        // instant, which is occasionally null before the browser
-        // finishes hydrating the auth cookie. Trusting it would blank
-        // out the avatar + Dashboard button for one frame. We seeded
-        // user from initialUser (SSR cookie read), so stick with that
-        // until a real auth event arrives.
-        if (event === "INITIAL_SESSION") return
-        setUser(session?.user ?? null)
-        if (event === "SIGNED_OUT") jobCache.clear()
-      },
-    )
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "INITIAL_SESSION") return
+      setUser(session?.user ?? null)
+    })
     return () => subscription.unsubscribe()
   }, [])
 
-  const fetchJob = useCallback(async () => {
-    if (!pageId) return
-    try {
-      const res = await fetch(`/api/p/${pageId}`)
-      if (res.status === 404) { setNotFound(true); return }
-      if (!res.ok) {
-        pollFailuresRef.current++
-        if (pollFailuresRef.current >= MAX_POLL_FAILURES) {
-          if (intervalRef.current) clearInterval(intervalRef.current)
-          setPollDead(true)
-        }
-        return
-      }
-      pollFailuresRef.current = 0
-      const data: ApiJob = await res.json()
-      // The poll path's lightweight reader returns no result/pages
-      // for non-terminal statuses, but the UI must keep the cached
-      // payload visible through a re-crawl. Merge: take fresh status/
-      // progress/timestamps, but preserve result+pages until the new
-      // crawl lands a replacement.
-      setJob((prev) => {
-        const merged: ApiJob = prev
-          ? { ...data, result: data.result ?? prev.result, pages: data.pages ?? prev.pages }
-          : data
-        cacheSetJob(pageId, merged)
-        return merged
-      })
-
-      const isDone = data.status === "complete" || data.status === "partial"
-      const isFailed = data.status === "failed"
-
-      if (isDone || isFailed) {
-        if (intervalRef.current) clearInterval(intervalRef.current)
-      }
-    } catch (err) {
-      debugLog("PageView.fetchJob", err)
-      pollFailuresRef.current++
-      if (pollFailuresRef.current >= MAX_POLL_FAILURES) {
-        if (intervalRef.current) clearInterval(intervalRef.current)
-        setPollDead(true)
-      }
-    }
-  }, [pageId])
-
-  useEffect(() => {
-    // Skip the initial fetch + polling when SSR already seeded a
-    // terminal job — we'd otherwise spend one /api/p/{id} round-trip
-    // on every page open to re-confirm state that's already on the
-    // page. A monitor re-crawl that happens after SSR will be picked
-    // up on the next full navigation; not waiting a poll cycle to
-    // learn about it is a fine trade for a faster first interaction on the 99%
-    // common path.
-    const initiallyTerminal = job
-      ? ["complete", "partial", "failed"].includes(job.status)
-      : false
-    if (!initiallyTerminal) {
-      fetchJob()
-      intervalRef.current = setInterval(fetchJob, POLL_INTERVAL_MS)
-    }
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchJob])
-
-  const visibleStatus = useVisibleStatus(job)
-
-  // Derive render data BEFORE any conditional early return — the
-  // useMemo below must not sit after a conditional `return`
-  // (React's rules-of-hooks). Each of these is cheap to compute on
-  // every render; only `validation` is memoised because regex-parsing
-  // the full llms.txt every poll tick would be wasteful.
-  //
-  // visibleStatus paces fast status transitions so the progress
-  // stepper doesn't flicker; the raw `job.status` drives `isDone`.
-  const displayJob: ApiJob | null = job ? { ...job, status: visibleStatus } : null
-  const isDone = !!displayJob && (displayJob.status === "complete" || displayJob.status === "partial")
-  // Show cached content whenever it exists — a re-crawl in flight on a
-  // previously-successful page keeps the prior llms.txt visible (with
-  // a "Regenerating…" pill) rather than swap to ProgressPane.
-  // ProgressPane is reserved for first-time crawls (no prior result).
-  const showResult = !!job?.result
-  const refreshing = showResult && !isDone
-  const domain = job ? hostnameOf(job.url) : ""
-  const crawledCount = (job?.pages ?? []).filter((p) => p.fetchStatus === "ok").length
-  // Only validate once we have a non-empty result — otherwise a
-  // half-propagated write (job.status=complete before pages.result lands)
-  // would trip "missing H1" on empty text. The store writes pages first,
-  // so this is belt-and-suspenders.
-  const result = showResult ? job?.result : undefined
+  const domain = hostnameOf(initialJob.url)
+  const crawledCount = (initialJob.pages ?? []).filter((p) => p.fetchStatus === "ok").length
   const validation = useMemo(
-    () => (result ? validateLlmsTxt(result) : null),
-    [result],
+    () => (initialJob.result ? validateLlmsTxt(initialJob.result) : null),
+    [initialJob.result],
   )
-
-  if (notFound) {
-    return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-zinc-500 mb-4">Page not found.</p>
-          <Link href="/" className="text-sm text-zinc-900 underline">Generate a new llms.txt</Link>
-        </div>
-      </div>
-    )
-  }
 
   return (
     <div className="h-dvh font-sans bg-white flex flex-col">
       <AppHeader
         center={
           <>
-            {/* Domain stays visible when the result is ready — users
-                need to know which site's llms.txt they're looking at.
-                During generation the mobile slot is tight (domain +
-                "Generating…" + right-side buttons overflow), so the
-                domain collapses below sm and the status pill takes
-                its place. Divider stays as the brand/status separator.
-                Page count + spec chip hide below sm; the mobile
-                right side is tight enough already. */}
             <span className="h-4 w-px bg-zinc-200 shrink-0" aria-hidden />
-            {(() => {
-              const hideDomainOnMobile = !showResult && job && !isDone
-              const domainClass = hideDomainOnMobile ? "hidden sm:block" : ""
-              return domain
-                ? <span className={`text-sm text-zinc-500 truncate ${domainClass}`}>{domain}</span>
-                : <div className={`h-3 w-24 sm:w-32 bg-zinc-100 rounded animate-pulse ${domainClass}`} />
-            })()}
-            {showResult ? (
-              <>
-                <span className="text-zinc-300 hidden sm:block">·</span>
-                <span className="text-xs text-zinc-400 font-mono hidden sm:block shrink-0">{crawledCount} pages</span>
-                {validation && (
-                  <span className={`hidden sm:flex items-center gap-1.5 ml-1 text-xs font-medium px-2.5 py-1 rounded-full ring-1 shrink-0 ${
-                    validation.valid
-                      ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
-                      : "bg-red-50 text-red-600 ring-red-100"
-                  }`}>
-                    <Shield size={11} />
-                    {validation.valid ? "Spec valid" : `${validation.errors.length} issue${validation.errors.length > 1 ? "s" : ""}`}
-                  </span>
-                )}
-              </>
-            ) : job && !isDone ? (
-              <>
-                <span className="text-zinc-300 hidden sm:block">·</span>
-                <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400 shrink-0">
-                  <Loader2 size={11} className="animate-spin" /> Generating…
-                </span>
-              </>
-            ) : null}
+            <span className="text-sm text-zinc-500 truncate">{domain}</span>
+            <span className="text-zinc-300 hidden sm:block">·</span>
+            <span className="text-xs text-zinc-400 font-mono hidden sm:block shrink-0">{crawledCount} pages</span>
+            {validation && (
+              <span className={`hidden sm:flex items-center gap-1.5 ml-1 text-xs font-medium px-2.5 py-1 rounded-full ring-1 shrink-0 ${
+                validation.valid
+                  ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
+                  : "bg-red-50 text-red-600 ring-red-100"
+              }`}>
+                <Shield size={11} />
+                {validation.valid ? "Spec valid" : `${validation.errors.length} issue${validation.errors.length > 1 ? "s" : ""}`}
+              </span>
+            )}
           </>
         }
         right={
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* Buttons stay visible on every viewport; labels collapse
-                to icon-only below sm so the right side fits next to
-                the logo + avatar without overlapping the center slot. */}
             <Link href="/" className={HEADER_BUTTON_CLASS} aria-label="Generate">
               <Plus size={14} className="text-zinc-400" />
               <span className="hidden sm:inline">Generate</span>
@@ -274,24 +93,8 @@ function PageView({
         </div>
       )}
 
-      {pollDead && (
-        <div role="alert" className="bg-amber-50 border-b border-amber-100 px-6 py-2 shrink-0">
-          <p className="text-xs text-amber-700">
-            Lost connection to the server. <button type="button" onClick={() => window.location.reload()} className="underline font-medium">Reload</button> to try again.
-          </p>
-        </div>
-      )}
-
       <div className="flex-1 flex overflow-hidden">
-        {!job ? (
-          <div className="flex-1 flex items-center justify-center">
-            <Loader2 size={24} className="text-zinc-400 animate-spin" />
-          </div>
-        ) : showResult && job.result ? (
-          <ResultPane job={job} signedIn={!!user} refreshing={refreshing} />
-        ) : displayJob ? (
-          <ProgressPane job={displayJob} />
-        ) : null}
+        <ResultPane job={initialJob} signedIn={!!user} />
       </div>
     </div>
   )
@@ -300,5 +103,3 @@ function PageView({
 function hostnameOf(url: string): string {
   try { return new URL(url).hostname } catch { return url }
 }
-
-export default PageView

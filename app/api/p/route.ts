@@ -115,15 +115,15 @@ export async function POST(req: NextRequest) {
 
   // Try to serve from cache / attach to an active job at `key`.
   // Returns a response if handled, null if the caller should continue.
-  // `page_id` in the response is the pages.id UUID — stable across
-  // re-crawls, so two users of the same URL land on the same /p/{id}.
-  // bumpPageRequest fires best-effort; a flaky Supabase write
-  // shouldn't turn a cache-hit into a 500 for the user.
+  // `page_id` is the pages.id UUID (stable across re-crawls). `job_id`
+  // is set whenever a crawl is in flight — the client uses it to
+  // route to /jobs/{jobId} for progress; cache hits omit it and the
+  // client routes straight to /p/{pageId}. bumpPageRequest fires
+  // best-effort; a flaky Supabase write shouldn't turn a cache-hit
+  // into a 500 for the user.
   const tryServeAt = async (key: string): Promise<NextResponse | null> => {
     const existing = await getPageByUrl(key)
     if (existing && !existing.isStale) {
-      // Defer both writes past the response — neither gates the
-      // client's ability to navigate to /p/{id} and start polling.
       runAfterResponse("bumpPageRequest", bumpPageRequest(key))
       if (user) runAfterResponse("upsertUserRequest", upsertUserRequest(user.id, key))
       return NextResponse.json({ page_id: existing.pageId, cached: true }, { status: 200 })
@@ -132,7 +132,10 @@ export async function POST(req: NextRequest) {
     if (active) {
       runAfterResponse("bumpPageRequest", bumpPageRequest(key))
       if (user) runAfterResponse("upsertUserRequest", upsertUserRequest(user.id, key))
-      return NextResponse.json({ page_id: active.pageId, cached: false }, { status: 200 })
+      return NextResponse.json(
+        { page_id: active.pageId, job_id: active.jobId, cached: false },
+        { status: 200 },
+      )
     }
     return null
   }
@@ -230,5 +233,8 @@ export async function POST(req: NextRequest) {
   runAfterResponse("bumpPageRequest", bumpPageRequest(canonicalUrl))
   if (user) runAfterResponse("upsertUserRequest", upsertUserRequest(user.id, canonicalUrl))
 
-  return NextResponse.json({ page_id: pageId, cached: false }, { status: 201 })
+  return NextResponse.json(
+    { page_id: pageId, job_id: jobId, cached: false },
+    { status: 201 },
+  )
 }

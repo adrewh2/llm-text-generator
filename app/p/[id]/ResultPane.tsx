@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { formatDistanceToNowStrict } from "date-fns"
-import { Check, Copy, Download, Link2, Loader2, RefreshCw, Save } from "lucide-react"
+import { Check, Copy, Download, Link2, RefreshCw, Save } from "lucide-react"
 import { crawler, ui } from "@/lib/config"
 import type { ApiJob } from "./types"
 
@@ -13,11 +13,9 @@ interface Props {
   job: ApiJob
   /** Whether the current viewer is signed in — gates the "Add to dashboard" button. */
   signedIn: boolean
-  /** True while a server-side re-crawl is in flight; renders the "Re-crawling…" pill. */
-  refreshing?: boolean
 }
 
-export default function ResultPane({ job, signedIn, refreshing = false }: Props) {
+export default function ResultPane({ job, signedIn }: Props) {
   const router = useRouter()
   const content = job.result ?? ""
   const [copied, setCopied] = useState(false)
@@ -28,9 +26,6 @@ export default function ResultPane({ job, signedIn, refreshing = false }: Props)
   //   true    = already in history → hide button
   const [inHistory, setInHistory] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
-  // Local "the click round-trip is in flight" flag. Distinct from the
-  // `refreshing` prop, which stays true for the lifetime of the
-  // server-side re-crawl.
   const [submitting, setSubmitting] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -128,30 +123,39 @@ export default function ResultPane({ job, signedIn, refreshing = false }: Props)
   }
 
   const handleRefresh = async () => {
-    if (submitting || refreshing) return
+    if (submitting) return
     setSubmitting(true)
     setRefreshError(null)
     try {
-      // Same endpoint + same payload the landing-page Generate button
-      // uses. The server decides whether to crawl: cache hit → return
-      // cached; in-flight → attach; TTL-stale → signature check,
-      // crawl only on drift; missing → crawl. No special flag needed.
+      // Same endpoint the landing-page Generate button uses. Server
+      // returns either:
+      //   - cached: true   → no new crawl. Soft-refresh the RSC so
+      //                      the freshness label picks up the new
+      //                      lastCheckedAt that the signature check
+      //                      may have just bumped.
+      //   - cached: false  → a crawl is in flight (new or attached).
+      //                      Navigate to /jobs/{job_id}; that page
+      //                      polls and redirects back to /p/{id} on
+      //                      completion.
       const res = await fetch("/api/p", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: job.url }),
       })
-      const data = await res.json().catch(() => ({} as Record<string, unknown>))
+      const data = (await res.json().catch(() => ({}))) as {
+        page_id?: string
+        job_id?: string
+        cached?: boolean
+        error?: string
+      }
       if (!res.ok) {
-        const msg = typeof data.error === "string" ? data.error : "Failed to refresh"
-        setRefreshError(msg)
+        setRefreshError(typeof data.error === "string" ? data.error : "Failed to refresh")
         return
       }
-      // Success: server either dispatched a new crawl or attached us to
-      // an in-flight one. Either way the latest job on this page is now
-      // non-terminal. router.refresh() re-runs the /p/[id] RSC, which
-      // remounts PageView (keyed on updatedAt) with the new initial
-      // state — ProgressPane takes over and polling kicks in.
+      if (data.cached === false && data.job_id) {
+        router.push(`/jobs/${data.job_id}`)
+        return
+      }
       router.refresh()
     } catch {
       setRefreshError("Network error")
@@ -198,20 +202,6 @@ export default function ResultPane({ job, signedIn, refreshing = false }: Props)
           </>
         )}
         <div className="ml-auto flex items-center gap-2">
-          {/* Regenerating pill — visible while a server-side re-crawl
-              is in flight (or the click round-trip itself). The cached
-              llms.txt stays rendered below; polling swaps in the new
-              content the moment the new job lands a result. */}
-          {(refreshing || submitting) && (
-            <span
-              className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-medium text-amber-700 bg-amber-50 ring-1 ring-amber-100 px-2.5 py-1 rounded-full"
-              role="status"
-              aria-live="polite"
-            >
-              <Loader2 size={11} className="animate-spin" />
-              Regenerating…
-            </span>
-          )}
           {/* Transient refresh error — dismisses itself after ~4s.
               Rate-limit denials (429) and network errors both land here. */}
           {refreshError && (
@@ -220,11 +210,10 @@ export default function ResultPane({ job, signedIn, refreshing = false }: Props)
             </span>
           )}
           {/* Refresh button — desktop only, only when the cache is
-              older than PAGE_TTL_HOURS, and not while a re-crawl is
-              already in flight. Clicking is equivalent to re-submitting
-              from the landing form: goes through rate limiting and
-              attaches to any in-flight job for the same URL. */}
-          {isStale && !refreshing && (
+              older than PAGE_TTL_HOURS. Clicking re-submits via
+              POST /api/p; if a fresh crawl is dispatched, navigation
+              hands off to /jobs/{job_id}. */}
+          {isStale && (
             <button
               type="button"
               onClick={handleRefresh}

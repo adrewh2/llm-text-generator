@@ -149,7 +149,14 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
         return
       }
 
-      router.push(`/p/${data.page_id}`)
+      // Cache hit → straight to the cached result.
+      // New crawl dispatched → /jobs/{id} polls progress and
+      // redirects to /p/{id} on completion.
+      router.push(
+        data.cached === false && data.job_id
+          ? `/jobs/${data.job_id}`
+          : `/p/${data.page_id}`,
+      )
       // leave loading=true — component unmounts on redirect
     } catch {
       failWith("Network error — please try again")

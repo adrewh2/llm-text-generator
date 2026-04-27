@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
-import type { CrawlJob, ScoredPage } from "./crawler/types"
+import type { CrawlJob, JobProgress, JobStatus, ScoredPage } from "./crawler/types"
 import { crawler, monitor } from "./config"
 import { assertSafeUrl } from "./crawler/net/ssrf"
 import { requireEnv } from "./env"
@@ -238,12 +238,14 @@ export async function getPageByUrl(url: string): Promise<
 }
 
 /**
- * Returns the page's UUID if a crawl is in flight — used by POST /api/p
- * to attach to an existing run. Ignores stale non-terminal jobs
- * (updated_at older than STUCK_JOB_AFTER_MS) so a dead waitUntil()
- * doesn't trap future submissions.
+ * Returns the page + active job IDs if a crawl is in flight — used
+ * by POST /api/p to attach to an existing run. Ignores stale non-
+ * terminal jobs (updated_at older than STUCK_JOB_AFTER_MS) so a
+ * dead waitUntil() doesn't trap future submissions.
  */
-export async function getActiveJobForUrl(url: string): Promise<{ pageId: string } | undefined> {
+export async function getActiveJobForUrl(
+  url: string,
+): Promise<{ pageId: string; jobId: string } | undefined> {
   const supabase = getClient()
   const freshCutoff = new Date(Date.now() - monitor.STUCK_JOB_AFTER_MS).toISOString()
   const { data: job } = await supabase
@@ -262,7 +264,81 @@ export async function getActiveJobForUrl(url: string): Promise<{ pageId: string 
     .select("id")
     .eq("url", url)
     .maybeSingle()
-  return page ? { pageId: page.id } : undefined
+  return page ? { pageId: page.id, jobId: job.id } : undefined
+}
+
+/**
+ * Returns the active (non-terminal, fresh) job for a page, or undefined
+ * if none. Used by /p/[id] to redirect to /jobs/{jobId} when someone
+ * lands on a page whose only crawl is still running.
+ */
+export async function getActiveJobForPage(
+  pageId: string,
+): Promise<{ jobId: string } | undefined> {
+  const supabase = getClient()
+  const freshCutoff = new Date(Date.now() - monitor.STUCK_JOB_AFTER_MS).toISOString()
+  const { data: page } = await supabase
+    .from("pages")
+    .select("url")
+    .eq("id", pageId)
+    .maybeSingle()
+  if (!page) return undefined
+
+  const { data: job } = await supabase
+    .from("jobs")
+    .select("id")
+    .eq("page_url", page.url)
+    .not("status", "in", '("failed","complete","partial")')
+    .gte("updated_at", freshCutoff)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  return job ? { jobId: job.id } : undefined
+}
+
+/**
+ * Lightweight job lookup by jobId for the /jobs/[id] view + its poll
+ * endpoint. Returns the data the progress UI needs plus the pageId
+ * that the client redirects to once status flips terminal.
+ */
+export async function getJobById(jobId: string): Promise<
+  | {
+      jobId: string
+      pageId: string
+      pageUrl: string
+      status: JobStatus
+      progress: JobProgress
+      error: string | null
+      createdAt: Date
+      updatedAt: Date
+    }
+  | undefined
+> {
+  const supabase = getClient()
+  const { data: job } = await supabase
+    .from("jobs")
+    .select("id, page_url, status, progress, error, created_at, updated_at")
+    .eq("id", jobId)
+    .maybeSingle()
+  if (!job) return undefined
+
+  const { data: page } = await supabase
+    .from("pages")
+    .select("id")
+    .eq("url", job.page_url)
+    .maybeSingle()
+  if (!page) return undefined
+
+  return {
+    jobId: job.id,
+    pageId: page.id,
+    pageUrl: job.page_url,
+    status: job.status,
+    progress: job.progress,
+    error: job.error ?? null,
+    createdAt: new Date(job.created_at),
+    updatedAt: new Date(job.updated_at),
+  }
 }
 
 // ─── Monitoring ──────────────────────────────────────────────────────────────
