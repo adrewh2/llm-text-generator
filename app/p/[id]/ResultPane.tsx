@@ -126,42 +126,49 @@ export default function ResultPane({ job, signedIn }: Props) {
     if (submitting) return
     setSubmitting(true)
     setRefreshError(null)
+    // Same endpoint the landing-page Generate button uses. Server
+    // returns either:
+    //   - cached: true   → no new crawl. Soft-refresh the RSC so
+    //                      the freshness label picks up the new
+    //                      lastCheckedAt that the signature check
+    //                      may have just bumped.
+    //   - cached: false  → a crawl is in flight (new or attached).
+    //                      Navigate to /jobs/{job_id}; that page
+    //                      polls and redirects back to /p/{id} on
+    //                      completion.
+    let res: Response
     try {
-      // Same endpoint the landing-page Generate button uses. Server
-      // returns either:
-      //   - cached: true   → no new crawl. Soft-refresh the RSC so
-      //                      the freshness label picks up the new
-      //                      lastCheckedAt that the signature check
-      //                      may have just bumped.
-      //   - cached: false  → a crawl is in flight (new or attached).
-      //                      Navigate to /jobs/{job_id}; that page
-      //                      polls and redirects back to /p/{id} on
-      //                      completion.
-      const res = await fetch("/api/p", {
+      res = await fetch("/api/p", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: job.url }),
       })
-      const data = (await res.json().catch(() => ({}))) as {
-        page_id?: string
-        job_id?: string
-        cached?: boolean
-        error?: string
-      }
-      if (!res.ok) {
-        setRefreshError(typeof data.error === "string" ? data.error : "Failed to refresh")
-        return
-      }
-      if (data.cached === false && data.job_id) {
-        router.push(`/jobs/${data.job_id}`)
-        return
-      }
-      router.refresh()
     } catch {
       setRefreshError("Network error")
-    } finally {
       setSubmitting(false)
+      return
     }
+    const data = (await res.json().catch(() => ({}))) as {
+      page_id?: string
+      job_id?: string
+      cached?: boolean
+      error?: string
+    }
+    if (!res.ok) {
+      setRefreshError(typeof data.error === "string" ? data.error : "Failed to refresh")
+      setSubmitting(false)
+      return
+    }
+    if (data.cached === false && data.job_id) {
+      // Navigation will unmount this component — leave `submitting`
+      // true so the button stays "Refreshing…" through the hand-off
+      // instead of flashing back to "Refresh" between router.push
+      // and the route transition.
+      router.push(`/jobs/${data.job_id}`)
+      return
+    }
+    router.refresh()
+    setSubmitting(false)
   }
 
   // Clear the refresh error after a few seconds so a transient failure
