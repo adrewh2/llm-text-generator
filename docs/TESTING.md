@@ -409,10 +409,12 @@ curl -s "$BASE_URL/api/p/$JOB" | jq -r '.result' | \
 curl -s -X POST "$BASE_URL/api/p" -H "Content-Type: application/json" \
   -d "{\"url\":\"$TARGET\"}" | jq -c
 ```
-**Expect:** `{"page_id":"<same-job-id>","cached":true}`, returned
-synchronously (no crawl kicks off). The simulated-progress animation
-is a browser-only concern — verify by opening
-`$BASE_URL/p/<job>?simulate=1` and watching the stepper play out.
+**Expect:** `{"page_id":"<same-page-id>","cached":true}`, returned
+synchronously (no crawl kicks off). On the browser side, a cached
+submission lands directly on `$BASE_URL/p/<page-id>` showing the
+ResultPane — there is no progress animation on `/p/`. Cache-miss
+submissions instead route to `$BASE_URL/jobs/<job-id>`, which polls
+real status and `router.replace`s to `/p/<page-id>` on completion.
 
 ### 5.4 In-flight attach (concurrent submit)
 
@@ -437,9 +439,12 @@ psql "$DATABASE_URL" -c "UPDATE pages SET updated_at = NOW() - INTERVAL '25 hour
 curl -s -X POST "$BASE_URL/api/p" -H "Content-Type: application/json" \
   -d "{\"url\":\"$TARGET\"}" | jq -c
 ```
-**Expect:** response is `{"page_id":"<NEW-uuid>","cached":false}` with
-a new job id — a fresh crawl was dispatched. Old `pages.result` stays
-in place until the new run completes.
+**Expect:** response is `{"page_id":"<same-page-id>","job_id":"<new-uuid>","cached":false}`.
+`page_id` is unchanged across re-crawls — `pages.id` is stable — but
+`job_id` is the freshly-dispatched job. Old `pages.result` stays in
+place until the new run completes; the browser routes to
+`/jobs/{job_id}` for live progress and `router.replace`s to
+`/p/{page_id}` on completion.
 
 ### 5.6 www / non-www deduplication
 

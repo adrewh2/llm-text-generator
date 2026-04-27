@@ -54,8 +54,8 @@ export async function createJob(jobId: string, url: string): Promise<{ pageId: s
 }
 
 /**
- * Lightweight status lookup for the /api/p/[id] poll path — skips the
- * terminal payload (`result` + `crawled_pages`). Route falls back to
+ * Lightweight status lookup for /api/p/[id] — skips the terminal
+ * payload (`result` + `crawled_pages`). The route falls back to
  * `getPageById` when the status is terminal.
  */
 export async function getPageStatusById(pageId: string): Promise<CrawlJob | undefined> {

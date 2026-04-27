@@ -67,7 +67,7 @@ Every page is monitored by default; the cron unsets the flag on pages nobody has
 
 Holds status, progress, errors, and timestamps for a single crawl run. Status transitions: `pending → crawling → enriching → scoring → assembling → {complete | partial | failed}`, enforced by a `CHECK` constraint so a typo in client code can't corrupt the state machine.
 
-`jobs` is a history, not a cache. Every crawl — user submission, TTL refresh, monitor-triggered re-crawl — creates a new row. The *result* lives on the matching `pages` row. `jobs.id` is internal to the pipeline (worker uses it to update status, monitor cron passes it through QStash); nothing user-facing references it — `/p/{id}` routes against `pages.id`.
+`jobs` is a history, not a cache. Every crawl — user submission, TTL refresh, monitor-triggered re-crawl — creates a new row. The *result* lives on the matching `pages` row. `pages.id` is the stable result identifier — `/p/{id}` (the cached-result permalink) routes against it, unchanged across re-crawls. `jobs.id` is per-execution and powers `/jobs/{id}` (the live-progress view), which redirects to `/p/{pageId}` once the job goes terminal.
 
 ### `user_requests` — per-user history
 
@@ -102,8 +102,9 @@ All routes live under `/app/api`.
 
 | Method & path | Auth | Purpose |
 |---|---|---|
-| `POST /api/p` | Optional | Kick off a crawl, or return the page's UUID if one is already running / cached. Response body: `{ page_id, cached }` where `page_id` is the `pages.id` UUID — `/p/{page_id}` is always the same URL for the same canonical page. |
-| `GET /api/p/[id]` | Public | Poll a job's status and fetch its result. |
+| `POST /api/p` | Optional | Kick off a crawl, or return the page's UUID if one is already running / cached. Response body: `{ page_id, job_id?, cached }`. `page_id` is the `pages.id` UUID — `/p/{page_id}` is always the same URL for the same canonical page. `job_id` is set whenever a crawl is in flight (new dispatch or attached to an existing in-flight one); the client routes to `/jobs/{job_id}` for live progress. Cache hits omit `job_id` and the client routes straight to `/p/{page_id}`. |
+| `GET /api/p/[id]` | Public | Page-state read by `pages.id`. Returns the cached `result` + `crawled_pages` when terminal, plus `last_checked_at` for the freshness label. Used by the `/p/{id}` RSC for its initial render; *not* the live-poll target (live polling lives at `/api/jobs/[id]`). Terminal responses get a long edge-cache; in-flight returns `no-store`. |
+| `GET /api/jobs/[id]` | Public | Live job status by `jobs.id`. Returns `{ id, pageId, pageUrl, status, progress, error, ... }` — no `result`, kept lightweight for poll traffic. The `/jobs/{id}` page polls this every `ui.POLL_INTERVAL_MS` and `router.replace`s to `/p/{pageId}` on terminal success. Terminal responses are short-cached; in-flight returns `no-store`. |
 | `GET /api/p/request?pageUrl=…` | Optional | Returns `{ inHistory: boolean }` for the signed-in user; anon callers always get `false`. Powers the result page's conditional "Add to dashboard" button. |
 | `POST /api/p/request?pageUrl=…` | Required | Upsert a `user_requests` row for the signed-in user — used from the result page when a user wants to save a shared URL they didn't originally submit. No crawl is triggered. 404s if the URL isn't already in `pages`. Origin-checked. |
 | `DELETE /api/p/request?pageUrl=…` | Required | Remove a page from the signed-in user's history. |
@@ -124,20 +125,24 @@ Every new-crawl request lands here. The flow is four gates then a branch:
 
 Past the gates, the route tries to avoid work:
 
-- **Cache / in-flight check** — we try up to three keys (raw, `www.`-alternate, and canonical-after-HEAD-probe) because most repeat submissions match one of the first two without paying for a HEAD request. Canonicalisation uses a dual www/non-www probe (via `resolveCanonicalUrl` in `lib/crawler/net/canonicalUrl.ts`) and strips tracking + per-request session/OAuth tokens so the cache key stays stable across resubmissions. Any hit (cached terminal result or in-flight job we can attach to) returns the matching `page_id` immediately.
+- **Cache / in-flight check** — we try up to three keys (raw, `www.`-alternate, and canonical-after-HEAD-probe) because most repeat submissions match one of the first two without paying for a HEAD request. Canonicalisation uses a dual www/non-www probe (via `resolveCanonicalUrl` in `lib/crawler/net/canonicalUrl.ts`) and strips tracking + per-request session/OAuth tokens so the cache key stays stable across resubmissions. A cached terminal hit returns `{ page_id, cached: true }`; an in-flight attach returns `{ page_id, job_id, cached: false }` so the client can route to `/jobs/{job_id}` for the live view.
 - **TTL-stale signature check** — if a cached row exists but is past `PAGE_TTL_HOURS`, run the same signature probe the monitor cron uses (`detectChange` → sitemap + homepage hash). `recordMonitorCheck` stamps `last_checked_at` regardless of outcome, and if the signature hasn't drifted we return the existing result as a cache hit without burning NEW_CRAWL budget. Drift or an uncomputable signature falls through to the new-crawl branch.
 - **New crawl** — on a full miss (or on drift from the branch above): charge the NEW_CRAWL bucket, insert a `jobs` row, and call `enqueueCrawl(jobId, url)` (QStash in prod, `waitUntil` fallback in dev). The HTTP response returns immediately; the actual pipeline runs later in the worker (`app/api/worker/crawl/route.ts` under QStash, the caller's own Fluid Compute instance under the dev fallback).
 
 On every branch — cache hit, in-flight attach, TTL-stale-unchanged, new crawl — `bumpPageRequest` fires and a signed-in caller gets an `upsertUserRequest` written to their dashboard history (idempotent against `UNIQUE(user_id, page_url)`).
 
-### `GET /api/p/[id]` — the poll target
+### `GET /api/p/[id]` — page-state read
 
-Client polls every `ui.POLL_INTERVAL_MS` until the job is terminal. The route:
+Used by the `/p/{id}` RSC for its initial render and as the public read endpoint for the cached result. Not on the client poll path — that lives on `GET /api/jobs/[id]`, below. The route:
 
 - Looks up the page by UUID, joining to the latest job for status/progress/error and (when terminal) the cached `result` + `crawled_pages`.
-- Does not touch `last_requested_at` — the poll is a pure read. `bumpPageRequest` fires on every `POST /api/p` branch and on the `/p/[id]` RSC render for non-failed pages (failed pages are intentionally left to age out of the monitor rotation), so the sweeper already sees user activity without one write per poll.
+- Does not touch `last_requested_at` — the read is pure. `bumpPageRequest` fires on every `POST /api/p` branch and on the `/p/[id]` RSC render for non-failed pages (failed pages are intentionally left to age out of the monitor rotation).
 - Scrubs the `error` field (see [`SECURITY.md §9`](./SECURITY.md#9-error-information-disclosure)) so user-facing text doesn't leak resolved IPs or SSRF detail.
-- Sets a long public Cache-Control on terminal responses so Vercel's CDN handles repeat polls. Freshness comes from **write-side invalidation** — `updateJob` calls `revalidatePath` on the page's `/api/p/{id}` whenever a terminal result is written — rather than the TTL. The TTL is a safety net for dropped revalidations, schema changes, or direct-SQL writes; the common path never waits for it. In-flight polls return `no-store` so progress stays live.
+- Sets a long public Cache-Control on terminal responses so Vercel's CDN handles repeat reads. Freshness comes from **write-side invalidation** — `updateJob` calls `revalidatePath` on the page's `/api/p/{id}` whenever a terminal result is written — rather than the TTL. The TTL is a safety net for dropped revalidations, schema changes, or direct-SQL writes; the common path never waits for it. In-flight returns `no-store`.
+
+### `GET /api/jobs/[id]` — the live-poll target
+
+The `/jobs/{id}` progress view polls this every `ui.POLL_INTERVAL_MS`. Returns lightweight job state (status / progress / error / `pageId` / `pageUrl`) — no `result` payload, since the page redirects to `/p/{pageId}` the moment status flips terminal. Terminal responses are short-cached at the edge (`s-maxage=60`) since the client navigates away on its next poll; in-flight returns `no-store`. Errors are scrubbed via the same `scrubError()` used by `/api/p/[id]`.
 
 ### `GET /api/monitor` — daily sweep
 
@@ -234,12 +239,13 @@ An earlier draft had `monitors` and `monitor_runs` tables and a proper state mac
 
 ## 9. Frontend
 
-Four routes: `/` (landing with the URL input), `/dashboard` (signed-in history, infinite-scroll), `/p/[id]` (live crawl progress → read-only result), `/login` (OAuth picker). The result page polls `/api/p/[id]` until the job is terminal; it also validates the final `llms.txt` against the spec in-browser and surfaces a "Spec valid" / "N issues" badge. Signed-in viewers on a shared result URL they don't yet own see an "Add to Dashboard" button that saves the URL without re-crawling.
+Five routes: `/` (landing with the URL input), `/dashboard` (signed-in history, infinite-scroll), `/jobs/[id]` (live crawl progress), `/p/[id]` (cached-result permalink), `/login` (OAuth picker). Progress and result are split on purpose: `/p/{id}` is a pure permalink that always renders the most-recently-good `llms.txt` for the page (no polling, no progress UI, no `?simulate=` hack); `/jobs/{id}` polls `/api/jobs/[id]` every `ui.POLL_INTERVAL_MS` and `router.replace`s to `/p/{pageId}` the moment the job goes terminal. Cache-miss submissions and Refresh-button clicks that dispatch a fresh crawl land on `/jobs/{id}`; cache-hit submissions and direct visits to a permalink land on `/p/{id}`. The result page validates `llms.txt` against the spec in-browser and surfaces a "Spec valid" / "N issues" badge; signed-in viewers on a shared result URL they don't yet own see an "Add to Dashboard" button that saves the URL without re-crawling.
 
-Two client-side-only behaviours worth knowing about:
+If `/p/{id}` is hit before the page has ever produced a result (only-ever-failed crawls, or the rare race where a permalink is visited before the first crawl finishes), the RSC redirects to `/jobs/{activeJobId}` if a job is in flight, otherwise 404s.
 
-- **Per-tab job cache** — recently-seen crawl results are cached in memory so tabbing between dashboard and result doesn't re-fetch. Cleared on Supabase `SIGNED_OUT` so a prior user's view doesn't leak into the next session.
-- **Poll circuit-breaker** — after several consecutive poll failures the page stops polling and shows a "lost connection" banner with a manual reload. Prevents a dead backend from hammering the API.
+One client-side-only behaviour worth knowing about:
+
+- **Poll circuit-breaker** — on `/jobs/{id}`, after several consecutive poll failures the page stops polling and shows a "lost connection" banner with a manual reload. Prevents a dead backend from hammering the API.
 
 Everything else (component names, state-management details, specific element labels) is code-level — see the files under `app/`.
 
@@ -348,7 +354,7 @@ The following are out of scope for the current implementation. Each is plausible
 
 Organised by concern, not by file. Individual filenames drift; folder purpose doesn't.
 
-- **`app/`** — Next.js App Router. Page routes (`/`, `/dashboard`, `/p/[id]`, `/login`) plus `app/api/*` for every HTTP endpoint. `app/components/` holds cross-route UI chrome (header, user menu, confirm dialog).
+- **`app/`** — Next.js App Router. Page routes (`/`, `/dashboard`, `/jobs/[id]`, `/p/[id]`, `/login`) plus `app/api/*` for every HTTP endpoint. `app/components/` holds cross-route UI chrome (header, user menu, confirm dialog).
 - **`lib/config.ts`** — every tunable constant (see §11).
 - **`lib/store.ts`** — Supabase access layer with the service-role key. Server-only — never imported into client code.
 - **`lib/env.ts`**, **`lib/log.ts`** — `requireEnv()` fail-fast helper and the `debugLog` / `errorLog` pair that forward `Error` payloads to Sentry.

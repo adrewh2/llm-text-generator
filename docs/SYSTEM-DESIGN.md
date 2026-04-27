@@ -18,13 +18,15 @@ flowchart TB
         direction LR
         Landing["/"]
         Dash["/dashboard"]
+        Progress["/jobs/[id]"]
         Result["/p/[id]"]
     end
 
     subgraph Vercel["Vercel Fluid Compute (Next.js App Router)"]
         direction TB
         APIP["POST /api/p<br/>submit crawl"]
-        APIPID["GET /api/p/[id]<br/>poll job state"]
+        APIPID["GET /api/p/[id]<br/>page-state read"]
+        APIJID["GET /api/jobs/[id]<br/>live job poll"]
         APIPG["GET /api/pages + /download<br/>user history + zip"]
         APIM["GET /api/monitor<br/>daily cron handler"]
         APIW["POST /api/worker/crawl<br/>QStash-signed worker"]
@@ -44,14 +46,16 @@ flowchart TB
 
     Landing -- submit URL --> APIP
     Dash -- list + delete --> APIPG
-    Result -- poll every 5 s --> APIPID
+    Progress -- poll every 5 s --> APIJID
+    Result -- RSC initial load --> APIPID
     Browser -- any request --> MW
     MW -- getUser --> Supa
 
     APIP -- "consume SUBMIT (always)<br/>+ NEW_CRAWL (on cache miss)" --> Redis
     APIP -- createJob + upsertUserRequest --> Supa
     APIP -- publishJSON --> QStash
-    APIPID -- getJob --> Supa
+    APIPID -- getPageById --> Supa
+    APIJID -- getJobById --> Supa
     APIPG -- user_requests + pages --> Supa
 
     QStash -- signed POST --> APIW
@@ -68,7 +72,7 @@ flowchart TB
 ### How to read it
 
 - **Browser** routes only reach Vercel Fluid Compute. They never touch Upstash / Anthropic / target sites directly.
-- **`POST /api/p`** is the fast path: validate → charge SUBMIT bucket → canonicalize URL → check `pages` cache → attach-to-in-flight → charge NEW_CRAWL bucket → enqueue → return 201. The NEW_CRAWL charge only happens on the cache-miss branch, so repeat hits on popular URLs don't erode the tight Anthropic/Puppeteer budget guard. It never runs the crawl itself.
+- **`POST /api/p`** is the fast path: validate → charge SUBMIT bucket → canonicalize URL → check `pages` cache → attach-to-in-flight → charge NEW_CRAWL bucket → enqueue → return 200 (cache hit) or 201 (new crawl). Cache hits respond `{ page_id, cached: true }` and the client routes to `/p/{page_id}`; in-flight attaches and new crawls respond `{ page_id, job_id, cached: false }` and the client routes to `/jobs/{job_id}` for live progress. The NEW_CRAWL charge only happens on the cache-miss branch, so repeat hits on popular URLs don't erode the tight Anthropic/Puppeteer budget guard. It never runs the crawl itself.
 - **`POST /api/worker/crawl`** is where the actual work happens. Every arrow from the worker to an external service (`Supa`, `Web`, `Claude`) is inside one ~30–60 s function invocation.
 - **`GET /api/monitor`** is a separate entrypoint that fans out into the same queue. The worker doesn't know whether a job came from a user submission or from the cron.
 - **Upstash services** are provisioned through the Vercel Marketplace, so the env vars are auto-injected into Production + Preview. No secrets in the codebase.
@@ -101,7 +105,8 @@ sequenceDiagram
     P->>DB: INSERT job (pending) + upsertUserRequest
     P->>Q: publishJSON({ jobId, url })
     Q-->>P: ack
-    P-->>U: 201 { page_id }
+    P-->>U: 201 { page_id, job_id, cached: false }
+    note over U: Browser routes to /jobs/{job_id}<br/>which polls status below.
 
     rect rgb(245,245,245)
         note right of Q: QStash holds the message<br/>and pushes to the worker URL
@@ -130,11 +135,11 @@ sequenceDiagram
     W-->>Q: 200 OK
     Q->>Q: mark delivered
 
-    loop client poll (until terminal status)
-        U->>DB: GET /api/p/[id] every 5 s
+    loop client poll on /jobs/{id} (until terminal status)
+        U->>DB: GET /api/jobs/[id] every 5 s
     end
 
-    note over U: After terminal — Vercel's edge CDN serves<br/>repeat polls from Cache-Control. updateJob<br/>revalidates the page's /api/p/{pageId}<br/>path on re-crawl.
+    note over U: On terminal success — /jobs/{id} client<br/>router.replace's to /p/{pageId}. The /p/{id}<br/>RSC reads /api/p/[id], which is edge-cached;<br/>updateJob revalidates that path on re-crawl.
 ```
 
 ### Failure modes and retries

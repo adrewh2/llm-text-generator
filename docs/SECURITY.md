@@ -118,7 +118,7 @@ Sign-in goes through Supabase-hosted OAuth (GitHub, Google). The client never se
 
 ### Middleware session refresh
 
-`middleware.ts` runs on routes that actually use the session cookie and calls `supabase.auth.getUser()`, which refreshes the cookie if it's near expiry. Without this step, API routes would see stale auth cookies and `getUser()` would return null mid-session. The matcher is an explicit allowlist — `/dashboard/*`, `/login`, `/auth/*`, `/api/*` — chosen because every route that needs auth is in one of those four prefixes. Public routes (`/`, `/p/{id}`) skip the middleware entirely so anon viewers don't pay for an auth round-trip; the handful of `/api/*` routes that are public (e.g. `GET /api/p/[id]`) still pass through but the extra round-trip is a fair price for keeping the matcher simple.
+`middleware.ts` runs on routes that actually use the session cookie and calls `supabase.auth.getUser()`, which refreshes the cookie if it's near expiry. Without this step, API routes would see stale auth cookies and `getUser()` would return null mid-session. The matcher is an explicit allowlist — `/dashboard/*`, `/login`, `/auth/*`, `/api/*` — chosen because every route that needs auth is in one of those four prefixes. Public routes (`/`, `/p/{id}`, `/jobs/{id}`) skip the middleware entirely so anon viewers don't pay for an auth round-trip; the handful of `/api/*` routes that are public (e.g. `GET /api/p/[id]`, `GET /api/jobs/[id]`) still pass through but the extra round-trip is a fair price for keeping the matcher simple.
 
 ### Authorization is per-endpoint
 

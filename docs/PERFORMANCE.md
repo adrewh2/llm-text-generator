@@ -118,7 +118,7 @@ Roughly in the order things break as traffic scales up:
 
 1. **DB size.** The `pages.crawled_pages` JSONB column dominates storage, and without a `jobs`-cleanup cron, monitor re-crawls keep stacking rows. First mitigation is a cleanup cron that drops older terminal `jobs` rows once a newer terminal exists for the same URL; second is trimming `crawled_pages` (e.g. drop `bodyExcerpt` once enrichment has consumed it).
 2. **Connection pool pressure.** Supabase's PgBouncer handles many concurrent connections out of the box; because we cache one service-role client per Fluid instance, the open-connection count scales with instance count, not request count. Only becomes a bottleneck at very high concurrent-instance counts — use Supabase's transaction-mode pooler when that happens.
-3. **Read-heavy traffic on `/p/[id]` polling.** Terminal responses are already edge-cached and invalidated on re-crawl, so repeat polls of finished jobs don't reach Postgres. In-flight polls still read the DB every poll interval; bounded by concurrent-user count, not total row count, so not a near-term worry.
+3. **Read-heavy traffic on `/jobs/[id]` polling.** Live job polls go to `/api/jobs/[id]`; terminal responses are short-cached at the edge and the client navigates away to `/p/{pageId}` on its next poll, so finished jobs don't accumulate poll load. In-flight polls still read the DB every poll interval; bounded by concurrent-user count, not total row count, so not a near-term worry. The cached-result read on `/api/p/[id]` is edge-cached long with worker-driven `revalidatePath`, so repeat reads of the same permalink don't reach Postgres.
 
 ### What doesn't get worse with size
 

@@ -201,10 +201,10 @@ export const monitor = {
 // ─── Client UI timing ───────────────────────────────────────────────────────
 
 export const ui = {
-  /** /p/[id] polling cadence while a job is running. Progress counts
-   *  only tick every few seconds during an active crawl, so a 5 s
-   *  cadence still feels live and cuts in-flight DB read pressure by
-   *  ~3× vs. the old 1.5 s. */
+  /** /jobs/[id] polling cadence while a job is running. Progress
+   *  counts only tick every few seconds during an active crawl, so a
+   *  5 s cadence still feels live and cuts in-flight DB read pressure
+   *  by ~3× vs. the old 1.5 s. */
   POLL_INTERVAL_MS: 5_000,
   /** Consecutive poll failures before the client shows "lost connection". */
   MAX_POLL_FAILURES: 5,
@@ -212,6 +212,4 @@ export const ui = {
   LIVE_MIN_STEP_DWELL_MS: 1_200,
   /** How often the "Refreshed X ago" label re-renders. */
   MONITOR_STATUS_TICK_MS: 10_000,
-  /** LRU cap on the client-side per-tab job metadata cache. */
-  JOB_CACHE_MAX: 30,
 };
