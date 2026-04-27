@@ -4,7 +4,8 @@ import { crawler } from "../../config"
 import { cleanSiteName, siteNameFromHostname } from "./siteName"
 
 // Cap excerpt at roughly 4 KB of UTF-8 so a malicious site serving a
-// wall of 4-byte Unicode can't inflate what we store in pages.crawled_pages.
+// wall of 4-byte Unicode can't inflate the per-page row in
+// pages.crawled_pages.
 const MAX_EXCERPT_BYTES = crawler.EXCERPT_MAX_BYTES
 
 export function extractMetadata(
@@ -66,7 +67,7 @@ function extractTitle($: CheerioAPI): string {
 
 // Classes / attributes that conventionally mark content as visually
 // hidden / screen-reader-only. Removing these from a cloned subtree
-// gives us "what a sighted user would read" before we extract text.
+// leaves "what a sighted user would read" before text extraction.
 const SR_ONLY_SELECTOR = [
   ".sr-only",
   ".visually-hidden",
@@ -77,10 +78,10 @@ const SR_ONLY_SELECTOR = [
   "[hidden]",
 ].join(",")
 
-// Titles often have a site-name suffix like "Page — Site Name" that we
-// want to strip. Be conservative: only strip if the suffix starts with
+// Titles often have a site-name suffix like "Page — Site Name" worth
+// stripping. Be conservative: only strip if the suffix starts with
 // a word character (a capital letter is a stronger signal but e.g.
-// lowercase site names exist). We never strip em/en dashes that are
+// lowercase site names exist). Never strip em/en dashes that are
 // inside a longer sentence — require at least a leading space+sep.
 function cleanTitle(t: string): string {
   return t

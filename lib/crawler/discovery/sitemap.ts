@@ -34,8 +34,8 @@ async function processSitemap(
     if (!contentType.includes("xml") && !contentType.includes("text")) return
 
     // Stream with a cap — a multi-GB sitemap (or a misbehaving server
-    // sending chunked content forever) would otherwise OOM us before
-    // the XML parser is reached.
+    // sending chunked content forever) would otherwise OOM the
+    // function before the XML parser is reached.
     const text = await readBoundedText(res, SITEMAP_MAX_BYTES)
     if (text === null) return
     const $ = load(text, { xmlMode: true })
@@ -51,7 +51,7 @@ async function processSitemap(
       return
     }
 
-    // URL set — explicit loop so we can break cleanly when we hit the cap.
+    // URL set — explicit loop so the iteration can break cleanly at the cap.
     const locs = $("url > loc").toArray()
     for (const el of locs) {
       if (collected.length >= MAX_SITEMAP_URLS) break

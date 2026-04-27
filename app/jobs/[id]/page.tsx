@@ -11,7 +11,7 @@ import JobView from "./JobView"
 //
 // If the RSC catches a terminal job on first paint (someone shared
 // or refreshed a /jobs/{id} link after completion), redirect server-
-// side so we don't bother rendering the progress UI at all.
+// side so the progress UI never renders.
 export default async function JobPage({
   params,
 }: {

@@ -206,10 +206,9 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
             {/* Mobile: URL box is its own bordered card; Generate
                 button sits below as a separate full-width button (no
                 shared border). sm+: both live inside one bordered
-                container for the pill-form look. We swap which
-                element "owns" the border via sm: prefixed classes —
-                outer is bordered at sm+, inner URL wrapper is
-                bordered below sm. */}
+                container for the pill-form look. The border owner
+                swaps via sm: prefixed classes — outer is bordered at
+                sm+, inner URL wrapper is bordered below sm. */}
             <div
               className={`flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-0 sm:bg-white sm:border sm:rounded-xl sm:p-1.5 sm:shadow-sm sm:transition-all sm:duration-200 ${
                 focused
@@ -335,7 +334,7 @@ export default function LandingClient({ initialUser = null }: { initialUser?: Us
           </p>
           <div className="grid md:grid-cols-3 gap-10">
             {[
-              { icon: Globe, step: 1, title: "Crawl", desc: "We traverse the site via sitemap.xml, robots.txt, and link discovery — respecting robots.txt rules and prioritizing high-value pages." },
+              { icon: Globe, step: 1, title: "Crawl", desc: "Traverses the site via sitemap.xml, robots.txt, and link discovery — respecting robots.txt rules and prioritizing high-value pages." },
               { icon: Zap, step: 2, title: "Enrich", desc: "An LLM classifies each page, scores its importance, assigns it to a meaningful section, and writes a concise description." },
               { icon: CheckCircle, step: 3, title: "Generate", desc: "The output is a single spec-compliant llms.txt file — ready to copy, download, or host at your own /llms.txt." },
             ].map(({ icon: Icon, step, title, desc }) => (

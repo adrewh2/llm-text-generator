@@ -6,10 +6,10 @@
 // English content on top while still letting a Japanese-first site
 // like nikkei.com generate a useful llms.txt in its own language.
 
-// ISO 639-1 codes we recognize as locale prefixes in URL paths. This
-// is the allowlist the URL-shape detector compares against — anything
-// that isn't in here stays neutral (a /us/ or /ca/ segment on an
-// English regional page shouldn't be mis-read as Catalan or Ukrainian).
+// ISO 639-1 codes recognized as locale prefixes in URL paths. The
+// URL-shape detector compares against this allowlist — anything not
+// in here stays neutral (a /us/ or /ca/ segment on an English
+// regional page shouldn't be mis-read as Catalan or Ukrainian).
 const KNOWN_LOCALE_CODES = new Set([
   "ar", "bg", "bn", "cs", "da", "de", "el", "en", "es", "et", "fa", "fi",
   "fr", "gu", "he", "hi", "hr", "hu", "id", "is", "it", "ja", "kn",

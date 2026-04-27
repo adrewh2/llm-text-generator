@@ -15,7 +15,7 @@ import { errorLog } from "@/lib/log"
 
 // Fire-and-forget wrapper around `waitUntil` that surfaces failures to
 // Sentry via errorLog. Without the catch, a rejected background promise
-// logs once via Vercel but doesn't land in our Issues feed.
+// logs once via Vercel but doesn't land in the Sentry Issues feed.
 function runAfterResponse(context: string, p: Promise<unknown>): void {
   waitUntil(
     p.catch((err) => errorLog(`api/p.${context}`, err instanceof Error ? err : new Error(String(err))))
@@ -140,9 +140,9 @@ export async function POST(req: NextRequest) {
     return null
   }
 
-  // Pre-resolution cache check. Most cached URLs sit under one of the
-  // two raw www/non-www forms of what the user submitted, so we can
-  // usually serve cache hits without paying for the HEAD probes.
+  // Pre-resolution cache check. Most cached URLs sit under one of
+  // the two raw www/non-www forms of what the user submitted, so
+  // cache hits usually land here without paying for the HEAD probes.
   const rawKey = normalizeUrl(trimmed) || trimmed
   const altKey = normalizeUrl(altWwwForm(trimmed)) || trimmed
   const preKeys = rawKey === altKey ? [rawKey] : [rawKey, altKey]
@@ -159,7 +159,7 @@ export async function POST(req: NextRequest) {
   const canonicalUrl = normalizeUrl(await resolveCanonicalUrl(trimmed)) || trimmed
 
   // Post-resolution cache check — only needed if the canonical URL
-  // differs from the raw forms we already tried (e.g. the server
+  // differs from the raw forms already tried (e.g. the server
   // redirected to a different hostname like `auth.foo.com/login`).
   if (!preKeys.includes(canonicalUrl)) {
     const res = await tryServeAt(canonicalUrl)
@@ -185,7 +185,7 @@ export async function POST(req: NextRequest) {
         { status: 200 },
       )
     }
-    // Drift detected, or we couldn't compute a fresh signature (both
+    // Drift detected, or fresh signature couldn't be computed (both
     // fetches failed). Fall through to dispatch a fresh crawl.
   }
 

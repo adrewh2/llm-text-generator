@@ -54,8 +54,8 @@ export async function GET(req: NextRequest) {
   // elsewhere starts treating these as legit in-flight work.
   const stuckFailed = await sweepStuckJobs(STUCK_JOB_AFTER_MS)
 
-  // Then retire pages nobody has requested recently so we don't burn
-  // cycles detecting changes on dormant URLs.
+  // Then retire pages nobody has requested recently so the cron
+  // doesn't burn cycles detecting changes on dormant URLs.
   const swept = await sweepStaleMonitoredPages(STALE_MONITOR_DAYS)
 
   const pages = await getMonitoredPages({ limit: MONITOR_BATCH_SIZE })

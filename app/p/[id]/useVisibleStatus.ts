@@ -57,7 +57,7 @@ export function useVisibleStatus(job: ApiJob | null): JobStatus {
     }
 
     // Collapse "partial" into "complete" for progression purposes —
-    // then surface it as partial when we actually land on that step.
+    // surface it as partial when the step is actually reached.
     const effectiveTarget: string =
       job.status === "partial" ? "complete" : job.status
     const targetIdx = indexOfStatus(effectiveTarget)

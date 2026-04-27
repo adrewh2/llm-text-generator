@@ -34,7 +34,7 @@ export default function MonitorStatus({ monitored, lastCheckedAt, running }: Pro
   if (!label) return null
   return (
     <span
-      title="We re-check this site's sitemap and homepage on a schedule and refresh the llms.txt when it changes"
+      title="Re-checks this site's sitemap and homepage on a schedule and refreshes the llms.txt when it changes"
       // Fixed width wide enough for "Refreshed N hours/minutes ago"
       // without truncation. justify-end right-aligns short labels so
       // they hug the trash/chevron column instead of leaving a visible

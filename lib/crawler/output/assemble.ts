@@ -86,7 +86,8 @@ function encodeMarkdownUrl(url: string): string {
  * so the rendered markdown reads the way the site itself writes its
  * own links — `https://llmstxt.org`, not `https://llmstxt.org/`. The
  * WHATWG URL parser always emits `/` for root paths, so the stored
- * cache key keeps it (stability); we strip it only at render time.
+ * cache key keeps it (stability); the slash is stripped only at
+ * render time.
  */
 function formatDisplayUrl(url: string): string {
   try {
@@ -122,7 +123,7 @@ function resolveDisplayLabels(pages: ScoredPage[], siteName: string): Map<string
   // not a per-page title — typically an SPA that forgot to update
   // document.title on route change. Treat it the same as
   // `title === siteName`: fall back to a URL-derived label so each
-  // entry is actually distinguishable. Threshold of 3 keeps us from
+  // entry is actually distinguishable. Threshold of 3 avoids
   // misfiring on real 2-page collisions that Pass 2 handles fine.
   const titleCounts = new Map<string, number>()
   for (const p of pages) {

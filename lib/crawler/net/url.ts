@@ -234,8 +234,8 @@ export function clientValidateUrl(raw: string):
   }
 
   // Regular hostname — require at least one dot so single-word typos
-  // (e.g. `asfpskdafj`) don't fall through to a DNS lookup on the
-  // server that we already know will fail.
+  // (e.g. `asfpskdafj`) don't fall through to a DNS lookup that's
+  // guaranteed to fail.
   if (!lowered.includes(".")) {
     return { ok: false, reason: "Enter a full domain (e.g. example.com)" }
   }

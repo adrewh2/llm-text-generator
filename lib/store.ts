@@ -368,9 +368,9 @@ export async function recordMonitorCheck(
 ): Promise<void> {
   const supabase = getClient()
   const patch: Record<string, unknown> = { last_checked_at: new Date().toISOString() }
-  // Only overwrite the signature when we actually computed one — a null
-  // here means "detection failed this cycle", keep the previous sig so
-  // we can still diff next time.
+  // Only overwrite the signature when one was actually computed — a
+  // null here means "detection failed this cycle", so the previous
+  // signature is kept and the next tick can still diff against it.
   if (signature !== null) patch.content_signature = signature
   // Surface both transport errors and zero-row updates: a silent no-op
   // (e.g. URL-form mismatch between the monitored row and the value the

@@ -2,9 +2,9 @@
 //
 // `res.arrayBuffer()` / `res.text()` buffer the entire body in memory
 // before returning — a server that lies about (or omits) Content-Length
-// can send us unbounded data and OOM the function before any post-hoc
-// size check fires. These helpers pull chunks off the stream and abort
-// the body as soon as the cumulative size crosses `maxBytes`.
+// can send unbounded data and OOM the function before any post-hoc
+// size check fires. These helpers pull chunks off the stream and
+// abort the body as soon as the cumulative size crosses `maxBytes`.
 
 /**
  * Returns the decoded UTF-8 text up to `maxBytes`, or `null` when the

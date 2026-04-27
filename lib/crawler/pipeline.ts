@@ -118,7 +118,7 @@ async function runPipelineInner(
     const needsBrowser = plainFetchFailed || isSpa
     if (needsBrowser) await spaBrowser.init()
 
-    // Try the browser render as our homepage source when needed.
+    // Use the browser render as the homepage source when needed.
     let homepageHtml = rawHomepageHtml
     let homepageMeta = rawHomepageMeta
     if (needsBrowser) {
@@ -402,7 +402,7 @@ async function runPipelineInner(
 
     const error =
       status === "failed" && primary.length === 0 && optional.length === 0
-        ? "browser render failed"  // scrubError maps this to "We couldn't render this site."
+        ? "browser render failed"  // scrubError maps this to "Couldn't render this site."
         : undefined
 
     await updateJob(jobId, {
@@ -435,8 +435,8 @@ function delay(ms: number): Promise<void> {
  *
  * Fetches happen in parallel but are bounded by
  * `EXTERNAL_REFS_MAX_KEEP`. Any fetch that 4xx/5xx/timeouts falls
- * back to an anchor-text-only entry so we don't silently drop a
- * curated reference because one third-party server was flaky.
+ * back to an anchor-text-only entry so a curated reference isn't
+ * silently dropped because one third-party server was flaky.
  */
 async function resolveExternalReferences(
   homepageHtml: string,

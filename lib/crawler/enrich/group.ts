@@ -59,9 +59,9 @@ export function filterAndSelectPages(
     ? (() => { try { return new URL(baseUrl).hostname } catch { return null } })()
     : null
 
-  // Drop same-domain root-path URLs — if we crawled "/" on the site
-  // we started from, it's the current `llms.txt`'s home and is
-  // already represented by the H1. Scoped to the base hostname so
+  // Drop same-domain root-path URLs — when "/" on the starting site
+  // is in the candidate list, it's the current `llms.txt`'s home and
+  // is already represented by the H1. Scoped to the base hostname so
   // external references like llmstxt.org/ survive this filter.
   const isOwnHomepage = (url: string): boolean => {
     try {
@@ -107,10 +107,10 @@ export function filterAndSelectPages(
   // crawlable content (Vite/SvelteKit/React SPA one-pagers, simple
   // tools, dashboards) the exclusion would leave the output empty
   // and the pipeline would fail the job. Rescue the homepage here
-  // so we still produce a valid (if minimal) llms.txt:
+  // so a valid (if minimal) llms.txt still emerges:
   // `# <SiteName>` + `## Optional` with the single homepage link.
-  // Sections aren't required by the spec, but we place it under
-  // Optional so the tiering stays meaningful.
+  // Sections aren't required by the spec, but Optional placement
+  // keeps the tiering meaningful.
   if (primary.length === 0 && optional.length === 0) {
     const rescueHomepage = pages
       .filter((p) => isOwnHomepage(p.url) && p.score >= INCLUDE_SCORE_THRESHOLD)

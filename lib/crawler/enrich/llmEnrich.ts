@@ -18,11 +18,11 @@ export type EnrichmentMap = Map<string, EnrichedData>
 const MAX_SECTION_LEN = SECTION_MAX_CHARS
 const MAX_DESCRIPTION_LEN = DESCRIPTION_MAX_CHARS
 
-// Remove characters that can be used to close our prompt delimiters
-// or re-open an injected instruction block. Keeps the content readable
-// but prevents `</untrusted_pages>`, markdown-link syntax, template
-// markers, or code fences from bleeding out of the fenced section the
-// model is told to treat as data.
+// Remove characters that could close the surrounding prompt
+// delimiters or re-open an injected instruction block. Keeps the
+// content readable but prevents `</untrusted_pages>`, markdown-link
+// syntax, template markers, or code fences from bleeding out of the
+// fenced section the model is told to treat as data.
 function neuter(s: string): string {
   return s
     .replace(/<[^>]*>/g, "")                       // strip any <...> (tags, including `<svg onload=…>` with attributes that the previous bare-identifier pattern let through)
@@ -57,10 +57,10 @@ function getClient(): Anthropic | null {
   if (!apiKey) return null
   // The Anthropic SDK has a built-in retry wrapper: it retries 408 /
   // 429 / 5xx with exponential backoff and honours the `retry-after`
-  // + `x-should-retry` response headers. We just bump the defaults
-  // — 2 retries isn't enough to ride out a bursty minute, 5 gives
-  // us ~30 s of total backoff. The per-call timeout stops a hung
-  // request from eating the pipeline budget.
+  // + `x-should-retry` response headers. The defaults (2 retries)
+  // aren't enough to ride out a bursty minute; 5 retries gives ~30 s
+  // of total backoff. The per-call timeout stops a hung request from
+  // eating the pipeline budget.
   return new Anthropic({
     apiKey,
     maxRetries: MAX_RETRIES,
@@ -103,9 +103,9 @@ async function enrichBatch(
 
   // Strip anything that looks like a prompt-injection payload before
   // embedding untrusted page content into the prompt. The <untrusted>
-  // fences below already tell the model to treat this as data, but we
-  // also neuter the common "ignore previous instructions" style so the
-  // model has less to refuse.
+  // fences below already tell the model to treat this as data; this
+  // also neuters the common "ignore previous instructions" style so
+  // the model has less to refuse.
   const pageList = pages.map((p, i) => {
     const headings = p.headings.slice(0, 4).map(neuter).join(" | ")
     const excerpt = neuter(p.bodyExcerpt?.slice(0, 250) || "")
@@ -259,8 +259,8 @@ Respond with a JSON object only — no prose outside the braces. The "confident"
  *   2. Collapse URLs that point to the same structural page under
  *      different query params (link dedup — e.g. locale, session, OAuth
  *      redirect targets). The deterministic tracking-param list catches
- *      common cases; the LLM handles the long tail without us hardcoding
- *      per-site param dictionaries.
+ *      common cases; the LLM handles the long tail without per-site
+ *      param dictionaries.
  */
 export async function rankCandidateUrls(
   candidates: string[],
@@ -280,7 +280,7 @@ export async function rankCandidateUrls(
 
   const prompt = `You are selecting URLs to crawl for an llms.txt file for "${siteName}".
 
-The goal of llms.txt is to help LLMs understand what a site offers. We want structural pages that explain the site's purpose, features, capabilities, or content — NOT individual content items.
+The goal of llms.txt is to help LLMs understand what a site offers. Pick structural pages that explain the site's purpose, features, capabilities, or content — NOT individual content items.
 
 Good to crawl: documentation, guides, API references, feature pages, about/company pages, pricing, support, examples, tutorials, changelogs.
 Skip: individual videos, articles, products, user profiles, search results, login pages, or anything that's one of millions of similar items.
@@ -290,7 +290,7 @@ IMPORTANT — collapse duplicate links. If multiple URLs point to the same struc
 - Three /ServiceLogin?continue=...&followup=... with different continue URLs → all the sign-in page, keep one
 - /terms?gl=US&hl=en and /terms?hl=en → same terms page, keep the shorter
 
-LANGUAGE PREFERENCE — the site's primary language is "${primaryLang}". When the same page is offered in multiple languages, prefer the primary-language variant. Skip locale-prefixed paths whose language differs from "${primaryLang}" when a primary-language equivalent is in the candidate list. If the site is multilingual and only non-primary variants are available for a given structural page, keep one — we'd rather include the page than omit it.
+LANGUAGE PREFERENCE — the site's primary language is "${primaryLang}". When the same page is offered in multiple languages, prefer the primary-language variant. Skip locale-prefixed paths whose language differs from "${primaryLang}" when a primary-language equivalent is in the candidate list. If the site is multilingual and only non-primary variants are available for a given structural page, keep one — including a non-primary variant beats omitting the page entirely.
 
 Homepage context:
 ${homepageExcerpt.slice(0, 400)}

@@ -54,8 +54,8 @@ export default function ResultPane({ job, signedIn }: Props) {
   }, [lastCheckedAt])
 
   // Clear pending "Copied!" timers on unmount so they don't fire on
-  // an unmounted component (React 19 no-ops this quietly but we'd
-  // rather not rely on it).
+  // an unmounted component (React 19 no-ops this quietly, but no
+  // reason to rely on that).
   useEffect(() => () => {
     if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
     if (copyLinkTimerRef.current) clearTimeout(copyLinkTimerRef.current)
@@ -64,8 +64,8 @@ export default function ResultPane({ job, signedIn }: Props) {
   // Resolve dashboard membership once per (viewer, url). Anon users
   // skip the round-trip entirely — inHistory stays null and the
   // button never renders. If the fetch fails (network, 500), treat
-  // as "already in" so we don't prompt the user to save something
-  // we're not confident about.
+  // as "already in" so the user isn't prompted to save something
+  // when membership is uncertain.
   useEffect(() => {
     if (!signedIn || !job.url) {
       setInHistory(null)

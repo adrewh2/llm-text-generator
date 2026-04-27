@@ -11,9 +11,9 @@ import UserMenu from "@/app/components/UserMenu"
 import ResultPane from "./ResultPane"
 import type { ApiJob } from "./types"
 
-// /p/{id} is a stable cached-result view. The RSC guarantees we
-// always have a non-empty `initialJob.result` here (otherwise it
-// would have redirected to /jobs/{jobId} or 404'd).
+// /p/{id} is a stable cached-result view. The RSC guarantees
+// `initialJob.result` is always non-empty here (otherwise it would
+// have redirected to /jobs/{jobId} or 404'd).
 export default function PageView({
   initialJob,
   initialUser,
@@ -26,8 +26,8 @@ export default function PageView({
   // Track auth state for the lifetime of this page so the avatar +
   // Dashboard button stay accurate across sign-in / sign-out events
   // in another tab. INITIAL_SESSION fires synchronously with whatever
-  // the client can resolve from cookies at that instant — we trust
-  // the server-resolved initialUser instead until a real auth event.
+  // the client can resolve from cookies at that instant — trust the
+  // server-resolved initialUser instead until a real auth event.
   useEffect(() => {
     const supabase = createClient()
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {

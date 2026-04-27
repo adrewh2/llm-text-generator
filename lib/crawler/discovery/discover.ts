@@ -22,13 +22,13 @@ export function extractLinksFromHtml(html: string, baseUrl: string): string[] {
 
 /**
  * Pull external (cross-origin) anchors off the page, keeping the
- * first anchor text we see per URL. Used to surface the site's own
- * outbound references — spec links, canonical library docs, related
- * projects — as `llms.txt` entries, rather than filtering them out
- * the way `extractLinksFromHtml` does for crawl-discovery.
+ * first anchor text encountered per URL. Used to surface the site's
+ * own outbound references — spec links, canonical library docs,
+ * related projects — as `llms.txt` entries, rather than filtering
+ * them out the way `extractLinksFromHtml` does for crawl-discovery.
  *
- * We don't follow these links further; they're fetched exactly once
- * for metadata, then embedded verbatim.
+ * These links are not followed; each is fetched exactly once for
+ * metadata, then embedded verbatim.
  */
 export interface ExternalLink {
   url: string

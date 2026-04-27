@@ -76,8 +76,8 @@ export default function UserMenu({ user }: { user: User }) {
           // Provider-hosted image; intentionally not next/image to
           // avoid needing to whitelist github.com/google.com in
           // next.config.js just for a 32px avatar. referrerPolicy
-          // keeps Google from 403'ing when the Referer exposes our
-          // origin.
+          // keeps Google from 403'ing when the Referer exposes the
+          // requesting origin.
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={avatarUrl}
@@ -117,8 +117,8 @@ export default function UserMenu({ user }: { user: User }) {
 
 // Pull up to two initials from a display name. Prefers first+last
 // initial for multi-word names ("Jane Doe" → "JD"); falls back to a
-// single letter for single-word names or emails (where we use the
-// local-part's first character). Always returns a non-empty string.
+// single letter for single-word names or emails (the local-part's
+// first character). Always returns a non-empty string.
 function computeInitials(raw: string): string {
   const source = raw.trim()
   if (!source) return "U"

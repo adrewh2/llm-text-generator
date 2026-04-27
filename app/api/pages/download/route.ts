@@ -15,8 +15,8 @@ export async function GET() {
   if (!user) return new NextResponse(null, { status: 401 })
 
   // One zip per user per 24h. Zipping + shipping up to 500 page
-  // results is our most expensive authenticated read; bound it so a
-  // signed-in attacker can't loop the endpoint.
+  // results is the most expensive authenticated read on the surface;
+  // bounding it stops a signed-in attacker from looping the endpoint.
   const rate = await consumeRateLimit(`zip:${user.id}`, rateLimit.AUTH_ZIP_DOWNLOAD)
   if (!rate.allowed) {
     return NextResponse.json(

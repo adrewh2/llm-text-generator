@@ -22,7 +22,7 @@ function canonicalPageUrl(raw: string | null): string | null {
  * GET /api/p/request?pageUrl=…
  * Tells the caller whether the signed-in user already has this URL
  * in their history. Powers the "Add to dashboard" affordance on the
- * result page — we only show the button when the URL isn't already
+ * result page — the button is only shown when the URL isn't already
  * saved.
  *
  * Not origin-checked (read-only, side-effect-free). Auth-gated;

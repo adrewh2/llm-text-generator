@@ -28,9 +28,9 @@ export async function GET(
 
   // Terminal success → long-lived edge cache; `updateJob` revalidates
   // the path on the next re-crawl. `failed` is kept short because it
-  // often reflects a transient condition (DNS blip, bot challenge, a
-  // site we haven't yet added a workaround for) — we'd rather absorb
-  // a retry hot path than pin someone's broken result for a day.
+  // often reflects a transient condition (DNS blip, bot challenge,
+  // a site without a workaround yet) — better to absorb a retry hot
+  // path than pin someone's broken result for a day.
   const cacheControl =
     job.status === "complete" || job.status === "partial"
       ? "public, s-maxage=86400, stale-while-revalidate=604800"

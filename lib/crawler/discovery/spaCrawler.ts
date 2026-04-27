@@ -33,8 +33,8 @@ export function isSpaHtml(html: string, bodyExcerpt: string): boolean {
   // HTML. Catches Vite-built React / Vue / Svelte / Nuxt shells which
   // are often under 1 KB total — the size-based check further down
   // was written for bloated CRA / Angular builds and misses these.
-  // The div must be explicitly empty (`<div id="root"></div>`) so we
-  // don't false-positive on SSR'd pages that happen to use
+  // The div must be explicitly empty (`<div id="root"></div>`) to
+  // avoid false-positives on SSR'd pages that happen to use
   // `id="root"` as a wrapper around real content.
   if (
     textLen < 100 &&
