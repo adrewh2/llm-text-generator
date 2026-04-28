@@ -236,9 +236,9 @@ Each invocation does three things, in order:
 2. **Retire stale pages** — any page not requested in the last `monitor.STALE_DAYS` has `monitored` set to `false`, bounding the working set to URLs people are actually using.
 3. **Signature sweep** — pull the next batch of monitored pages (oldest-checked first, same-host politeness delay between hits), compute a signature over the site (sitemap URL set + normalised homepage HTML, hashed together), and dispatch a re-crawl if the signature drifted from the stored one. First-ever check just records the baseline without triggering a crawl; transient fetch failures don't overwrite the stored signature.
 
-Re-crawls flow through the same `enqueueCrawl` path as user submissions. A successful crawl stamps `last_checked_at` itself, so the dashboard shows "Refreshed just now" immediately after first generation rather than dangling on "Awaiting check" until the next cron tick.
+Re-crawls flow through the same `enqueueCrawl` path as user submissions, but with one critical difference: the cron passes a per-job `delaySeconds` stagger. Without it, a tick where N URLs drifted would publish N QStash messages back-to-back, all workers would start within seconds, and ~N×4 LLM calls would land in the same Anthropic-RPM minute. The cron tracks an index of drift-triggered re-crawls and passes `delaySeconds = min(index × RECRAWL_STAGGER_SEC, RECRAWL_STAGGER_MAX_SEC)` (defaults: 5s stride, 5min cap). User submissions still enqueue with delay 0 — they're rate-limited at the user-facing edge and don't fan out. A successful crawl stamps `last_checked_at` itself, so the dashboard shows "Refreshed just now" immediately after first generation rather than dangling on "Awaiting check" until the next cron tick.
 
-Narrower than the crawl pipeline by design: the monitor only fetches `{origin}/sitemap.xml` (not robots-declared sitemaps or `/sitemap_index.xml` indirection), because it runs on every monitored URL every tick and indirection would balloon the cost. Thresholds and sizing (`STALE_DAYS`, `BATCH_SIZE`, `SAME_HOST_DELAY_MS`, `STUCK_JOB_AFTER_MS`) live in `lib/config.ts` → `monitor`.
+Narrower than the crawl pipeline by design: the monitor only fetches `{origin}/sitemap.xml` (not robots-declared sitemaps or `/sitemap_index.xml` indirection), because it runs on every monitored URL every tick and indirection would balloon the cost. Thresholds and sizing (`STALE_DAYS`, `BATCH_SIZE`, `SAME_HOST_DELAY_MS`, `STUCK_JOB_AFTER_MS`, `RECRAWL_STAGGER_SEC`, `RECRAWL_STAGGER_MAX_SEC`) live in `lib/config.ts` → `monitor`.
 
 ### Why stateless
 
@@ -302,7 +302,7 @@ Every constant that might plausibly be adjusted for business or UX reasons lives
 - **`llm`** — the pinned Claude model, Anthropic SDK retry/timeout tuning, enrichment batch size, URL-ranker caps, sanitizer length limits.
 - **`api`** — input-side caps on the public routes: URL length, pagination defaults/ceiling, zip-export max entries.
 - **`rateLimit`** — token-bucket configs for `POST /api/p` (SUBMIT + NEW_CRAWL, split anon/auth), the `/api/monitor` anti-amplification bucket, and the `/api/pages/download` zip cap. Rationale in [`SECURITY.md §2`](./SECURITY.md#2-abuse--rate-limiting).
-- **`monitor`** — cron sweep sizing: stale-page cutoff in days, batch size per tick, same-host politeness delay, stuck-job timeout.
+- **`monitor`** — cron sweep sizing: stale-page cutoff in days, batch size per tick, same-host politeness delay, stuck-job timeout, recrawl stagger (`RECRAWL_STAGGER_SEC` + `RECRAWL_STAGGER_MAX_SEC`) that smooths drift-triggered fan-out across the Anthropic RPM budget.
 - **`ui`** — client-side timing: poll cadence, poll-failure circuit-breaker threshold, live-step minimum dwell, freshness-label tick interval.
 
 Code reads these constants by name — no hardcoded magic numbers on the hot paths — so tuning a value in one place propagates everywhere it matters.

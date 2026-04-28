@@ -52,15 +52,32 @@ function resolveWorkerUrl(): string | null {
   return null
 }
 
-export async function enqueueCrawl(jobId: string, url: string): Promise<void> {
+/**
+ * Enqueue a crawl job for delivery to the worker.
+ *
+ * `delaySeconds` (default 0) tells QStash to defer delivery by that
+ * many seconds. Used by the monitor cron to stagger N drifted URLs
+ * over time instead of firing all workers in one minute and burning
+ * the Anthropic RPM budget. Falls through to in-process `waitUntil`
+ * for local dev (where the delay is moot — single-job processing).
+ */
+export async function enqueueCrawl(
+  jobId: string,
+  url: string,
+  delaySeconds = 0,
+): Promise<void> {
   const workerUrl = resolveWorkerUrl()
   const branch =
     qstash && workerUrl ? "qstash" :
     !qstash ? "fallback:no-token" :
     "fallback:no-worker-url"
   // Operational signal: a spike of `fallback:*` in prod means QStash
-  // state has drifted.
-  console.info(`[enqueueCrawl] branch=${branch} jobId=${jobId}`)
+  // state has drifted. Delay is logged separately so an unexpectedly-
+  // large stagger value (cron tick miscounted) is visible.
+  console.info(
+    `[enqueueCrawl] branch=${branch} jobId=${jobId}` +
+    (delaySeconds > 0 ? ` delaySec=${delaySeconds}` : ""),
+  )
 
   if (qstash && workerUrl) {
     try {
@@ -71,6 +88,11 @@ export async function enqueueCrawl(jobId: string, url: string): Promise<void> {
         // Match the pipeline budget; the pipeline self-terminates at
         // that point and writes a "failed" state.
         timeout: Math.ceil(crawler.PIPELINE_BUDGET_MS / 1000),
+        // QStash holds the message and only invokes the worker after
+        // this many seconds. 0 means deliver immediately (the user-
+        // submission path); cron callers pass a per-job stagger to
+        // smooth Anthropic RPM consumption.
+        ...(delaySeconds > 0 ? { delay: delaySeconds } : {}),
       })
       return
     } catch (err) {
