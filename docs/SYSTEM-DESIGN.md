@@ -61,7 +61,7 @@ flowchart TB
     QStash -- signed POST --> APIW
     APIW -- runCrawlPipeline --> Supa
     APIW -- fetch HTML --> Web
-    APIW -- rank + enrich + preamble --> Claude
+    APIW -- rank + enrich + preamble + review --> Claude
 
     VCron --> APIM
     APIM -- getMonitoredPages --> Supa
@@ -118,6 +118,7 @@ sequenceDiagram
     W->>T: robots.txt, sitemap.xml, homepage
     T-->>W: HTML / XML
 
+    W->>W: dropParametricFanout + capByPathPrefix (URL filter)
     W->>A: rankCandidateUrls (1 call)
     A-->>W: ranked URL list
 
