@@ -210,7 +210,13 @@ export const ui = {
   POLL_INTERVAL_MS: 5_000,
   /** Consecutive poll failures before the client shows "lost connection". */
   MAX_POLL_FAILURES: 5,
-  /** Minimum time each live-crawl step stays on screen. */
+  /** Minimum time each live-crawl step stays on screen. The fast-tail
+   *  stages (scoring, assembling) often complete in under a second on
+   *  the worker — without this floor they'd flash by before the user
+   *  could read the label. JobView also defers its terminal-redirect
+   *  to /p/{pageId} until the paced visible status catches up, so a
+   *  real crawl that finishes mid-flight still shows every step
+   *  reaching its green checkmark before the route transition. */
   LIVE_MIN_STEP_DWELL_MS: 1_200,
   /** How often the "Refreshed X ago" label re-renders. */
   MONITOR_STATUS_TICK_MS: 10_000,

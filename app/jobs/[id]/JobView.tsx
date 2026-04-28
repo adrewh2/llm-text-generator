@@ -41,6 +41,13 @@ export default function JobView({
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pollFailuresRef = useRef(0)
   const [pollDead, setPollDead] = useState(false)
+  // Stash the pageId to navigate to once visibleStatus catches up to
+  // the real terminal status. `useVisibleStatus` paces step transitions
+  // at `LIVE_MIN_STEP_DWELL_MS` per step so the fast-tail stages
+  // (scoring, assembling) don't flash by; redirecting on real-status
+  // alone would cut that animation short. This holds the navigation
+  // until every step has been visibly walked through.
+  const [pendingRedirectPageId, setPendingRedirectPageId] = useState<string | null>(null)
 
   useEffect(() => {
     const supabase = createClient()
@@ -76,10 +83,11 @@ export default function JobView({
       const isTerminalSuccess = data.status === "complete" || data.status === "partial"
       if (isTerminalSuccess) {
         if (intervalRef.current) clearInterval(intervalRef.current)
-        // Replace, not push — the in-flight URL shouldn't sit in
-        // history; back-button from /p/{id} skips past the now-
-        // pointless progress page.
-        router.replace(`/p/${data.pageId}`)
+        // Stage the redirect — the effect below fires it once the
+        // paced visible status reaches its terminal state, so the
+        // user gets to see every step land on its green checkmark
+        // before the route transition.
+        setPendingRedirectPageId(data.pageId)
         return
       }
       if (data.status === "failed") {
@@ -120,6 +128,18 @@ export default function JobView({
   }
   const visibleStatus = useVisibleStatus(apiJobLike)
   const displayJob: ApiJob = { ...apiJobLike, status: visibleStatus }
+
+  // Fire the staged redirect (set when the real job hit terminal
+  // success) once the paced visible status reaches its matching
+  // terminal state. `useVisibleStatus` advances one step per
+  // LIVE_MIN_STEP_DWELL_MS toward the real status, so this guarantees
+  // every progress step gets its dwell window even when the worker
+  // raced through scoring + assembling in milliseconds.
+  useEffect(() => {
+    if (!pendingRedirectPageId) return
+    if (visibleStatus !== "complete" && visibleStatus !== "partial") return
+    router.replace(`/p/${pendingRedirectPageId}`)
+  }, [pendingRedirectPageId, visibleStatus, router])
 
   return (
     <div className="h-dvh font-sans bg-white flex flex-col">
