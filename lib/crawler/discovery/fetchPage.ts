@@ -15,9 +15,9 @@ export interface FetchResult {
 }
 
 /**
- * True if the HTML body is a bot-challenge or access-denied page rather
- * than real content. These show up with 200 status (Cloudflare JS
- * challenge, for instance), so we can't rely on HTTP codes alone.
+ * True if the HTML body is a bot-challenge or access-denied page
+ * rather than real content. These show up with 200 status (Cloudflare
+ * JS challenge, for instance), so HTTP codes alone aren't enough.
  */
 export function isBlockedByChallenge(html: string): boolean {
   const lower = html.toLowerCase()

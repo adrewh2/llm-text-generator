@@ -23,9 +23,9 @@ describe("scrubError", () => {
 
   describe("bot / site-block messages", () => {
     test("http 403", () =>
-      assert.equal(scrubError("http 403: forbidden"), "This site blocked our crawler."))
+      assert.equal(scrubError("http 403: forbidden"), "This site blocked the crawler."))
     test("bot challenge", () =>
-      assert.equal(scrubError("bot challenge detected"), "This site blocked our crawler."))
+      assert.equal(scrubError("bot challenge detected"), "This site blocked the crawler."))
   })
 
   describe("other HTTP errors fall through to the generic http branch", () => {
@@ -46,9 +46,9 @@ describe("scrubError", () => {
 
   describe("pipeline-internal failures", () => {
     test("browser render failed", () =>
-      assert.equal(scrubError("browser render failed (launch): chromium exited"), "We couldn't render this site."))
+      assert.equal(scrubError("browser render failed (launch): chromium exited"), "Couldn't render this site."))
     test("exceeded time budget", () =>
-      assert.equal(scrubError("Exceeded time budget"), "Crawl took longer than our budget allows."))
+      assert.equal(scrubError("Exceeded time budget"), "Crawl took longer than the budget allows."))
   })
 
   describe("fallback for anything unrecognised", () => {

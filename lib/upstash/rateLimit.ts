@@ -66,10 +66,9 @@ function getUpstashLimiter(cfg: LimitConfig): Ratelimit | null {
     // Upstash tokenBucket wants integer tokens per interval. Pick
     // whichever unit gives a non-zero integer count: if the rate is
     // at least 1/hour use per-hour, otherwise per-day, otherwise
-    // per-week. Previously we hardcoded "1 h" and Math.max(1, …)'d
-    // the count, which floored long-window caps (e.g. the zip
-    // download at 1/24h) to 1/hr — the effective window was an
-    // order of magnitude tighter than the config claimed.
+    // per-week. A fixed "1 h" interval would force long-window caps
+    // (e.g. the zip download at 1/24h) up to 1/hr — an order of
+    // magnitude tighter than the config asks for.
     const { count, interval } = pickInterval(cfg.refillPerSec)
     limiter = new Ratelimit({
       redis,
@@ -160,9 +159,9 @@ export async function consumeRateLimit(
       // errorLog so Sentry groups the event — a persistent misconfig
       // *silently disables* rate limiting platform-wide, which is a
       // security concern that warrants alerting, not just a log line.
-      // `remaining: 0` is the honest value: we never actually
-      // consumed a token, so any caller reading this field for a
-      // "tokens left" display shouldn't see a full bucket.
+      // `remaining: 0` is the honest value: no token was actually
+      // consumed, so any caller reading this field for a "tokens
+      // left" display shouldn't see a full bucket.
       const message = err instanceof Error ? err.message : String(err)
       errorLog("rateLimit.upstash", `Upstash call failed, FAILING OPEN: ${message}`)
       return { allowed: true, retryAfterSec: 0, remaining: 0 }

@@ -126,4 +126,99 @@ describe("assembleFile → validateLlmsTxt", () => {
     assert.ok(out.includes("> ⚠️"), "robots notice expected as a warning blockquote")
     assert.equal(validateLlmsTxt(out).valid, true)
   })
+
+  test("structural sections sort above catalogue when LLM importance grades structural pages higher", () => {
+    // LLM-up path: enrichBatch tells the model structural pages
+    // score 8–10 and catalogue entries score 4–7. After that
+    // weighting flows through scorePages, structural pages have
+    // higher final scores and their sections sort to the top via
+    // the avg-score sort — no hardcoded section name needed.
+    const primary: ScoredPage[] = [
+      // Catalogue entries: full-content base (description + headings + body ≈ +45)
+      // + LLM importance 5 → ~ -3 modifier → final ≈ 42 each.
+      page({ url: "https://example.com/listings/a", title: "Listing A", section: "Catalogue", score: 42 }),
+      page({ url: "https://example.com/listings/b", title: "Listing B", section: "Catalogue", score: 42 }),
+      // About pages: weaker base (terse content) + LLM importance 9
+      // → +18 modifier → final ≈ 53 each, even though the page
+      // body itself is shorter than the catalogue items.
+      page({ url: "https://example.com/about", title: "About", section: "About", score: 53 }),
+      page({ url: "https://example.com/team", title: "Team", section: "About", score: 53 }),
+    ]
+    const out = assembleFile("Example", primary, [])
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    assert.deepEqual(h2s, ["## About", "## Catalogue"], `unexpected section order: ${h2s.join(" | ")}`)
+  })
+
+  test("a structural-labelled section beats a slightly-higher-scored catalogue section", () => {
+    // Real-world failure mode: the LLM bunched its importance scores
+    // in the middle, so a section full of richly-described catalogue
+    // items edges past a structural section of terser pages on raw
+    // avg-score alone. The structural-label boost (+12 for Services
+    // at priority 90) gives Services enough lift to win the small
+    // gap that the LLM's importance signal didn't open up.
+    const primary: ScoredPage[] = [
+      page({ url: "https://example.com/cat/a", title: "CA", section: "Catalogue", score: 60 }),
+      page({ url: "https://example.com/cat/b", title: "CB", section: "Catalogue", score: 60 }),
+      page({ url: "https://example.com/svc/a", title: "SA", section: "Services", score: 55 }),
+      page({ url: "https://example.com/svc/b", title: "SB", section: "Services", score: 55 }),
+    ]
+    const out = assembleFile("Example", primary, [])
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    // Services boost: 55 + (90-50)*0.3 = 67. Catalogue: 60 + 0 = 60.
+    assert.deepEqual(h2s, ["## Services", "## Catalogue"], `unexpected order: ${h2s.join(" | ")}`)
+  })
+
+  test("a sufficiently-higher catalogue avg-score still beats the structural-label boost", () => {
+    // The boost is a thumb on the scale, not a thumb on the table.
+    // When the catalogue's avg-score is far enough above the
+    // structural section, it still wins — the boost only flips
+    // small gaps.
+    const primary: ScoredPage[] = [
+      page({ url: "https://example.com/cat/a", title: "CA", section: "Catalogue", score: 80 }),
+      page({ url: "https://example.com/cat/b", title: "CB", section: "Catalogue", score: 80 }),
+      page({ url: "https://example.com/about", title: "About", section: "About", score: 40 }),
+      page({ url: "https://example.com/team", title: "Team", section: "About", score: 40 }),
+    ]
+    const out = assembleFile("Example", primary, [])
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    // About boost: 40 + (100-50)*0.3 = 55. Catalogue: 80. 25-point
+    // gap is well beyond what the boost can flip.
+    assert.deepEqual(h2s, ["## Catalogue", "## About"], `unexpected order: ${h2s.join(" | ")}`)
+  })
+
+  test("on tied avg-score, the structural-label boost picks the winner", () => {
+    const primary: ScoredPage[] = [
+      page({ url: "https://example.com/x/a", title: "XA", section: "Discoveries", score: 50 }),
+      page({ url: "https://example.com/x/b", title: "XB", section: "Discoveries", score: 50 }),
+      page({ url: "https://example.com/about", title: "About", section: "About", score: 50 }),
+      page({ url: "https://example.com/team", title: "Team", section: "About", score: 50 }),
+    ]
+    const out = assembleFile("Example", primary, [])
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    assert.deepEqual(h2s, ["## About", "## Discoveries"], `unexpected order: ${h2s.join(" | ")}`)
+  })
+
+  test("catalogue-shaped section labels are NOT hardcoded — two unknown labels tie at the neutral default", () => {
+    // SECTION_PRIORITY only carries labels with stable cross-genre
+    // meaning in the llms.txt shape — it doesn't hardcode catalogue-
+    // shaped section nouns. The structural-vs-catalogue judgment is
+    // the LLM's via the per-page importance score. So two unknown
+    // section labels with identical avg-scores both get the neutral
+    // priority default and tie cleanly, instead of one being
+    // arbitrarily penalized for matching a hardcoded list.
+    const primary: ScoredPage[] = [
+      page({ url: "https://example.com/list/a", title: "LA", section: "Listings", score: 60 }),
+      page({ url: "https://example.com/list/b", title: "LB", section: "Listings", score: 60 }),
+      page({ url: "https://example.com/disc/a", title: "DA", section: "Discoveries", score: 60 }),
+      page({ url: "https://example.com/disc/b", title: "DB", section: "Discoveries", score: 60 }),
+    ]
+    const out = assembleFile("Example", primary, [])
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    // Both at neutral priority (50), tied avg-score → stable on
+    // insertion order; the assertion is "neither got a hardcoded
+    // catalogue penalty," not a specific order.
+    assert.equal(h2s.length, 2)
+    assert.ok(h2s.includes("## Listings"))
+    assert.ok(h2s.includes("## Discoveries"))
+  })
 })

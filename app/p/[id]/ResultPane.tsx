@@ -26,7 +26,7 @@ export default function ResultPane({ job, signedIn }: Props) {
   //   true    = already in history → hide button
   const [inHistory, setInHistory] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const copyLinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -54,8 +54,8 @@ export default function ResultPane({ job, signedIn }: Props) {
   }, [lastCheckedAt])
 
   // Clear pending "Copied!" timers on unmount so they don't fire on
-  // an unmounted component (React 19 no-ops this quietly but we'd
-  // rather not rely on it).
+  // an unmounted component (React 19 no-ops this quietly, but no
+  // reason to rely on that).
   useEffect(() => () => {
     if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
     if (copyLinkTimerRef.current) clearTimeout(copyLinkTimerRef.current)
@@ -64,8 +64,8 @@ export default function ResultPane({ job, signedIn }: Props) {
   // Resolve dashboard membership once per (viewer, url). Anon users
   // skip the round-trip entirely — inHistory stays null and the
   // button never renders. If the fetch fails (network, 500), treat
-  // as "already in" so we don't prompt the user to save something
-  // we're not confident about.
+  // as "already in" so the user isn't prompted to save something
+  // when membership is uncertain.
   useEffect(() => {
     if (!signedIn || !job.url) {
       setInHistory(null)
@@ -84,8 +84,8 @@ export default function ResultPane({ job, signedIn }: Props) {
   }, [signedIn, job.url])
 
   const handleCopyLink = async () => {
-    // Build a clean shareable URL — same path, same hash, but drop
-    // any query params (e.g. ?simulate=1 shouldn't travel).
+    // Build a clean shareable URL — same path, same hash, drop any
+    // query params so they don't travel.
     const loc = new URL(window.location.href)
     loc.search = ""
     await navigator.clipboard.writeText(loc.toString())
@@ -123,36 +123,52 @@ export default function ResultPane({ job, signedIn }: Props) {
   }
 
   const handleRefresh = async () => {
-    if (refreshing) return
-    setRefreshing(true)
+    if (submitting) return
+    setSubmitting(true)
     setRefreshError(null)
+    // Same endpoint the landing-page Generate button uses. Server
+    // returns either:
+    //   - cached: true   → no new crawl. Soft-refresh the RSC so
+    //                      the freshness label picks up the new
+    //                      lastCheckedAt that the signature check
+    //                      may have just bumped.
+    //   - cached: false  → a crawl is in flight (new or attached).
+    //                      Navigate to /jobs/{job_id}; that page
+    //                      polls and redirects back to /p/{id} on
+    //                      completion.
+    let res: Response
     try {
-      // Same endpoint + same payload the landing-page Generate button
-      // uses. The server decides whether to crawl: cache hit → return
-      // cached; in-flight → attach; TTL-stale → signature check,
-      // crawl only on drift; missing → crawl. No special flag needed.
-      const res = await fetch("/api/p", {
+      res = await fetch("/api/p", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: job.url }),
       })
-      const data = await res.json().catch(() => ({} as Record<string, unknown>))
-      if (!res.ok) {
-        const msg = typeof data.error === "string" ? data.error : "Failed to refresh"
-        setRefreshError(msg)
-        return
-      }
-      // Success: server either dispatched a new crawl or attached us to
-      // an in-flight one. Either way the latest job on this page is now
-      // non-terminal. router.refresh() re-runs the /p/[id] RSC, which
-      // remounts PageView (keyed on updatedAt) with the new initial
-      // state — ProgressPane takes over and polling kicks in.
-      router.refresh()
     } catch {
       setRefreshError("Network error")
-    } finally {
-      setRefreshing(false)
+      setSubmitting(false)
+      return
     }
+    const data = (await res.json().catch(() => ({}))) as {
+      page_id?: string
+      job_id?: string
+      cached?: boolean
+      error?: string
+    }
+    if (!res.ok) {
+      setRefreshError(typeof data.error === "string" ? data.error : "Failed to refresh")
+      setSubmitting(false)
+      return
+    }
+    if (data.cached === false && data.job_id) {
+      // Navigation will unmount this component — leave `submitting`
+      // true so the button stays "Refreshing…" through the hand-off
+      // instead of flashing back to "Refresh" between router.push
+      // and the route transition.
+      router.push(`/jobs/${data.job_id}`)
+      return
+    }
+    router.refresh()
+    setSubmitting(false)
   }
 
   // Clear the refresh error after a few seconds so a transient failure
@@ -200,22 +216,21 @@ export default function ResultPane({ job, signedIn }: Props) {
               {refreshError}
             </span>
           )}
-          {/* Refresh button — desktop only, and only when the cache
-              is older than PAGE_TTL_HOURS (matches the POST /api/p
-              staleness rule). Clicking is equivalent to re-submitting
-              from the landing form: goes through rate limiting and
-              attaches to any in-flight job for the same URL. */}
+          {/* Refresh button — desktop only, only when the cache is
+              older than PAGE_TTL_HOURS. Clicking re-submits via
+              POST /api/p; if a fresh crawl is dispatched, navigation
+              hands off to /jobs/{job_id}. */}
           {isStale && (
             <button
               type="button"
               onClick={handleRefresh}
-              disabled={refreshing}
+              disabled={submitting}
               aria-label="Refresh"
               title="Refresh"
               className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-medium text-zinc-500 hover:text-zinc-800 px-2.5 py-1 rounded-md border border-zinc-200 hover:border-zinc-300 transition-colors disabled:opacity-50"
             >
-              <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} />
-              {refreshing ? "Refreshing…" : "Refresh"}
+              <RefreshCw size={11} className={submitting ? "animate-spin" : ""} />
+              {submitting ? "Refreshing…" : "Refresh"}
             </button>
           )}
           {showSave && (

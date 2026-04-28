@@ -16,7 +16,8 @@ export default async function DashboardPage() {
   const user = await getCurrentUser()
   if (!user) redirect("/login")
 
-  // Fetch one extra so we can tell the client whether more pages exist.
+  // Fetch one extra so the initial render can signal hasMore without
+  // a separate count query.
   const raw = await getUserPages(user.id, { offset: 0, limit: INITIAL_PAGE_SIZE + 1 })
   const hasMore = raw.length > INITIAL_PAGE_SIZE
   const initial: WirePage[] = raw.slice(0, INITIAL_PAGE_SIZE).map((p) => ({

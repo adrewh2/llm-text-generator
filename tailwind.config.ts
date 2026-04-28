@@ -5,8 +5,8 @@ const config: Config = {
     "./app/**/*.{ts,tsx}",
     "./components/**/*.{ts,tsx}",
   ],
-  // Light-only theme. Toggle to "media" or "class" if we add a dark
-  // mode pass — none of our color tokens are dark-aware today.
+  // Light-only theme. Toggle to "media" or "class" when adding a
+  // dark mode pass — none of the color tokens are dark-aware today.
   darkMode: "media",
   theme: {
     extend: {

@@ -80,7 +80,7 @@ Still in the Supabase dashboard, open **Authentication → URL Configuration** (
 - **Site URL**: `http://localhost:3000` (dev) or your production origin
 - **Redirect URLs**: add both `http://localhost:3000/auth/callback` and `https://<your-prod-domain>/auth/callback`
 
-The full redirect chain is: browser → GitHub/Google (which has the Supabase callback in its allowlist) → Supabase (which has our `/auth/callback` in its allowlist) → app. Each hop needs its own allowlist entry.
+The full redirect chain is: browser → GitHub/Google (which has the Supabase callback in its allowlist) → Supabase (which has the app's `/auth/callback` in its allowlist) → app. Each hop needs its own allowlist entry.
 
 ### Filling in `.env.local`
 
@@ -99,7 +99,7 @@ The full redirect chain is: browser → GitHub/Google (which has the Supabase ca
 | Variable                                                                                 | Purpose                                                                                                                                                                                                                                                                     |
 | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`                                    | Back the production rate limiter. Vercel deploys fail fast at module load if either is missing (the in-memory fallback isn't safe in prod — see [`SECURITY.md §2`](./docs/SECURITY.md#2-abuse--rate-limiting)).                                                             |
-| `QSTASH_TOKEN` + `QSTASH_URL` + `QSTASH_CURRENT_SIGNING_KEY` + `QSTASH_NEXT_SIGNING_KEY` | Authenticate and sign the crawl queue. Missing `QSTASH_TOKEN` ⇒ `waitUntil` fallback (no retry durability); mis-configured region for `QSTASH_URL` ⇒ silent drops — documented in [`SCALING.md §4`](./docs/SCALING.md#4-integration-gotchas-lessons-from-shipping-phase-2). |
+| `QSTASH_TOKEN` + `QSTASH_URL` + `QSTASH_CURRENT_SIGNING_KEY` + `QSTASH_NEXT_SIGNING_KEY` | Authenticate and sign the crawl queue. Missing `QSTASH_TOKEN` ⇒ `waitUntil` fallback (no retry durability); mis-configured region for `QSTASH_URL` ⇒ silent drops — documented in [`SCALING.md §4`](./docs/SCALING.md#4-integration-gotchas-upstash--qstash-on-vercel). |
 | `QSTASH_WORKER_URL`                                                                      | _Optional._ Explicit callback URL override; usually unnecessary (see SCALING.md §4).                                                                                                                                                                                        |
 | `NEXT_PUBLIC_SENTRY_DSN`                                                                 | Sentry ingest DSN (safe to expose). Unset ⇒ SDK no-ops.                                                                                                                                                                                                                     |
 | `SENTRY_AUTH_TOKEN` + `SENTRY_ORG` + `SENTRY_PROJECT`                                    | Build-time, for source-map upload via `withSentryConfig`.                                                                                                                                                                                                                   |
@@ -112,13 +112,19 @@ npm run build       # production build
 npm start           # serve the production build locally
 npm run lint        # next lint
 npm run typecheck   # tsc --noEmit
-npm test            # node:test suite under tests/ (pure security-critical helpers)
+npm test            # node:test suite under tests/ (pure helpers + security-critical units)
 ```
 
-`npm test` covers the SSRF IP-range classifiers and the client-side URL
-validator. CI runs it on every PR alongside build + lint. The broader
-integrated behavior — crawl pipeline, RLS, monitor cron, QStash — is
-covered by the manual playbook in [`docs/TESTING.md`](./docs/TESTING.md).
+`npm test` covers the pure helpers — SSRF IP-range classifiers, URL
+normalisation + path-prefix capping, the client-side URL validator,
+error scrubbing, `llms.txt` validation, sitemap / robots / SPA-shape
+detection, filename mapping, rate-limit math, bounded-read streaming,
+the file-assembly output, and the no-LLM heuristic ranker fallback.
+CI runs it on every PR alongside build + lint.
+The broader integrated behavior — full crawl pipeline against live
+target sites, RLS against a real Supabase, monitor cron, QStash
+delivery — is covered by the manual playbook in
+[`docs/TESTING.md`](./docs/TESTING.md).
 
 ### Running the monitor cron locally
 
@@ -181,7 +187,7 @@ Also update each OAuth provider's allowed callback to the Supabase callback URL 
 
 ### 5. Platform config
 
-`vercel.json` already sets the cron schedule (`/api/monitor` daily — tighten to hourly on Pro) and raises `maxDuration` on the long-running routes. Vercel Cron injects `CRON_SECRET` as the `Authorization: Bearer …` header automatically. QStash callbacks land on the stable production alias out of the box; preview deploys or custom domains need `QSTASH_WORKER_URL` set explicitly — see [`SCALING.md §4`](./docs/SCALING.md#4-integration-gotchas-lessons-from-shipping-phase-2) for the gotchas that will otherwise silently drop messages.
+`vercel.json` already sets the cron schedule (`/api/monitor` daily — tighten to hourly on Pro) and raises `maxDuration` on the long-running routes. Vercel Cron injects `CRON_SECRET` as the `Authorization: Bearer …` header automatically. QStash callbacks land on the stable production alias out of the box; preview deploys or custom domains need `QSTASH_WORKER_URL` set explicitly — see [`SCALING.md §4`](./docs/SCALING.md#4-integration-gotchas-upstash--qstash-on-vercel) for the gotchas that will otherwise silently drop messages.
 
 ### 6. Verify
 

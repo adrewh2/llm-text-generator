@@ -1,8 +1,9 @@
 // SSRF-aware fetch: validates each redirect hop (plain
 // `redirect: "follow"` would skip — a public URL 302-ing to
 // 169.254.169.254 slips past a one-time check). Known TOCTOU gap:
-// DNS can rebind between our assertSafeUrl and Node's fetch. Closing
-// it requires a custom undici dispatcher; out of scope.
+// DNS can rebind between assertSafeUrl and Node's underlying
+// fetch resolution. Closing it requires a custom undici
+// dispatcher; out of scope.
 
 import { assertSafeUrl } from "./ssrf"
 import { crawler } from "../../config"

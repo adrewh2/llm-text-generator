@@ -20,19 +20,21 @@ export const crawler = {
    * Max discovered URLs per path-prefix bucket before crawling. Belt-
    * and-suspenders alongside LLM ranking — keeps a single section of
    * a content-heavy site (e.g. 500 /watch URLs) from flooding the
-   * queue the LLM ranks over. Long-term we could drop this cap
-   * entirely and trust the LLM; for now it bounds the prompt size.
+   * queue the LLM ranks over. Bounds the prompt size; the cap could
+   * be dropped entirely if the LLM ranker proved sufficient on its
+   * own. Within each bucket the shorter-path URL wins (the section
+   * index over individual leaf pages — see capByPathPrefix).
    */
   URLS_PER_PREFIX_CAP: 5,
   /** Path segments that form the prefix-bucket key. `/docs/api/x` + depth 2 → bucket `docs/api`. */
   PREFIX_SEGMENT_DEPTH: 2,
-  /** Cap on sitemap parsing — stops a 1M-URL sitemap from OOMing us. */
+  /** Cap on sitemap parsing — stops a 1M-URL sitemap from OOMing the function. */
   MAX_SITEMAP_URLS: 500,
   /**
-   * Max response body we'll accept for a single sitemap fetch. The spec
-   * allows up to 50 MB per file, but we cap lower — we only extract the
-   * first MAX_SITEMAP_URLS entries anyway, so anything past this is
-   * guaranteed-unused payload.
+   * Max response body accepted for a single sitemap fetch. The spec
+   * allows up to 50 MB per file; this cap is lower because only the
+   * first MAX_SITEMAP_URLS entries are extracted anyway, so anything
+   * past this is guaranteed-unused payload.
    */
   SITEMAP_MAX_BYTES: 10 * 1024 * 1024,
   /** Sitemap fetch timeout. */
@@ -44,31 +46,31 @@ export const crawler = {
   /** Max redirect hops safeFetch will walk before giving up. */
   MAX_REDIRECTS: 5,
   /**
-   * Upper bound on the `Crawl-delay` directive we'll honor from a
+   * Upper bound on the `Crawl-delay` directive honored from a
    * target's robots.txt. The directive itself is authoritative, but
    * an adversarial site could set `Crawl-delay: 99999` and tie up the
    * whole pipeline budget on sleeps — cap it so any value beyond
    * saturates to this. 10 s × 25 pages = 250 s, just inside
-   * PIPELINE_BUDGET_MS; a site asking for more will produce a partial
+   * PIPELINE_BUDGET_MS; a site asking for more produces a partial
    * crawl by design.
    */
   MAX_CRAWL_DELAY_MS: 10_000,
-  /** UTF-8 byte cap on the excerpt we store per crawled page. */
+  /** UTF-8 byte cap on the excerpt stored per crawled page. */
   EXCERPT_MAX_BYTES: 4_096,
   /**
    * Hard ceiling on runCrawlPipeline total runtime. Stays under the
-   * route's 300s maxDuration so we have room to write a clean "failed"
-   * record instead of being terminated mid-flight.
+   * route's 300s maxDuration so the pipeline has room to write a
+   * clean "failed" record instead of being terminated mid-flight.
    */
   PIPELINE_BUDGET_MS: 270_000,
   /**
    * Max external (cross-domain) reference links to include in the
-   * output. Homepage anchors only — we extract every external link
-   * from the homepage, the LLM ranks them, and the top N are fetched
-   * once each for og:title / og:description. They flow through the
-   * normal scoring + section-assignment pass alongside internal
-   * pages, so a value that feels high is fine; the LLM ranker drops
-   * social / tracking / footer noise.
+   * output. Homepage anchors only — every external link on the
+   * homepage is extracted, the LLM ranks them, and the top N are
+   * fetched once each for og:title / og:description. They flow
+   * through the normal scoring + section-assignment pass alongside
+   * internal pages, so a value that feels high is fine; the LLM
+   * ranker drops social / tracking / footer noise.
    */
   EXTERNAL_REFS_MAX_KEEP: 8,
 } as const;
@@ -81,10 +83,10 @@ export const llm = {
   /**
    * Retries per LLM call, passed through to the Anthropic SDK. The
    * SDK retries 408 / 429 / 5xx with exponential backoff + honours
-   * `retry-after` / `x-should-retry` headers — exactly what we need
-   * for Claude's rate-limit behaviour. Default SDK value is 2; 5
-   * gives us ~30 s of total backoff across a bursty minute, still
-   * well within the pipeline budget.
+   * `retry-after` / `x-should-retry` headers — exactly what Claude's
+   * rate-limit behaviour requires. SDK default is 2; 5 gives ~30 s
+   * of total backoff across a bursty minute, still well within the
+   * pipeline budget.
    */
   MAX_RETRIES: 5,
   /**
@@ -154,7 +156,7 @@ export const api = {
  * that protects LLM / Puppeteer budget. Every submission deducts
  * from SUBMIT; only cache-miss submissions that actually dispatch a
  * fresh crawl also deduct from NEW_CRAWL. Anon buckets are smaller
- * than auth because we can't revoke abusive IPs individually.
+ * than auth because abusive IPs can't be revoked individually.
  */
 export const rateLimit = {
   ANON_SUBMIT: { capacity: 60, refillPerSec: 60 / 3600 },
@@ -172,10 +174,10 @@ export const rateLimit = {
   /**
    * /api/pages/download per-user cap. Zipping + delivering up to
    * DOWNLOAD_MAX_ENTRIES (500) page results is the most expensive
-   * authenticated read we expose — in-memory JSZip build + a large
-   * response body. One token / 24 h is plenty for real use (the user
-   * already has the zip locally) and blocks a signed-in attacker from
-   * looping the endpoint for amplification.
+   * authenticated read on the surface — in-memory JSZip build + a
+   * large response body. One token / 24 h is plenty for real use
+   * (the zip is local once downloaded) and blocks a signed-in
+   * attacker from looping the endpoint for amplification.
    */
   AUTH_ZIP_DOWNLOAD: { capacity: 1, refillPerSec: 1 / 86400 },
 };
@@ -201,19 +203,21 @@ export const monitor = {
 // ─── Client UI timing ───────────────────────────────────────────────────────
 
 export const ui = {
-  /** /p/[id] polling cadence while a job is running. Progress counts
-   *  only tick every few seconds during an active crawl, so a 5 s
-   *  cadence still feels live and cuts in-flight DB read pressure by
-   *  ~3× vs. the old 1.5 s. */
+  /** /jobs/[id] polling cadence while a job is running. Progress
+   *  counts only tick every few seconds during an active crawl, so a
+   *  5 s cadence still feels live while keeping in-flight DB read
+   *  pressure low. */
   POLL_INTERVAL_MS: 5_000,
   /** Consecutive poll failures before the client shows "lost connection". */
   MAX_POLL_FAILURES: 5,
-  /** Minimum time each live-crawl step stays on screen. */
+  /** Minimum time each live-crawl step stays on screen. The fast-tail
+   *  stages (scoring, assembling) often complete in under a second on
+   *  the worker — without this floor they'd flash by before the user
+   *  could read the label. JobView also defers its terminal-redirect
+   *  to /p/{pageId} until the paced visible status catches up, so a
+   *  real crawl that finishes mid-flight still shows every step
+   *  reaching its green checkmark before the route transition. */
   LIVE_MIN_STEP_DWELL_MS: 1_200,
-  /** Simulated-progress step durations for cached results (one per step). */
-  SIM_STEP_DURATIONS_MS: [2000, 1800, 1800, 1800] as const,
   /** How often the "Refreshed X ago" label re-renders. */
   MONITOR_STATUS_TICK_MS: 10_000,
-  /** LRU cap on the client-side per-tab job metadata cache. */
-  JOB_CACHE_MAX: 30,
 };

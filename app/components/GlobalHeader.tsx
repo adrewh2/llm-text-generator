@@ -11,14 +11,14 @@ import NavAuth from "./NavAuth"
 // eliminates the "unmount old header / mount new header" flash that
 // happens when each page.tsx renders its own AppHeader.
 //
-// /p/{id} is the one exception: it needs a page-specific center slot
-// (domain + spec chip + page count), so it owns its own AppHeader
-// and this component hides on that route. Transitions between /p/*
-// and everything else still rebuild the header — worth it vs. the
-// complexity of context-driven center-slot injection.
+// /p/{id} and /jobs/{id} both need page-specific center slots
+// (domain + status / spec chip), so they own their own AppHeader
+// and this component hides on those routes. Transitions between
+// those and everything else still rebuild the header — worth it
+// vs. the complexity of context-driven center-slot injection.
 export default function GlobalHeader({ initialUser }: { initialUser: User | null }) {
   const pathname = usePathname() ?? "/"
-  if (pathname.startsWith("/p/")) return null
+  if (pathname.startsWith("/p/") || pathname.startsWith("/jobs/")) return null
   const showHowItWorks = pathname === "/"
   return (
     <AppHeader

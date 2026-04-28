@@ -1,16 +1,19 @@
-import { notFound } from "next/navigation"
-import { bumpPageRequest, getPageById } from "@/lib/store"
+import { notFound, redirect } from "next/navigation"
+import { bumpPageRequest, getActiveJobForPage, getPageById } from "@/lib/store"
 import { getCurrentUser } from "@/lib/supabase/getUser"
 import PageView from "./PageView"
 import { scrubError } from "@/app/api/p/[id]/scrubError"
 import type { ApiJob } from "./types"
 
-// Server-render the initial job state and hand it to the client
-// component. Without this, every /p/{id} navigation painted an empty
-// shell, then fetched /api/p/{id} from the client, then rendered —
-// one extra round-trip of latency on every open. The client component
-// still polls for live updates (progress, terminal flip), so the
-// server payload is only the seed.
+// /p/{id} is a stable cached-result permalink. It only ever renders
+// the most-recently-good llms.txt for this page. Live progress lives
+// at /jobs/{jobId}; landing-form submissions and Refresh clicks that
+// dispatch a fresh crawl route there directly.
+//
+// Three landing states:
+//   - cached result exists  → render ResultPane.
+//   - no result, active job → redirect to /jobs/{jobId}.
+//   - no result, no job     → 404 (e.g. only ever-failed crawls).
 export default async function PageViewPage({
   params,
 }: {
@@ -23,11 +26,16 @@ export default async function PageViewPage({
   ])
   if (!jobResult) notFound()
 
+  if (!jobResult.result || jobResult.result.trim().length === 0) {
+    const active = await getActiveJobForPage(id)
+    if (active) redirect(`/jobs/${active.jobId}`)
+    notFound()
+  }
+
   // Record the navigation as user activity. Once a result is terminal,
   // subsequent GET /api/p/[id] polls are edge-cached and never reach
   // the server, so without bumping here an actively-read page would
-  // look dormant and age out of the monitor rotation after 5 days.
-  // Failed pages are skipped on purpose — we want them to age out.
+  // look dormant and age out of the monitor rotation.
   if (jobResult.status !== "failed") {
     bumpPageRequest(jobResult.url).catch(() => {})
   }
@@ -39,11 +47,11 @@ export default async function PageViewPage({
     updatedAt: jobResult.updatedAt.toISOString(),
     lastCheckedAt: jobResult.lastCheckedAt?.toISOString(),
   }
-  // Key includes lastCheckedAt so a no-drift Refresh (which only
-  // bumps the freshness stamp, not updatedAt) still remounts.
+  // Key on lastCheckedAt so a no-drift Refresh (which only bumps the
+  // freshness stamp) re-seeds PageView's lazy state with the fresh value.
   return (
     <PageView
-      key={`${initialJob.updatedAt}:${initialJob.lastCheckedAt ?? ""}`}
+      key={initialJob.lastCheckedAt ?? initialJob.updatedAt}
       initialJob={initialJob}
       initialUser={user}
     />

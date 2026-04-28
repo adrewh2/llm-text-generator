@@ -10,9 +10,9 @@ export default function LoginPage() {
   const [loading, setLoading] = useState<string | null>(null)
   const [error, setError] = useState("")
   // Stash the Supabase client behind a ref so its identity stays
-  // stable across renders. Previously `createClient()` ran in the
-  // render body and the `useEffect` below depended on `supabase`,
-  // which made the effect fire on every render.
+  // stable across renders. The `useEffect` below depends on
+  // `supabase`; without the ref a fresh client per render would
+  // re-fire the effect every time.
   const supabase = useRef(createClient()).current
   const router = useRouter()
 

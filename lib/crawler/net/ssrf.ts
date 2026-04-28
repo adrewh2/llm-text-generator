@@ -9,9 +9,9 @@
 // DNS resolution is done via Node's dns/promises. Requests must be
 // re-validated on every redirect hop — callers using `fetch` with
 // redirect:"follow" should set redirect:"manual" and loop, or do a
-// pre-flight DNS check each hop. For the MVP we validate the initial
-// URL; most SSRF attempts go through a submitted URL pointing directly
-// at an internal IP, which this blocks.
+// pre-flight DNS check each hop. This function validates the initial
+// URL only; most SSRF attempts go through a submitted URL pointing
+// directly at an internal IP, which this blocks.
 
 import { promises as dns } from "dns"
 import { isIP } from "net"
@@ -38,7 +38,7 @@ export async function assertSafeUrl(url: string): Promise<void> {
 
   // WHATWG URL normalises default ports (`http://x:80` → `http://x`)
   // so `u.port` is "" when the default is in use. An explicit
-  // non-default port lets an attacker point our crawler at
+  // non-default port lets an attacker point the crawler at
   // non-HTTP services on public IPs (Redis on 6379, memcached,
   // SMTP, SSH banners, etc.) that might accept HTTP-looking bytes
   // and leak state or mis-execute. Reject.

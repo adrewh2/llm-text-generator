@@ -154,26 +154,56 @@ export function capByPathPrefix(
   maxPerPrefix: number,
   segmentDepth: number,
 ): string[] {
-  const prefixCounts = new Map<string, number>()
-  const result: string[] = []
-
+  // Group by prefix, then within each bucket prefer shorter paths
+  // (the section index over individual leaf pages). When the sitemap
+  // happens to list /about/board-directors/john-doe before
+  // /about/board-directors/, naive first-N capping would keep the
+  // person and drop the index — and the index is what tells an LLM
+  // reader what the section is. Sorting by depth ascending wins back
+  // the slot.
+  const buckets = new Map<string, Set<string>>()
+  const unparseable: string[] = []
   for (const url of urls) {
     try {
       const segments = new URL(url).pathname.split("/").filter(Boolean)
-      // Take the first `segmentDepth` segments as the bucket key.
-      // e.g. depth=2 → "/docs/api/users" → "docs/api"
       const prefix = segments.slice(0, segmentDepth).join("/") || "root"
-      const count = prefixCounts.get(prefix) ?? 0
-      if (count < maxPerPrefix) {
-        prefixCounts.set(prefix, count + 1)
-        result.push(url)
-      }
+      const set = buckets.get(prefix) ?? new Set<string>()
+      set.add(url)
+      buckets.set(prefix, set)
     } catch {
-      result.push(url)
+      unparseable.push(url)
     }
   }
 
-  return result
+  const kept = new Set<string>(unparseable)
+  for (const set of buckets.values()) {
+    const sorted = [...set].sort((a, b) => pathDepthFor(a) - pathDepthFor(b))
+    for (let i = 0; i < Math.min(maxPerPrefix, sorted.length); i++) {
+      kept.add(sorted[i])
+    }
+  }
+
+  // Preserve the caller's original ordering in the returned array —
+  // downstream stages assume "earlier = more important" when the LLM
+  // ranker isn't available — and emit each kept URL at most once,
+  // even if the input contained duplicates.
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const url of urls) {
+    if (kept.has(url) && !seen.has(url)) {
+      seen.add(url)
+      out.push(url)
+    }
+  }
+  return out
+}
+
+function pathDepthFor(url: string): number {
+  try {
+    return new URL(url).pathname.split("/").filter(Boolean).length
+  } catch {
+    return Infinity
+  }
 }
 
 export function isValidHttpUrl(url: string): boolean {
@@ -234,8 +264,8 @@ export function clientValidateUrl(raw: string):
   }
 
   // Regular hostname — require at least one dot so single-word typos
-  // (e.g. `asfpskdafj`) don't fall through to a DNS lookup on the
-  // server that we already know will fail.
+  // (e.g. `asfpskdafj`) don't fall through to a DNS lookup that's
+  // guaranteed to fail.
   if (!lowered.includes(".")) {
     return { ok: false, reason: "Enter a full domain (e.g. example.com)" }
   }

@@ -16,8 +16,8 @@ export async function GET(req: NextRequest) {
   const rawLimit = parseInt(params.get("limit") ?? `${DEFAULT_LIMIT}`, 10) || DEFAULT_LIMIT
   const limit = Math.min(MAX_LIMIT, Math.max(1, rawLimit))
 
-  // Ask for one more than requested so we can tell the client whether
-  // another page exists without a separate count query.
+  // Ask for one more than requested so the response can signal
+  // hasMore without a separate count query.
   const pages = await getUserPages(user.id, { offset, limit: limit + 1 })
   const hasMore = pages.length > limit
   const trimmed = hasMore ? pages.slice(0, limit) : pages

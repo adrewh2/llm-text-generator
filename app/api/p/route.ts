@@ -15,7 +15,7 @@ import { errorLog } from "@/lib/log"
 
 // Fire-and-forget wrapper around `waitUntil` that surfaces failures to
 // Sentry via errorLog. Without the catch, a rejected background promise
-// logs once via Vercel but doesn't land in our Issues feed.
+// logs once via Vercel but doesn't land in the Sentry Issues feed.
 function runAfterResponse(context: string, p: Promise<unknown>): void {
   waitUntil(
     p.catch((err) => errorLog(`api/p.${context}`, err instanceof Error ? err : new Error(String(err))))
@@ -115,15 +115,15 @@ export async function POST(req: NextRequest) {
 
   // Try to serve from cache / attach to an active job at `key`.
   // Returns a response if handled, null if the caller should continue.
-  // `page_id` in the response is the pages.id UUID — stable across
-  // re-crawls, so two users of the same URL land on the same /p/{id}.
-  // bumpPageRequest fires best-effort; a flaky Supabase write
-  // shouldn't turn a cache-hit into a 500 for the user.
+  // `page_id` is the pages.id UUID (stable across re-crawls). `job_id`
+  // is set whenever a crawl is in flight — the client uses it to
+  // route to /jobs/{jobId} for progress; cache hits omit it and the
+  // client routes straight to /p/{pageId}. bumpPageRequest fires
+  // best-effort; a flaky Supabase write shouldn't turn a cache-hit
+  // into a 500 for the user.
   const tryServeAt = async (key: string): Promise<NextResponse | null> => {
     const existing = await getPageByUrl(key)
     if (existing && !existing.isStale) {
-      // Defer both writes past the response — neither gates the
-      // client's ability to navigate to /p/{id} and start polling.
       runAfterResponse("bumpPageRequest", bumpPageRequest(key))
       if (user) runAfterResponse("upsertUserRequest", upsertUserRequest(user.id, key))
       return NextResponse.json({ page_id: existing.pageId, cached: true }, { status: 200 })
@@ -132,14 +132,17 @@ export async function POST(req: NextRequest) {
     if (active) {
       runAfterResponse("bumpPageRequest", bumpPageRequest(key))
       if (user) runAfterResponse("upsertUserRequest", upsertUserRequest(user.id, key))
-      return NextResponse.json({ page_id: active.pageId, cached: false }, { status: 200 })
+      return NextResponse.json(
+        { page_id: active.pageId, job_id: active.jobId, cached: false },
+        { status: 200 },
+      )
     }
     return null
   }
 
-  // Pre-resolution cache check. Most cached URLs sit under one of the
-  // two raw www/non-www forms of what the user submitted, so we can
-  // usually serve cache hits without paying for the HEAD probes.
+  // Pre-resolution cache check. Most cached URLs sit under one of
+  // the two raw www/non-www forms of what the user submitted, so
+  // cache hits usually land here without paying for the HEAD probes.
   const rawKey = normalizeUrl(trimmed) || trimmed
   const altKey = normalizeUrl(altWwwForm(trimmed)) || trimmed
   const preKeys = rawKey === altKey ? [rawKey] : [rawKey, altKey]
@@ -156,7 +159,7 @@ export async function POST(req: NextRequest) {
   const canonicalUrl = normalizeUrl(await resolveCanonicalUrl(trimmed)) || trimmed
 
   // Post-resolution cache check — only needed if the canonical URL
-  // differs from the raw forms we already tried (e.g. the server
+  // differs from the raw forms already tried (e.g. the server
   // redirected to a different hostname like `auth.foo.com/login`).
   if (!preKeys.includes(canonicalUrl)) {
     const res = await tryServeAt(canonicalUrl)
@@ -182,7 +185,7 @@ export async function POST(req: NextRequest) {
         { status: 200 },
       )
     }
-    // Drift detected, or we couldn't compute a fresh signature (both
+    // Drift detected, or fresh signature couldn't be computed (both
     // fetches failed). Fall through to dispatch a fresh crawl.
   }
 
@@ -209,26 +212,28 @@ export async function POST(req: NextRequest) {
 
   // Stale or new — run a fresh crawl. createJob is the only write
   // that has to block the response: once it returns, the pages + jobs
-  // rows exist so the client's immediate poll for /api/p/[id] finds
-  // a row. Everything after is backgrounded via waitUntil so the
-  // user navigates to /p/{id} without waiting on the QStash publish
-  // (~200 ms) or two small DB writes (~100 ms) — ~500 ms saved on
-  // the cache-miss hot path.
+  // rows exist so the client's first poll of /api/jobs/{job_id} (from
+  // the /jobs/{id} page it navigates to) finds a row. Everything
+  // after is backgrounded via waitUntil so the response returns
+  // without waiting on the QStash publish (~200 ms) or two small DB
+  // writes (~100 ms) — ~500 ms off the cache-miss hot path.
   //
-  // Trade-off on ordering: the old code bumped last_requested_at AFTER
-  // enqueueCrawl so a failed enqueue wouldn't mark the URL as
-  // "actively requested". Under waitUntil they run concurrently, so a
-  // failed enqueue can leave an active-looking last_requested_at on a
-  // URL whose crawl never started. That's tolerable: `sweepStuckJobs`
-  // in the monitor cron force-fails non-terminal jobs past 15 min,
-  // and a failed job naturally ages out of monitoring after 5 days.
-  // The returned `page_id` is the pages.id UUID — stable across every
-  // future re-crawl of this URL.
+  // Concurrent waitUntil ordering means a failed enqueueCrawl can
+  // leave an active-looking last_requested_at on a URL whose crawl
+  // never started. Tolerable: `sweepStuckJobs` in the monitor cron
+  // force-fails non-terminal jobs past 15 min, and a failed job
+  // naturally ages out of monitoring after 5 days. The returned
+  // `page_id` is the pages.id UUID — stable across every future
+  // re-crawl of this URL; `job_id` is the per-execution identifier
+  // the client uses to route to /jobs/{job_id}.
   const jobId = randomUUID()
   const { pageId } = await createJob(jobId, canonicalUrl)
   runAfterResponse("enqueueCrawl", enqueueCrawl(jobId, canonicalUrl))
   runAfterResponse("bumpPageRequest", bumpPageRequest(canonicalUrl))
   if (user) runAfterResponse("upsertUserRequest", upsertUserRequest(user.id, canonicalUrl))
 
-  return NextResponse.json({ page_id: pageId, cached: false }, { status: 201 })
+  return NextResponse.json(
+    { page_id: pageId, job_id: jobId, cached: false },
+    { status: 201 },
+  )
 }

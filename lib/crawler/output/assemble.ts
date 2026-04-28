@@ -86,7 +86,8 @@ function encodeMarkdownUrl(url: string): string {
  * so the rendered markdown reads the way the site itself writes its
  * own links — `https://llmstxt.org`, not `https://llmstxt.org/`. The
  * WHATWG URL parser always emits `/` for root paths, so the stored
- * cache key keeps it (stability); we strip it only at render time.
+ * cache key keeps it (stability); the slash is stripped only at
+ * render time.
  */
 function formatDisplayUrl(url: string): string {
   try {
@@ -120,10 +121,9 @@ function resolveDisplayLabels(pages: ScoredPage[], siteName: string): Map<string
 
   // A page title that shows up on many pages is a site-wide tagline,
   // not a per-page title — typically an SPA that forgot to update
-  // document.title on route change (duolingo.com's "Learn a language
-  // for free" was the motivating case). Treat it the same as
+  // document.title on route change. Treat it the same as
   // `title === siteName`: fall back to a URL-derived label so each
-  // entry is actually distinguishable. Threshold of 3 keeps us from
+  // entry is actually distinguishable. Threshold of 3 avoids
   // misfiring on real 2-page collisions that Pass 2 handles fine.
   const titleCounts = new Map<string, number>()
   for (const p of pages) {
@@ -208,12 +208,66 @@ function groupBySection(pages: ScoredPage[]): {
     else valid.set(section, ps)
   }
 
-  // Sort sections by average score descending
+  // Sort sections by an effective score: avg per-page score plus a
+  // small structural-label boost. The LLM's per-page importance
+  // signal carries the bulk of the judgment (the enrichBatch prompt
+  // tells the model to score structural pages 8–10 and catalogue
+  // items 4–7), but in practice the LLM bunches its scores in the
+  // middle, so a catalogue section full of richly-described items
+  // can edge out a structural section of terser pages on raw avg
+  // alone. The structural-label boost gives universally-foundational
+  // labels (About, Services, Support, Pricing, Docs, …) a thumb on
+  // the scale large enough to win small avg-score gaps but small
+  // enough that a genuinely-stronger catalogue section still ranks
+  // above a thin structural one.
   const entries = [...valid.entries()].sort((a, b) => {
-    const avgA = a[1].reduce((s, p) => s + p.score, 0) / a[1].length
-    const avgB = b[1].reduce((s, p) => s + p.score, 0) / b[1].length
-    return avgB - avgA
+    return effectiveScore(b[0], b[1]) - effectiveScore(a[0], a[1])
   })
 
   return { sections: new Map(entries), overflow }
+}
+
+function effectiveScore(name: string, pages: ScoredPage[]): number {
+  const avg = pages.reduce((s, p) => s + p.score, 0) / pages.length
+  // (priority − 50) × 0.3: About at priority 100 → +15 boost,
+  // Services at 90 → +12, Support at 60 → +3, default-50 labels →
+  // 0, Blog at 40 → −3. Calibrated against per-page scores in the
+  // 30–80 range so the boost matters at the edges without
+  // overwhelming a genuinely-higher catalogue avg.
+  return avg + (sectionPriority(name) - 50) * 0.3
+}
+
+// Structural-label priority. Limited to labels with stable cross-
+// genre meaning in the llms.txt shape (About is About on every site;
+// Pricing is Pricing on every site). Genre-specific labels and
+// catalogue-shaped section nouns are deliberately NOT in here —
+// that judgment is the LLM's via the per-page importance score. The
+// table only nudges sections that the LLM grouped under a known
+// structural header; sections with LLM-invented labels get the
+// neutral default and sort by raw avg-score.
+const SECTION_PRIORITY: Record<string, number> = {
+  about: 100,
+  company: 100,
+  products: 90,
+  services: 90,
+  pricing: 85,
+  plans: 85,
+  docs: 80,
+  documentation: 80,
+  api: 78,
+  reference: 75,
+  guides: 70,
+  tutorials: 70,
+  examples: 70,
+  support: 60,
+  help: 60,
+  faq: 60,
+  resources: 50,
+  blog: 40,
+  news: 40,
+  changelog: 40,
+}
+
+function sectionPriority(name: string): number {
+  return SECTION_PRIORITY[name.toLowerCase()] ?? 50
 }

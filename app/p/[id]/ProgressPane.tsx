@@ -8,17 +8,21 @@ import type { ApiJob } from "./types"
 
 const { MAX_PAGES } = crawler
 
+// Stage labels are user-facing. They describe what the deterministic
+// + LLM work in each stage actually produces — not the internal
+// status enum values (`enriching`, `scoring`), which the worker
+// continues to write unchanged. Stage 2 says "Analyzing" because the
+// LLM does more than summarize (section + importance + description
+// per page, plus brand name and external-ref ranking). Stage 3 says
+// "filtering" because classification was already the LLM's job in
+// stage 2 — this stage scores + bins (Primary / Optional / drop).
 const STEPS: Array<{ id: JobStatus; label: string }> = [
   { id: "crawling",   label: "Crawling pages" },
-  { id: "enriching",  label: "Enriching with AI" },
-  { id: "scoring",    label: "Scoring & classifying" },
+  { id: "enriching",  label: "Analyzing with AI" },
+  { id: "scoring",    label: "Scoring & filtering" },
   { id: "assembling", label: "Assembling file" },
 ]
 
-// Step index by id — used by both simulated and live resolvers below.
-const SIM_IDX: Record<string, number> = {
-  crawling: 0, enriching: 1, scoring: 2, assembling: 3,
-}
 const LIVE_STEP_IDX: Record<string, number> = {
   crawling: 1, enriching: 2, scoring: 3, assembling: 4,
 }
@@ -28,23 +32,10 @@ const LIVE_STATUS_ORDER = [
 
 type StepState = "done" | "active" | "waiting" | "error"
 
-export default function ProgressPane({
-  job,
-  simulatedStep,
-}: {
-  job: ApiJob
-  simulatedStep?: number
-}) {
+export default function ProgressPane({ job }: { job: ApiJob }) {
   const domain = hostnameOf(job.url)
-  const isSimulated = simulatedStep !== undefined
 
   const stateFor = (stepId: string): StepState => {
-    if (isSimulated) {
-      const si = SIM_IDX[stepId] ?? 0
-      if (simulatedStep > si) return "done"
-      if (simulatedStep === si) return "active"
-      return "waiting"
-    }
     if (job.status === "failed") return stepId === "crawling" ? "error" : "waiting"
     const ji = LIVE_STATUS_ORDER.indexOf(job.status)
     const si = LIVE_STEP_IDX[stepId] ?? 0
@@ -86,7 +77,7 @@ export default function ProgressPane({
                   <p className={`text-sm font-medium ${state === "waiting" ? "text-zinc-400" : "text-zinc-900"}`}>
                     {step.label}
                   </p>
-                  {state === "active" && step.id === "crawling" && !isSimulated && (
+                  {state === "active" && step.id === "crawling" && (
                     <p className="text-xs text-zinc-500 mt-0.5">{job.progress.crawled} / {MAX_PAGES} pages crawled</p>
                   )}
                 </div>
@@ -102,7 +93,7 @@ export default function ProgressPane({
           })}
         </div>
 
-        {!isSimulated && job.status === "failed" && (
+        {job.status === "failed" && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
             <div className="flex items-center gap-2 mb-1">
               <AlertCircle size={14} className="text-red-500" />
@@ -112,7 +103,7 @@ export default function ProgressPane({
           </div>
         )}
 
-        {!isSimulated && job.status === "failed" ? (
+        {job.status === "failed" ? (
           <div className="bg-zinc-50 rounded-xl border border-zinc-200 p-5 flex flex-col items-center gap-3">
             <p className="text-xs text-zinc-500 text-center">
               Try a different site — most public sites crawl cleanly.
@@ -135,9 +126,9 @@ export default function ProgressPane({
             </div>
             <div className="min-h-20 sm:min-h-24 flex flex-col items-center justify-center gap-1 px-4 py-3 sm:p-4">
               <p className="text-zinc-400 text-xs font-mono text-center">
-                {bottomLabel(job, simulatedStep, domain)}
+                {bottomLabel(job, domain)}
               </p>
-              {!isSimulated && job.status === "crawling" && job.progress.mode === "browser" && (
+              {job.status === "crawling" && job.progress.mode === "browser" && (
                 <>
                   <p className="text-zinc-400 text-xs font-mono text-center">
                     This site needs a full browser render
@@ -155,18 +146,12 @@ export default function ProgressPane({
   )
 }
 
-function bottomLabel(job: ApiJob, simulatedStep: number | undefined, domain: string): string {
-  if (simulatedStep !== undefined) {
-    if (simulatedStep === 0) return `Crawling ${domain}…`
-    if (simulatedStep === 1) return "Summarizing pages with AI…"
-    if (simulatedStep === 2) return "Scoring and ranking pages…"
-    return "Assembling llms.txt…"
-  }
+function bottomLabel(job: ApiJob, domain: string): string {
   switch (job.status) {
     case "pending":    return "Starting crawl…"
     case "crawling":   return `Crawling ${domain}…`
-    case "enriching":  return "Summarizing pages with AI…"
-    case "scoring":    return "Scoring and ranking pages…"
+    case "enriching":  return "Analyzing each page with AI…"
+    case "scoring":    return "Scoring & filtering pages…"
     case "assembling": return "Assembling llms.txt…"
     default:           return ""
   }

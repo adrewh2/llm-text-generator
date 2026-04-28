@@ -21,7 +21,7 @@ function indexOfStatus(s: string): number {
 /**
  * Drives a paced `visibleStatus` against the real `job.status`. Three
  * regimes:
- *   1. No job / simulation running: bail, let simulation drive the UI.
+ *   1. No job: bail.
  *   2. First render with a non-pending real status (dashboard click,
  *      direct URL visit): jump straight to that status, skip pacing.
  *      Pacing is for watching *new* transitions, not re-animating
@@ -31,10 +31,7 @@ function indexOfStatus(s: string): number {
  *
  * Failure bypasses pacing entirely — users see the error immediately.
  */
-export function useVisibleStatus(
-  job: ApiJob | null,
-  simulationActive: boolean,
-): JobStatus {
+export function useVisibleStatus(job: ApiJob | null): JobStatus {
   const [visibleStatus, setVisibleStatus] = useState<JobStatus>(
     () => job?.status ?? "pending",
   )
@@ -47,7 +44,7 @@ export function useVisibleStatus(
   }, [])
 
   useEffect(() => {
-    if (!job || simulationActive) return
+    if (!job) return
 
     if (job.status === "failed") {
       setVisibleStatus("failed")
@@ -60,7 +57,7 @@ export function useVisibleStatus(
     }
 
     // Collapse "partial" into "complete" for progression purposes —
-    // then surface it as partial when we actually land on that step.
+    // surface it as partial when the step is actually reached.
     const effectiveTarget: string =
       job.status === "partial" ? "complete" : job.status
     const targetIdx = indexOfStatus(effectiveTarget)
@@ -75,7 +72,7 @@ export function useVisibleStatus(
         next === "complete" && job.status === "partial" ? "partial" : next,
       )
     }, LIVE_MIN_STEP_DWELL_MS)
-  }, [job, visibleStatus, simulationActive])
+  }, [job, visibleStatus])
 
   return visibleStatus
 }

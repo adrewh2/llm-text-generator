@@ -35,9 +35,9 @@ export default function ConfirmDialog({
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setMounted(true) }, [])
 
-  // Remember what had focus before we opened so we can return focus
-  // there on close (standard modal a11y contract). Move focus to the
-  // Cancel button so keyboard users land on the safe action.
+  // Remember what had focus before the dialog opened so it can be
+  // restored on close (standard modal a11y contract). Move focus to
+  // the Cancel button so keyboard users land on the safe action.
   useEffect(() => {
     previouslyFocused.current = document.activeElement as HTMLElement | null
     cancelButtonRef.current?.focus()

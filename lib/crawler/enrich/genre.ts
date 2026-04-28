@@ -125,10 +125,11 @@ export function detectGenre(homepageHtml: string, urls: string[]): SiteGenre {
 
   // ─── Media publication (before blog — stricter signals) ────────
   const mediaUrlRatio = urlFrac(segAt("politics|world|business|sports|opinion|technology|arts|style|entertainment|culture"))
-  // News-specific text signals. Bylines used to be in this list as a
-  // case-sensitive pattern, which silently never matched against our
-  // lowercased `text` — use HTML-structural hrefs instead (`/by/slug`
-  // is standard on NYT, WaPo, and most modern CMS-driven outlets).
+  // News-specific text signals. Detect bylines via HTML-structural
+  // hrefs (`/by/slug` is standard on NYT, WaPo, and most modern
+  // CMS-driven outlets) rather than free-text "By <Name>" — `text`
+  // is lowercased here, so a case-sensitive byline regex would
+  // silently never match.
   const mediaTextScore = matchCount([
     /href=["']\/by\/[a-z]/,                          // `/by/author-slug` byline links
     /\bbreaking news\b|\bnewsroom\b|\bwire (report|service)\b/,
@@ -138,8 +139,9 @@ export function detectGenre(homepageHtml: string, urls: string[]): SiteGenre {
   if ((mediaUrlRatio > 0.2 || mediaTextScore >= 2) && docsUrlCount < urlCount * 0.05) return "media_publication"
 
   // ─── Blog ───────────────────────────────────────────────────────
-  // Tightened: require URL-structural evidence of a blog. Text alone
-  // ("newsletter", "read more") fires on marketing sites too.
+  // Require URL-structural evidence of a blog (`/blog/`, `/posts/`,
+  // `/articles/`). Text alone ("newsletter", "read more") fires on
+  // marketing sites too.
   const blogSegment = segAt("blog|posts?|articles?")
   const blogUrlCount = urls.filter((u) => blogSegment.test(u)).length
   const blogUrlRatio = blogUrlCount / urlCount

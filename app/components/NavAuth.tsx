@@ -16,17 +16,17 @@ export default function NavAuth({ initialUser = null }: { initialUser?: User | n
   const [user, setUser] = useState<User | null>(initialUser)
   const supabase = useRef(createClient()).current
   const pathname = usePathname()
-  // On / and /dashboard we show one contextual action (the other is
+  // On / and /dashboard, show one contextual action (the other is
   // redundant — / IS "Generate", /dashboard IS "Dashboard"). Everywhere
   // else — /login, 404, etc. — show both so the user has a way back to
   // either core surface.
   const onDashboard = pathname?.startsWith("/dashboard") ?? false
   const onHome = pathname === "/"
 
-  // Keep the client state in sync with live auth changes. We skip the
-  // one-shot getUser() call here — initialUser from the server is the
-  // authoritative initial value and already matches the session cookie
-  // that the browser client would resolve to anyway.
+  // Keep the client state in sync with live auth changes. The
+  // one-shot getUser() call is skipped here — initialUser from the
+  // server is the authoritative initial value and already matches
+  // the session cookie that the browser client would resolve to.
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
@@ -35,8 +35,8 @@ export default function NavAuth({ initialUser = null }: { initialUser?: User | n
         // instant, which is occasionally null before the browser
         // finishes hydrating the auth cookie. Acting on it would
         // downgrade a signed-in user to the "Sign in" link for one
-        // frame and then flip back — the navbar flicker. We already
-        // seeded `user` from initialUser (SSR cookie read), so trust
+        // frame and then flip back — the navbar flicker. `user` is
+        // already seeded from initialUser (SSR cookie read), so trust
         // that until a real auth event (SIGNED_IN, SIGNED_OUT,
         // TOKEN_REFRESHED, USER_UPDATED) arrives.
         if (event === "INITIAL_SESSION") return

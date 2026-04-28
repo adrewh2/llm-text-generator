@@ -78,18 +78,18 @@ CREATE INDEX idx_jobs_page_status_created
 --
 -- No anon-accessible policies on `pages` or `jobs`: the anon key is in
 -- every browser bundle (NEXT_PUBLIC_*), so "anon can do X" means "anyone
--- on the internet can do X by hitting Supabase directly, bypassing our
--- API's rate limiter and CDN cache." The browser never queries these
--- tables directly — it goes through our API routes — so we leave anon
--- with no data-access grants. RLS's default-deny then blocks direct-to-
--- Supabase enumeration with the leaked anon key.
+-- on the internet can do X by hitting Supabase directly, bypassing the
+-- app's rate limiter and CDN cache." The browser never queries these
+-- tables directly — every read goes through the app's API routes — so
+-- anon has no data-access grants. RLS's default-deny then blocks
+-- direct-to-Supabase enumeration with the leaked anon key.
 ALTER TABLE pages          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE jobs           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_requests  ENABLE ROW LEVEL SECURITY;
 
 -- A user may only touch rows that belong to them. The one explicit
--- policy we need — it's what stops one user from reading another user's
--- history when signed in with the anon key.
+-- policy in the schema — it's what stops one user from reading another
+-- user's history when signed in with the anon key.
 CREATE POLICY user_requests_own ON user_requests
   FOR ALL
   USING      (auth.uid() = user_id)

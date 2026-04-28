@@ -4,8 +4,8 @@
 // `verifySignatureAppRouter` wrapper rejects anything that isn't.
 // Unlike `POST /api/p`, this route runs the pipeline synchronously
 // (no `waitUntil`) so QStash's retry-on-failure semantics actually
-// buy us mid-pipeline durability — if the Fluid Compute instance
-// dies, we return non-2xx and QStash redelivers.
+// provide mid-pipeline durability — if the Fluid Compute instance
+// dies, the route returns non-2xx and QStash redelivers.
 
 import { NextResponse } from "next/server"
 import { verifySignatureAppRouter } from "@upstash/qstash/nextjs"
@@ -18,9 +18,9 @@ export const maxDuration = 300
 
 // Fail fast at import time if QStash is configured but the signing
 // keys aren't set. Without these, `verifySignatureAppRouter` silently
-// 401s every delivery — the queue looks healthy from our side but the
-// worker is dark. Only enforce when QSTASH_TOKEN is present since
-// local dev (no QStash) never reaches this route via QStash.
+// 401s every delivery — the queue looks healthy on the producer side
+// but the worker is dark. Only enforce when QSTASH_TOKEN is present
+// since local dev (no QStash) never reaches this route via QStash.
 if (process.env.QSTASH_TOKEN) {
   requireEnv("QSTASH_CURRENT_SIGNING_KEY")
   requireEnv("QSTASH_NEXT_SIGNING_KEY")

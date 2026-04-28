@@ -44,7 +44,7 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
       // created_at DESC, and `upsertUserRequest` bumps that timestamp
       // on re-submission — if the user re-asks about an already-loaded
       // URL in another tab between paginations, the offset-based fetch
-      // can legitimately return a row we already have. Prefer the
+      // can legitimately return a row already displayed. Prefer the
       // already-displayed copy (older in the list) over a duplicate.
       setPages((prev) => {
         const seen = new Set(prev.map((p) => p.pageUrl))
@@ -79,12 +79,12 @@ export default function PageList({ initialPages, initialHasMore, pageSize }: Pro
 
   // Live-refresh ONLY the rows whose latest job is still non-terminal
   // — hits /api/p/{id} once per running row instead of refetching the
-  // whole paginated window on every tick. Merges by pageUrl. When a
-  // row flips terminal we reuse the job's updatedAt for lastCheckedAt
-  // (updateJob writes both at the same `now` — lib/store.ts#L137-148)
-  // so MonitorStatus goes "Refreshing…" → "Refreshed just now"
-  // immediately, instead of sitting on a stale timestamp until the
-  // next monitor cron tick.
+  // whole paginated window on every tick. Merges by pageUrl. On a
+  // terminal flip, the row reuses the job's updatedAt as
+  // lastCheckedAt: updateJob writes pages.last_checked_at at the same
+  // `now` it stamps jobs.updated_at, so MonitorStatus shows
+  // "Refreshed just now" immediately on terminal instead of sitting
+  // on the prior cron-tick timestamp.
   const runningIdsKey = pages
     .filter(
       (p) => p.pageId !== null &&

@@ -409,10 +409,12 @@ curl -s "$BASE_URL/api/p/$JOB" | jq -r '.result' | \
 curl -s -X POST "$BASE_URL/api/p" -H "Content-Type: application/json" \
   -d "{\"url\":\"$TARGET\"}" | jq -c
 ```
-**Expect:** `{"page_id":"<same-job-id>","cached":true}`, returned
-synchronously (no crawl kicks off). The simulated-progress animation
-is a browser-only concern — verify by opening
-`$BASE_URL/p/<job>?simulate=1` and watching the stepper play out.
+**Expect:** `{"page_id":"<same-page-id>","cached":true}`, returned
+synchronously (no crawl kicks off). On the browser side, a cached
+submission lands directly on `$BASE_URL/p/<page-id>` showing the
+ResultPane — there is no progress animation on `/p/`. Cache-miss
+submissions instead route to `$BASE_URL/jobs/<job-id>`, which polls
+real status and `router.replace`s to `/p/<page-id>` on completion.
 
 ### 5.4 In-flight attach (concurrent submit)
 
@@ -437,14 +439,17 @@ psql "$DATABASE_URL" -c "UPDATE pages SET updated_at = NOW() - INTERVAL '25 hour
 curl -s -X POST "$BASE_URL/api/p" -H "Content-Type: application/json" \
   -d "{\"url\":\"$TARGET\"}" | jq -c
 ```
-**Expect:** response is `{"page_id":"<NEW-uuid>","cached":false}` with
-a new job id — a fresh crawl was dispatched. Old `pages.result` stays
-in place until the new run completes.
+**Expect:** response is `{"page_id":"<same-page-id>","job_id":"<new-uuid>","cached":false}`.
+`page_id` is unchanged across re-crawls — `pages.id` is stable — but
+`job_id` is the freshly-dispatched job. Old `pages.result` stays in
+place until the new run completes; the browser routes to
+`/jobs/{job_id}` for live progress and `router.replace`s to
+`/p/{page_id}` on completion.
 
 ### 5.6 www / non-www deduplication
 
 ```bash
-# speedtest.net redirects to www.speedtest.net — we should store one row
+# speedtest.net redirects to www.speedtest.net — only one row should land in pages
 curl -s -X POST "$BASE_URL/api/p" -H "Content-Type: application/json" \
   -d '{"url":"https://speedtest.net"}' | jq -c
 curl -s -X POST "$BASE_URL/api/p" -H "Content-Type: application/json" \
@@ -511,7 +516,7 @@ markdown uses `%28` / `%29` so the link doesn't terminate early.
 ### 6.5 Full-disallow robots.txt produces a notice
 
 ```bash
-# Find a site whose /robots.txt has `Disallow: /` for our UA (try any
+# Find a site whose /robots.txt has `Disallow: /` for the crawler's UA (try any
 # major tracker-blocking site or set up a test site yourself). Submit
 # and inspect:
 curl -s "$BASE_URL/api/p/$JOB" | jq -r '.result' | grep -i "robots.txt"
@@ -555,7 +560,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X DELETE "$BASE_URL/api/p/request?page
 As user A, submit URL `X`. Sign out; sign in as user B. **Expect:**
 - User B's `/dashboard` does not list URL `X`.
 - User B can still view `$BASE_URL/p/<X's page id>` directly. This
-  is an API-layer choice, not an RLS policy: our `/api/p/[id]` route
+  is an API-layer choice, not an RLS policy: the `/api/p/[id]` route
   uses the service-role key and serves the page to anyone who knows
   the UUID. The result view is public by design (shareable links);
   the user→URLs history is what RLS keeps private.
@@ -578,11 +583,13 @@ curl -s "$NEXT_PUBLIC_SUPABASE_URL/rest/v1/jobs?select=id" \
 **Expect:** all three return `[]` (or a PostgREST permission-denied
 body) — direct anon access to any of the three tables is blocked.
 
-### 7.5 [browser] SIGNED_OUT clears client cache
+### 7.5 [browser] Sign-out updates header chrome
 
-As user A, view a result page. Sign out from another tab. Return to
-the result tab — the per-tab `jobCache` should clear via the Supabase
-`onAuthStateChange` listener.
+As user A, view a result page (`/p/{id}`). Sign out from another tab.
+Return to the result tab — the avatar / "Dashboard" button in the
+header should disappear (driven by the `onAuthStateChange` listener
+in `PageView`); the result text itself stays visible because `/p/{id}`
+content is publicly readable by design.
 
 ### 7.6 Delete from history
 
@@ -625,19 +632,24 @@ curl -s -o /dev/null -w "%{http_code}\n" "$BASE_URL/api/p/00000000-0000-0000-000
 ```
 **Expect:** `404`.
 
-### 8.4 GET `/api/p/[id]` bumps `last_requested_at` on any non-failed status
+### 8.4 `/p/[id]` RSC render bumps `last_requested_at` on any non-failed page
 
 ```bash
 TARGET="https://nextjs.org"
-JOB=$(psql "$DATABASE_URL" -t -A -c "SELECT id FROM jobs WHERE page_url = '$TARGET' ORDER BY created_at DESC LIMIT 1;")
+PAGE_ID=$(psql "$DATABASE_URL" -t -A -c "SELECT id FROM pages WHERE url = '$TARGET';")
 BEFORE=$(psql "$DATABASE_URL" -t -A -c "SELECT last_requested_at FROM pages WHERE url = '$TARGET';")
 sleep 2
-curl -s "$BASE_URL/api/p/$JOB" > /dev/null
+# Hit the page route (not the API) — bumpPageRequest fires on the RSC
+# render, not on the /api/p/[id] poll path. Need a fresh request that
+# bypasses any prefetch/CDN caching.
+curl -s "$BASE_URL/p/$PAGE_ID?cache-bust=$(date +%s)" > /dev/null
 AFTER=$(psql "$DATABASE_URL" -t -A -c "SELECT last_requested_at FROM pages WHERE url = '$TARGET';")
 echo "before: $BEFORE"
 echo "after:  $AFTER"
 ```
-**Expect:** `after > before` if the job was not in `failed` status.
+**Expect:** `after > before` when the page's latest job is not in
+`failed` status. `GET /api/p/[id]` is intentionally a pure read and
+does not bump — the test must hit `/p/[id]`.
 
 ---
 
@@ -811,9 +823,11 @@ vercel crons ls
 ### 11.6 Production middleware cookie forward
 
 Visit `/dashboard` unauthenticated — should redirect to `/login` with
-the Supabase session cookie still set (a refresh that would've been
-dropped in the pre-fix middleware). No programmatic check — verify
-by signing in then revisiting `/dashboard`: no re-authentication prompt.
+the Supabase session cookie still set on the redirect response. The
+middleware (`middleware.ts`) attaches any queued Supabase cookies onto
+the redirect so a refreshed token survives across the hop. No
+programmatic check — verify by signing in then revisiting `/dashboard`:
+no re-authentication prompt.
 
 ---
 
