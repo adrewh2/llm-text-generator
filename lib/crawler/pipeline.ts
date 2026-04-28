@@ -216,10 +216,10 @@ async function runPipelineInner(
 
     signal.throwIfAborted()
     // Single combined ranking call: internal crawl candidates +
-    // external reference candidates ranked together. Cuts one Anthropic
-    // round trip per crawl vs. the previous two separate calls. The
-    // external picks are cached here and consumed later by
-    // `resolveExternalReferences` (which now just fetches, doesn't rank).
+    // external reference candidates ranked together in one Anthropic
+    // round trip. The external picks are cached here and consumed
+    // later by `fetchPreRankedExternals` (which only fetches metadata
+    // for each, no LLM call there).
     const externalCandidates = extractExternalLinksFromHtml(homepageHtml, baseUrl)
     const ranked = await rankSiteUrls({
       internalCandidates: queue.map((q) => q.url),
