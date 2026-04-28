@@ -38,7 +38,6 @@ export default function PageView({
   }, [])
 
   const domain = hostnameOf(initialJob.url)
-  const crawledCount = (initialJob.pages ?? []).filter((p) => p.fetchStatus === "ok").length
   const validation = useMemo(
     () => (initialJob.result ? validateLlmsTxt(initialJob.result) : null),
     [initialJob.result],
@@ -51,8 +50,6 @@ export default function PageView({
           <>
             <span className="h-4 w-px bg-zinc-200 shrink-0" aria-hidden />
             <span className="text-sm text-zinc-500 truncate">{domain}</span>
-            <span className="text-zinc-300 hidden sm:block">·</span>
-            <span className="text-xs text-zinc-400 font-mono hidden sm:block shrink-0">{crawledCount} pages</span>
             {validation && (
               <span className={`hidden sm:flex items-center gap-1.5 ml-1 text-xs font-medium px-2.5 py-1 rounded-full ring-1 shrink-0 ${
                 validation.valid
