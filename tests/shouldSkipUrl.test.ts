@@ -1,6 +1,6 @@
 import { describe, test } from "node:test"
 import assert from "node:assert/strict"
-import { shouldSkipUrl, capByPathPrefix, dropParametricFanout } from "../lib/crawler/net/url"
+import { shouldSkipUrl, capByPathPrefix, capTotalByPathDepth, dropParametricFanout } from "../lib/crawler/net/url"
 
 describe("shouldSkipUrl — SKIPPED", () => {
   describe("file extensions (non-HTML assets)", () => {
@@ -347,5 +347,71 @@ describe("dropParametricFanout", () => {
     ]
     const out = dropParametricFanout(urls, 20)
     assert.deepEqual(out, ["https://example.com/about"])
+  })
+})
+
+describe("capTotalByPathDepth", () => {
+  test("returns input untouched when length ≤ maxCount", () => {
+    const urls = [
+      "https://example.com/about",
+      "https://example.com/pricing",
+      "https://example.com/docs/api",
+    ]
+    assert.deepEqual(capTotalByPathDepth(urls, 10), urls)
+  })
+
+  test("when over the cap, prefers shallower paths and preserves input order", () => {
+    const urls = [
+      "https://example.com/docs/auth/oauth/callback", // depth 4
+      "https://example.com/about",                    // depth 1
+      "https://example.com/docs/api/methods/get",     // depth 4
+      "https://example.com/pricing",                  // depth 1
+      "https://example.com/docs",                     // depth 1
+    ]
+    // Cap to 3 — should keep the 3 depth-1 URLs in their input order.
+    const out = capTotalByPathDepth(urls, 3)
+    assert.deepEqual(out, [
+      "https://example.com/about",
+      "https://example.com/pricing",
+      "https://example.com/docs",
+    ])
+  })
+
+  test("ties at the same depth break by original input order", () => {
+    const urls = [
+      "https://example.com/c", // depth 1, idx 0
+      "https://example.com/a", // depth 1, idx 1
+      "https://example.com/b", // depth 1, idx 2
+    ]
+    const out = capTotalByPathDepth(urls, 2)
+    // Both are depth 1; original input order wins → keep first 2.
+    assert.deepEqual(out, ["https://example.com/c", "https://example.com/a"])
+  })
+
+  test("hundreds of URLs collapsed to the absolute ceiling", () => {
+    // 300 URLs with mixed depths — 50 at depth 1, 250 at depth 4.
+    // Capping at 200 should keep all 50 shallow URLs + 150 of the
+    // deeper ones (filling the remaining slots in input order).
+    const shallow = Array.from({ length: 50 }, (_, i) => `https://example.com/section-${i}`)
+    const deep = Array.from({ length: 250 }, (_, i) => `https://example.com/section-0/sub-${i}/x/y`)
+    const urls = [...deep.slice(0, 100), ...shallow, ...deep.slice(100)]
+    const out = capTotalByPathDepth(urls, 200)
+    assert.equal(out.length, 200)
+    // All 50 depth-1 URLs survive — the cap must let structural pages through.
+    for (const s of shallow) assert.ok(out.includes(s), `shallow URL dropped: ${s}`)
+  })
+
+  test("handles unparseable URLs (Infinity depth) by treating them as deepest", () => {
+    const urls = [
+      "not a url",                      // depth Infinity
+      "https://example.com/about",      // depth 1
+      "https://example.com/docs/api",   // depth 2
+    ]
+    const out = capTotalByPathDepth(urls, 2)
+    // The 2 parseable URLs win; the unparseable one is sorted last and dropped.
+    assert.deepEqual(out, [
+      "https://example.com/about",
+      "https://example.com/docs/api",
+    ])
   })
 })

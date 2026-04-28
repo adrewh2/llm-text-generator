@@ -122,6 +122,23 @@ export const llm = {
   RANK_MAX_KEEP: 120,
   /** Candidate lists below this size skip LLM ranking entirely. */
   RANK_SKIP_BELOW: 10,
+  /**
+   * Absolute hard ceiling on the candidate list size that reaches
+   * `rankSiteUrls`, applied after the bucket-based filters
+   * (`dropParametricFanout`, `capByPathPrefix`, locale pre-filter).
+   * Those filters work per-prefix; a sprawling enterprise site with
+   * many distinct top-level sections can still push hundreds of URLs
+   * through them. This cap puts a fixed lid on the LLM's input.
+   *
+   * Why 200: ~12K input tokens worst case (200 × ~60 chars per URL +
+   * scaffolding) ≈ 24% of Anthropic Tier 1's 50K input TPM per call.
+   * Higher than that and the model also starts to lose attention on
+   * long URL lists ("lost in the middle"), so quality plateaus as
+   * cost climbs. When the cap trips, URLs are truncated by path
+   * depth ascending (structural section indexes win the slot over
+   * deep leaves), with input order as the tiebreaker.
+   */
+  RANK_INPUT_MAX: 200,
   /** Upper bound on the description the LLM can return (chars). */
   DESCRIPTION_MAX_CHARS: 240,
   /** Upper bound on the section name the LLM can return (chars). */

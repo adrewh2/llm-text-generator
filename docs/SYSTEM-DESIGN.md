@@ -118,7 +118,7 @@ sequenceDiagram
     W->>T: robots.txt, sitemap.xml, homepage
     T-->>W: HTML / XML
 
-    W->>W: dropParametricFanout + capByPathPrefix (URL filter)
+    W->>W: dropParametricFanout + capByPathPrefix + capTotalByPathDepth
     W->>A: rankSiteUrls (internal + external in 1 call)
     A-->>W: ranked internal list · ranked external refs
 
