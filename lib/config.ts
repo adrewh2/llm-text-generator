@@ -73,6 +73,24 @@ export const crawler = {
    * ranker drops social / tracking / footer noise.
    */
   EXTERNAL_REFS_MAX_KEEP: 8,
+  /**
+   * Parametric fan-out drop threshold. When a single first-path-
+   * segment hosts at least this many depth-2 URLs in the candidate
+   * list (e.g. /city/{slug} × hundreds, /store/{id} × thousands,
+   * /listing/{slug} × millions), treat the whole prefix as
+   * templated fan-out and drop every URL under it. The parent index
+   * page (the depth-1 URL like /location, /store, /listing) lives
+   * in a different bucket and survives — that's what an LLM
+   * actually needs from a directory-of-similar-items section. The
+   * LLM ranker is too unreliable to enforce this on its own (it
+   * scores each fan-out page individually, where each looks
+   * legitimate), so the filter runs deterministically before
+   * ranking. 20 is high enough that legitimate categorical sections
+   * (a docs site with 10 top-level topics, an e-commerce site with
+   * 5 product collections at depth 2) don't trip it, while
+   * comfortably catching real fan-out.
+   */
+  FANOUT_DROP_THRESHOLD: 20,
 } as const;
 
 // ─── LLM enrichment ─────────────────────────────────────────────────────────

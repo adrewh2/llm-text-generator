@@ -8,6 +8,16 @@ export function assembleFile(
   summary?: string,
   preamble?: string,
   robotsNotice?: string,
+  /**
+   * Explicit ordering for Primary section headers. Sections in this
+   * list render first, in the given order. Sections that exist in
+   * the input but aren't listed here are appended afterward in their
+   * original (avg-score) order. Used by the LLM final-review pass
+   * to reorder sections when the per-section score-based sort isn't
+   * the right shape for an llms.txt; pass `undefined` to keep the
+   * default behavior.
+   */
+  sectionOrder?: string[],
 ): string {
   const lines: string[] = []
 
@@ -27,7 +37,7 @@ export function assembleFile(
     lines.push(`> ⚠️ ${robotsNotice}`, "")
   }
 
-  const { sections, overflow } = groupBySection(primary)
+  const { sections, overflow } = groupBySection(primary, sectionOrder)
 
   // Pages from single-entry sections spill into Optional
   const allOptional = [
@@ -77,7 +87,7 @@ function formatEntry(page: ScoredPage, label?: string): string {
  * link end). CommonMark permits balanced parens, but renderers vary —
  * percent-encoding both parens is the portable fix.
  */
-function encodeMarkdownUrl(url: string): string {
+export function encodeMarkdownUrl(url: string): string {
   return url.replace(/\(/g, "%28").replace(/\)/g, "%29")
 }
 
@@ -89,7 +99,7 @@ function encodeMarkdownUrl(url: string): string {
  * cache key keeps it (stability); the slash is stripped only at
  * render time.
  */
-function formatDisplayUrl(url: string): string {
+export function formatDisplayUrl(url: string): string {
   try {
     const u = new URL(url)
     if (u.pathname === "/" && !u.search && !u.hash) {
@@ -177,7 +187,7 @@ function resolveDisplayLabels(pages: ScoredPage[], siteName: string): Map<string
   return labels
 }
 
-function groupBySection(pages: ScoredPage[]): {
+function groupBySection(pages: ScoredPage[], explicitOrder?: string[]): {
   sections: Map<string, ScoredPage[]>
   overflow: ScoredPage[]
 } {
@@ -220,9 +230,33 @@ function groupBySection(pages: ScoredPage[]): {
   // the scale large enough to win small avg-score gaps but small
   // enough that a genuinely-stronger catalogue section still ranks
   // above a thin structural one.
-  const entries = [...valid.entries()].sort((a, b) => {
+  //
+  // When the LLM final-review pass returned an explicit `sectionOrder`,
+  // honor it: sections in the list render in that order first, then
+  // any sections present in `valid` but missing from the list are
+  // appended in their effective-score order. This lets the model see
+  // the assembled draft and put structural sections at the top even
+  // when the per-section avg-score wouldn't.
+  const sortedByScore = [...valid.entries()].sort((a, b) => {
     return effectiveScore(b[0], b[1]) - effectiveScore(a[0], a[1])
   })
+
+  let entries: Array<[string, ScoredPage[]]>
+  if (explicitOrder && explicitOrder.length > 0) {
+    const validNames = new Set(valid.keys())
+    const usedFromExplicit = new Set<string>()
+    const head: Array<[string, ScoredPage[]]> = []
+    for (const name of explicitOrder) {
+      if (validNames.has(name) && !usedFromExplicit.has(name)) {
+        usedFromExplicit.add(name)
+        head.push([name, valid.get(name)!])
+      }
+    }
+    const tail = sortedByScore.filter(([name]) => !usedFromExplicit.has(name))
+    entries = [...head, ...tail]
+  } else {
+    entries = sortedByScore
+  }
 
   return { sections: new Map(entries), overflow }
 }

@@ -198,6 +198,61 @@ describe("assembleFile → validateLlmsTxt", () => {
     assert.deepEqual(h2s, ["## About", "## Discoveries"], `unexpected order: ${h2s.join(" | ")}`)
   })
 
+  test("explicit sectionOrder (from LLM final review) overrides the avg-score sort", () => {
+    // Without an explicit order, Catalogue would beat About on raw
+    // avg-score even with the structural-priority boost (avg 80 + 0
+    // = 80 vs avg 40 + 15 = 55). When the LLM final-review pass
+    // returns ["About", "Catalogue"], the assembler honors it.
+    const primary: ScoredPage[] = [
+      page({ url: "https://example.com/cat/a", title: "CA", section: "Catalogue", score: 80 }),
+      page({ url: "https://example.com/cat/b", title: "CB", section: "Catalogue", score: 80 }),
+      page({ url: "https://example.com/about", title: "About", section: "About", score: 40 }),
+      page({ url: "https://example.com/team", title: "Team", section: "About", score: 40 }),
+    ]
+    const out = assembleFile(
+      "Example", primary, [], undefined, undefined, undefined,
+      ["About", "Catalogue"],
+    )
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    assert.deepEqual(h2s, ["## About", "## Catalogue"], `unexpected order: ${h2s.join(" | ")}`)
+  })
+
+  test("explicit sectionOrder is a partial spec — unlisted sections appended in score order", () => {
+    // LLM only listed About; Pricing and Catalogue should follow,
+    // ordered against each other by their effective scores.
+    const primary: ScoredPage[] = [
+      page({ url: "https://example.com/cat/a", title: "CA", section: "Catalogue", score: 80 }),
+      page({ url: "https://example.com/cat/b", title: "CB", section: "Catalogue", score: 80 }),
+      page({ url: "https://example.com/about", title: "About", section: "About", score: 40 }),
+      page({ url: "https://example.com/team", title: "Team", section: "About", score: 40 }),
+      page({ url: "https://example.com/pricing", title: "P1", section: "Pricing", score: 50 }),
+      page({ url: "https://example.com/plans", title: "P2", section: "Pricing", score: 50 }),
+    ]
+    const out = assembleFile(
+      "Example", primary, [], undefined, undefined, undefined,
+      ["About"],
+    )
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    // About first (explicit). Then by effective score: Catalogue
+    // (80 + 0 = 80) beats Pricing (50 + (85-50)*0.3 = 60.5).
+    assert.deepEqual(h2s, ["## About", "## Catalogue", "## Pricing"], `unexpected order: ${h2s.join(" | ")}`)
+  })
+
+  test("explicit sectionOrder ignores names that aren't real sections (defensive)", () => {
+    // The LLM might hallucinate a section name that doesn't exist
+    // in the Primary list. Such names are silently dropped.
+    const primary: ScoredPage[] = [
+      page({ url: "https://example.com/about", title: "About", section: "About", score: 40 }),
+      page({ url: "https://example.com/team", title: "Team", section: "About", score: 40 }),
+    ]
+    const out = assembleFile(
+      "Example", primary, [], undefined, undefined, undefined,
+      ["MadeUp", "About", "AlsoFake"],
+    )
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    assert.deepEqual(h2s, ["## About"])
+  })
+
   test("catalogue-shaped section labels are NOT hardcoded — two unknown labels tie at the neutral default", () => {
     // SECTION_PRIORITY only carries labels with stable cross-genre
     // meaning in the llms.txt shape — it doesn't hardcode catalogue-

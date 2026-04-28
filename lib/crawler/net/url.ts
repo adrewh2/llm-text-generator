@@ -206,6 +206,59 @@ function pathDepthFor(url: string): number {
   }
 }
 
+/**
+ * Drop parametric fan-out — entire first-path-segment prefixes where
+ * the depth-2 leaf count is large (one entry per city / store /
+ * listing / location-slug / product-id). The parent index page
+ * (depth-1, e.g. /location, /store, /listing) survives in a
+ * different bucket. An LLM consumer of llms.txt wants to know the
+ * directory exists and where to find it — not to ingest every entry.
+ *
+ * Detection counts ONLY depth-2 URLs toward the threshold so a deep
+ * docs hierarchy (`/docs/{cat}/{topic}` × hundreds at depth 3+)
+ * isn't mistaken for fan-out — a real docs site has only a small
+ * number of depth-2 categories. When a prefix triggers, every URL
+ * under it (any depth) is dropped, since the deeper children of a
+ * fan-out section are also fan-out.
+ *
+ * Detection is purely structural (URL count + path depth, no
+ * hardcoded section nouns) so it works across genres without
+ * over-fitting to specific patterns. Depth-1 URLs (the index pages
+ * themselves) are never candidates for being dropped here.
+ */
+export function dropParametricFanout(urls: string[], threshold: number): string[] {
+  // Per-first-segment: count depth-2 leaves separately from
+  // total-under-prefix. The depth-2 count drives the threshold check
+  // (catches "many similar leaves" without false-firing on deep
+  // hierarchies); the total-under-prefix list is what gets dropped
+  // when the threshold trips.
+  const depth2CountBySeg = new Map<string, number>()
+  const allUnderSeg = new Map<string, string[]>()
+  for (const url of urls) {
+    try {
+      const segs = new URL(url).pathname.split("/").filter(Boolean)
+      if (segs.length < 2) continue
+      const first = segs[0]
+      const list = allUnderSeg.get(first)
+      if (list) list.push(url)
+      else allUnderSeg.set(first, [url])
+      if (segs.length === 2) {
+        depth2CountBySeg.set(first, (depth2CountBySeg.get(first) ?? 0) + 1)
+      }
+    } catch {
+      // Unparseable URLs aren't fan-out candidates.
+    }
+  }
+  const dropped = new Set<string>()
+  for (const [first, count] of depth2CountBySeg) {
+    if (count >= threshold) {
+      const list = allUnderSeg.get(first) ?? []
+      for (const u of list) dropped.add(u)
+    }
+  }
+  return urls.filter((u) => !dropped.has(u))
+}
+
 export function isValidHttpUrl(url: string): boolean {
   try {
     const u = new URL(url)

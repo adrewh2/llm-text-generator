@@ -418,6 +418,120 @@ function heuristicScore(url: string): number {
 }
 
 /**
+ * Final review pass — the LLM is given the actual assembled draft
+ * markdown (everything that would ship in the file: H1, summary,
+ * preamble, every section header, every entry with its title / URL /
+ * description) and decides what to drop and how to reorder sections.
+ * Reading the whole file at once lets the model catch noise and
+ * ordering mistakes that per-page enrichment can't see — login
+ * redirects, individual catalogue items the section index already
+ * covers, foundational sections that landed below catalogue ones,
+ * descriptions that repeat the preamble.
+ *
+ * Returns:
+ * - dropUrls: Set of canonical URLs (matching `ScoredPage.url`) to
+ *   drop from the final file. Empty on no-op or LLM failure.
+ * - sectionOrder: Optional explicit ordering for the Primary sections.
+ *   Sections returned here win over the avg-score sort. Sections not
+ *   listed are appended in their original order. `null` on no-op.
+ *
+ * Conservative by design: a parse failure, an empty response, or an
+ * unavailable LLM all return `{ dropUrls: empty Set, sectionOrder: null }`,
+ * leaving the draft untouched.
+ *
+ * `urlAliases` maps every form a URL might appear in inside the
+ * rendered markdown (canonical, display-stripped, percent-encoded)
+ * back to its canonical `ScoredPage.url`. The LLM returns URLs in
+ * whatever form it sees in the draft; this lookup canonicalises.
+ */
+export interface FinalReviewResult {
+  dropUrls: Set<string>
+  sectionOrder: string[] | null
+}
+
+export async function llmFinalReview(
+  siteName: string,
+  genre: SiteGenre,
+  draftMarkdown: string,
+  urlAliases: Map<string, string>,
+  knownSections: string[],
+): Promise<FinalReviewResult> {
+  const noop: FinalReviewResult = { dropUrls: new Set(), sectionOrder: null }
+  const client = getClient()
+  if (!client || draftMarkdown.length === 0) return noop
+
+  const genreLabel = genre.replace(/_/g, " ")
+  const prompt = `Final review pass on this draft llms.txt for "${neuter(siteName)}" (a ${genreLabel} site). The file is consumed by language models that need to understand what the site IS — not by humans browsing it. Read the file as a whole and decide what should change.
+
+DRAFT FILE:
+\`\`\`markdown
+${draftMarkdown}
+\`\`\`
+
+Two jobs:
+
+1. DROP entries that are clearly low-value in the context of the rest of the file. Be CONSERVATIVE — when in doubt, keep. Only drop entries that are clearly noise or redundant given the surrounding file. Drop candidates:
+   - login redirects, tracking-param URLs, marketing redirects, sign-out links
+   - an individual catalogue item (one city, one store, one listing) when the directory's INDEX page is already in the file — keep the index, drop the redundant leaf
+   - entries whose description just repeats what the summary / preamble already said
+   - anything an LLM wouldn't want loaded into context when answering a question about ${neuter(siteName)}
+
+2. REORDER sections if the current order is wrong for an llms.txt. Foundational sections that explain what the site IS (About, Pricing, Products, Services, Docs, API, Support) should appear first; catalogue / news / blog sections later. Use existing section names verbatim — don't rename, don't merge, don't invent. The "## Optional" section is always last and is not part of this list.
+
+Return JSON only:
+{
+  "drop_urls": [<URLs to drop, EXACTLY as they appear inside the [..](URL) of the draft>],
+  "section_order": [<section names in desired order, must be a subset of "## " headers in the draft excluding "Optional"; sections not listed are appended in original order>]
+}
+
+If nothing should change, return {"drop_urls": [], "section_order": []}.`
+
+  try {
+    const message = await client.messages.create({
+      model: MODEL,
+      max_tokens: 1024,
+      messages: [{ role: "user", content: prompt }],
+    })
+    const text = message.content[0]?.type === "text" ? message.content[0].text : ""
+    const match = text.match(/\{[\s\S]*\}/)
+    if (!match) return noop
+
+    const parsed = JSON.parse(match[0]) as {
+      drop_urls?: unknown
+      section_order?: unknown
+    }
+
+    const dropUrls = new Set<string>()
+    if (Array.isArray(parsed.drop_urls)) {
+      for (const u of parsed.drop_urls) {
+        if (typeof u !== "string") continue
+        const canonical = urlAliases.get(u)
+        if (canonical) dropUrls.add(canonical)
+      }
+    }
+
+    let sectionOrder: string[] | null = null
+    if (Array.isArray(parsed.section_order)) {
+      const sectionSet = new Set(knownSections)
+      const seen = new Set<string>()
+      const order: string[] = []
+      for (const s of parsed.section_order) {
+        if (typeof s !== "string") continue
+        if (!sectionSet.has(s) || seen.has(s)) continue
+        seen.add(s)
+        order.push(s)
+      }
+      sectionOrder = order.length > 0 ? order : null
+    }
+
+    return { dropUrls, sectionOrder }
+  } catch (err) {
+    debugLog("llmEnrich.llmFinalReview", err)
+    return noop
+  }
+}
+
+/**
  * Filter a list of external reference links down to the ones worth
  * including in the generated `llms.txt`. The homepage ships every
  * outbound anchor imaginable — spec links, tracking pixels, footer
