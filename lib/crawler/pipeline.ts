@@ -431,24 +431,37 @@ async function runPipelineInner(
     const reviewSections = Array.from(new Set(primary.map((p) => p.section ?? "Resources")))
     const review = await llmFinalReview(siteName, genre, draft, urlAliases, reviewSections)
 
-    // Apply per-entry section reassignments before filtering / assembly.
-    // Moves cover both misclassifications (an item placed under the
-    // wrong header) and section consolidation (singleton entries
-    // pulled into a topically-adjacent larger section). groupBySection
-    // re-buckets by the updated `page.section` downstream.
-    const applyMove = (p: ScoredPage): ScoredPage => {
-      const next = review.moves.get(p.url)
-      return next ? { ...p, section: next } : p
+    // Apply per-entry section reassignments + description rewrites
+    // before filtering / assembly. Moves cover both misclassifications
+    // (an item placed under the wrong header) and section consolidation
+    // (singleton entries pulled into a topically-adjacent larger
+    // section); groupBySection re-buckets by the updated `page.section`
+    // downstream. Description rewrites correct grammar / strangeness
+    // the per-page enrichBatch missed when read in context of the
+    // label; provenance bumps to "llm" so assemble.ts continues
+    // rendering the description (it gates render on provenance ≠ "none").
+    const applyReviewEdits = (p: ScoredPage): ScoredPage => {
+      const newSection = review.moves.get(p.url)
+      const newDescription = review.descriptionRewrites.get(p.url)
+      if (!newSection && !newDescription) return p
+      return {
+        ...p,
+        ...(newSection ? { section: newSection } : {}),
+        ...(newDescription
+          ? { description: newDescription, descriptionProvenance: "llm" as const }
+          : {}),
+      }
     }
-    const movedPrimary = review.moves.size > 0 ? primary.map(applyMove) : primary
-    const movedOptional = review.moves.size > 0 ? optional.map(applyMove) : optional
+    const hasPageEdits = review.moves.size > 0 || review.descriptionRewrites.size > 0
+    const editedPrimary = hasPageEdits ? primary.map(applyReviewEdits) : primary
+    const editedOptional = hasPageEdits ? optional.map(applyReviewEdits) : optional
 
     const filteredPrimary = review.dropUrls.size > 0
-      ? movedPrimary.filter((p) => !review.dropUrls.has(p.url))
-      : movedPrimary
+      ? editedPrimary.filter((p) => !review.dropUrls.has(p.url))
+      : editedPrimary
     const filteredOptional = review.dropUrls.size > 0
-      ? movedOptional.filter((p) => !review.dropUrls.has(p.url))
-      : movedOptional
+      ? editedOptional.filter((p) => !review.dropUrls.has(p.url))
+      : editedOptional
 
     // Re-assemble only when the review changed something; otherwise
     // the draft we already rendered IS the final file.
@@ -457,6 +470,7 @@ async function runPipelineInner(
       || review.sectionOrder !== null
       || review.labelRewrites.size > 0
       || review.moves.size > 0
+      || review.descriptionRewrites.size > 0
     const result = reviewChangedSomething
       ? assembleFile(
           siteName,

@@ -389,20 +389,19 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7, 12]`
  * Final review pass — the LLM is given the actual assembled draft
  * markdown (everything that would ship in the file: H1, summary,
  * preamble, every section header, every entry with its title / URL /
- * description) and decides what to drop and how to reorder sections.
- * Reading the whole file at once lets the model catch noise and
- * ordering mistakes that per-page enrichment can't see — login
- * redirects, individual catalogue items the section index already
- * covers, foundational sections that landed below catalogue ones,
- * descriptions that repeat the preamble.
+ * description) and is asked five jobs: drop noise, move entries to a
+ * better section (including consolidating singleton sections), reorder
+ * sections, relabel awkward link text, and redescribe descriptions
+ * that read strangely in the context of their label. Reading the whole
+ * file at once lets the model catch quality issues that per-page
+ * enrichment can't see — login redirects, individual catalogue items
+ * the section index already covers, foundational sections that landed
+ * below catalogue ones, descriptions that just repeat the preamble or
+ * are grammatically off when sat next to their label.
  *
- * Returns:
- * - dropUrls: Set of canonical URLs (matching `ScoredPage.url`) to
- *   drop from the final file. Empty when the model returned no edits.
- * - sectionOrder: Optional explicit ordering for the Primary sections.
- *   Sections returned here win over the avg-score sort. Sections not
- *   listed are appended in their original order. `null` when the model
- *   didn't return one.
+ * Returns the structured edit lists (see FinalReviewResult below) —
+ * empty Maps / Sets / null when the model decided no edit was needed
+ * for a given concern.
  *
  * Conservative by design: a parse failure or an empty draft both
  * return the no-op shape so the draft survives unchanged. Transport
@@ -430,6 +429,13 @@ export interface FinalReviewResult {
    *  target section name need not pre-exist; groupBySection re-buckets
    *  by the updated `page.section`. Empty Map on no-op. */
   moves: Map<string, string>
+  /** url → new description. Final-pass correction for descriptions
+   *  that read awkwardly next to their label (grammatical errors,
+   *  vague marketing prose, structure references like "the homepage
+   *  of…", label-repeating openings, off-language). Caller mutates
+   *  `page.description` and bumps provenance to "llm" before
+   *  re-rendering. Empty Map on no-op. */
+  descriptionRewrites: Map<string, string>
 }
 
 export async function llmFinalReview(
@@ -439,7 +445,7 @@ export async function llmFinalReview(
   urlAliases: Map<string, string>,
   knownSections: string[],
 ): Promise<FinalReviewResult> {
-  const noop: FinalReviewResult = { dropUrls: new Set(), sectionOrder: null, labelRewrites: new Map(), moves: new Map() }
+  const noop: FinalReviewResult = { dropUrls: new Set(), sectionOrder: null, labelRewrites: new Map(), moves: new Map(), descriptionRewrites: new Map() }
   if (draftMarkdown.length === 0) return noop
   const client = getClient()
 
@@ -477,15 +483,25 @@ Four jobs:
 
 4. RELABEL entries whose link text reads awkwardly — run-together URL slugs ("Getstarted" → "Get Started", "Signin" → "Sign In"), unhelpful URL-derived fallbacks ("Index", "Page1"), labels that are just the site name. Use natural English title-case. ONLY relabel when the current label is genuinely wrong; leave good labels alone.
 
+5. REDESCRIBE entries whose description reads strangely IN CONTEXT OF THE LINK LABEL it sits next to. The file renders as "[Label](URL): description" — read each as a sentence-pair and fix descriptions that:
+   - have a grammatical error, broken sentence fragment, or unclear pronoun reference
+   - don't actually describe what the entry is (vague marketing prose, "Welcome to our…", "The page for X")
+   - awkwardly repeat the label ("[Get Started]: Get started page for…")
+   - reference structure ("This page lists…", "The homepage of…")
+   - read like nav-bar fragments rather than a sentence ("Pricing | Plans | Enterprise")
+   - are in the wrong language for the site's primary language
+   Rewrite as 1 clear factual sentence, max 120 chars, in the file's primary language. Describe what the entry IS / DOES, not its position in the site. ONLY redescribe when the existing description is genuinely bad; leave good descriptions alone — this is a correction pass, not a rewrite pass.
+
 Return JSON only:
 {
   "drop_urls": [<URLs to drop, EXACTLY as they appear inside the [..](URL) of the draft>],
   "moves": [{"url": "<URL exactly as in the draft>", "section": "<target section name, 1–4 words, max 30 chars>"}],
   "section_order": [<section names in desired order, post-move; sections not listed are appended in original order>],
-  "relabel": [{"url": "<URL exactly as in the draft>", "label": "<new link text>"}]
+  "relabel": [{"url": "<URL exactly as in the draft>", "label": "<new link text>"}],
+  "redescribe": [{"url": "<URL exactly as in the draft>", "description": "<new description, max 120 chars>"}]
 }
 
-If nothing should change, return {"drop_urls": [], "moves": [], "section_order": [], "relabel": []}.`
+If nothing should change, return {"drop_urls": [], "moves": [], "section_order": [], "relabel": [], "redescribe": []}.`
 
   try {
     const message = await client.messages.create({
@@ -493,12 +509,14 @@ If nothing should change, return {"drop_urls": [], "moves": [], "section_order":
       // Worst-case response on a full file (MAX_PAGES = 25 primary +
       // ~10 optional + external refs ≈ 35 entries): drop_urls × ~50
       // tok each + moves × ~60 tok each + relabel × ~70 tok each +
-      // section_order. A pathological case wanting to drop / relabel
-      // / move many entries could approach ~2 K tokens. 3072 is a
-      // safe ceiling so the model never has to truncate any of the
-      // four edit lists, which would silently shrink an edit's blast
-      // radius and skew the file.
-      max_tokens: 3072,
+      // redescribe × ~85 tok each + section_order. A pathological
+      // pass that rewrites many descriptions in addition to other
+      // edits could approach ~3 K tokens. 4096 is a safe ceiling so
+      // the model never has to truncate any of the five edit lists,
+      // which would silently shrink an edit's blast radius and skew
+      // the file (especially bad for redescribe — a truncated rewrite
+      // would render a half-sentence into the file).
+      max_tokens: 4096,
       messages: [{ role: "user", content: prompt }],
     })
     const text = message.content[0]?.type === "text" ? message.content[0].text : ""
@@ -510,6 +528,7 @@ If nothing should change, return {"drop_urls": [], "moves": [], "section_order":
       moves?: unknown
       section_order?: unknown
       relabel?: unknown
+      redescribe?: unknown
     }
 
     const dropUrls = new Set<string>()
@@ -575,7 +594,27 @@ If nothing should change, return {"drop_urls": [], "moves": [], "section_order":
       }
     }
 
-    return { dropUrls, sectionOrder, labelRewrites, moves }
+    const descriptionRewrites = new Map<string, string>()
+    if (Array.isArray(parsed.redescribe)) {
+      for (const item of parsed.redescribe) {
+        if (!item || typeof item !== "object") continue
+        const url = (item as { url?: unknown }).url
+        const description = (item as { description?: unknown }).description
+        if (typeof url !== "string") continue
+        const canonical = urlAliases.get(url)
+        // Pass `undefined` for the original-text comparison so
+        // sanitizeDescription returns the cleaned new text rather than
+        // accidentally treating an unchanged value as a verbatim keep.
+        // The "did the model actually change anything" test happens at
+        // the caller (provenance bump only fires on actual rewrite).
+        const cleaned = sanitizeDescription(description, undefined)
+        if (canonical && cleaned) {
+          descriptionRewrites.set(canonical, cleaned)
+        }
+      }
+    }
+
+    return { dropUrls, sectionOrder, labelRewrites, moves, descriptionRewrites }
   } catch (err) {
     throw asUnavailable("llmFinalReview", err)
   }
