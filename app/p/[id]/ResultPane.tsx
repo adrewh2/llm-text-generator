@@ -42,12 +42,19 @@ export default function ResultPane({ job, signedIn }: Props) {
     ? Date.now() - lastCheckedAt.getTime() >= STALE_AFTER_MS
     : false
 
+  // `formatDistanceToNowStrict(lastCheckedAt)` is a moving target: SSR
+  // captures one interval, hydration captures another a few seconds
+  // later, mismatch fails the hydration check. Mount-gate the relative
+  // string so SSR + first client paint render the same placeholder
+  // ("Refreshed"), then swap to the live string after mount.
+  const [mounted, setMounted] = useState(false)
   // Tick state forces a re-render on an interval so formatDistanceToNowStrict
   // re-evaluates against the fresh clock — "35 seconds ago" → "1 minute ago"
   // without needing a page refresh. Matches the dashboard MonitorStatus
   // cadence (`ui.MONITOR_STATUS_TICK_MS`).
   const [, setTick] = useState(0)
   useEffect(() => {
+    setMounted(true)
     if (!lastCheckedAt) return
     const id = setInterval(() => setTick((n) => n + 1), ui.MONITOR_STATUS_TICK_MS)
     return () => clearInterval(id)
@@ -202,9 +209,14 @@ export default function ResultPane({ job, signedIn }: Props) {
             <span className="hidden sm:inline text-zinc-200">·</span>
             <span
               className="hidden sm:inline text-[10px] text-zinc-400"
-              title={lastCheckedAt.toLocaleString()}
+              // toLocaleString() is locale-dependent and can render
+              // differently server-side (Node defaults to en-US) vs
+              // client-side (browser locale), so only set the title
+              // attribute after mount to avoid a hydration mismatch
+              // on the attribute value.
+              title={mounted ? lastCheckedAt.toLocaleString() : undefined}
             >
-              Refreshed {formatDistanceToNowStrict(lastCheckedAt, { addSuffix: true })}
+              Refreshed{mounted ? ` ${formatDistanceToNowStrict(lastCheckedAt, { addSuffix: true })}` : ""}
             </span>
           </>
         )}
@@ -220,7 +232,12 @@ export default function ResultPane({ job, signedIn }: Props) {
               older than PAGE_TTL_HOURS. Clicking re-submits via
               POST /api/p; if a fresh crawl is dispatched, navigation
               hands off to /jobs/{job_id}. */}
-          {isStale && (
+          {/* Mount-gate so the SSR pass and the client first paint
+              agree on whether to render the button — `isStale` reads
+              `Date.now()`, which differs between server and client by
+              the network-transit delay and would flip the boolean if
+              `lastCheckedAt` sits near the staleness threshold. */}
+          {mounted && isStale && (
             <button
               type="button"
               onClick={handleRefresh}
