@@ -514,6 +514,7 @@ async function runPipelineInner(
       || review.labelRewrites.size > 0
       || review.moves.size > 0
       || review.descriptionRewrites.size > 0
+      || review.entryOrder.size > 0
     const result = reviewChangedSomething
       ? assembleFile(
           siteName,
@@ -524,6 +525,7 @@ async function runPipelineInner(
           robotsNotice,
           review.sectionOrder ?? undefined,
           review.labelRewrites.size > 0 ? review.labelRewrites : undefined,
+          review.entryOrder.size > 0 ? review.entryOrder : undefined,
         )
       : draft
 
