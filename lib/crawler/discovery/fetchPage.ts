@@ -4,8 +4,30 @@ import { readBoundedText } from "../net/readBounded"
 import { crawler } from "../../config"
 
 const MAX_SIZE = crawler.RESPONSE_MAX_BYTES
+
+// Real-Chrome UA + the cluster of client-hint and Sec-Fetch headers a
+// real navigation sends. Bot WAFs (Akamai on tesla.com, for instance)
+// 403 anything that announces itself as `LlmsTxtGenerator/...` even
+// though the crawl is well-behaved (single request per page, honors
+// robots.txt + Crawl-delay). Without this we get a degenerate 1-entry
+// llms.txt for any site behind a major edge provider.
 export const USER_AGENT =
-  "LlmsTxtGenerator/1.0 (+https://llm-text-generator.vercel.app)"
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+export const BROWSER_HEADERS: Record<string, string> = {
+  "User-Agent": USER_AGENT,
+  Accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"macOS"',
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "none",
+  "Sec-Fetch-User": "?1",
+  "Upgrade-Insecure-Requests": "1",
+}
 
 export interface FetchResult {
   ok: boolean
@@ -51,11 +73,7 @@ export async function fetchPage(url: string): Promise<FetchResult> {
     // safeFetch re-validates every redirect hop for SSRF.
     const res = await safeFetch(url, {
       signal: AbortSignal.timeout(8000),
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept: "text/html,application/xhtml+xml",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
+      headers: BROWSER_HEADERS,
     })
 
     // Reject non-2xx responses even when they return HTML — otherwise

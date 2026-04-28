@@ -17,7 +17,7 @@ import { createHash } from "crypto"
 import { fetchSitemapUrls } from "./discovery/sitemap"
 import { safeFetch } from "./net/safeFetch"
 import { readBoundedText } from "./net/readBounded"
-import { USER_AGENT } from "./discovery/fetchPage"
+import { BROWSER_HEADERS } from "./discovery/fetchPage"
 import { crawler } from "../config"
 
 const { HOMEPAGE_FETCH_TIMEOUT_MS, RESPONSE_MAX_BYTES } = crawler
@@ -82,10 +82,7 @@ async function hashHomepage(url: string): Promise<string | null> {
   try {
     const res = await safeFetch(url, {
       signal: AbortSignal.timeout(HOMEPAGE_FETCH_TIMEOUT_MS),
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept: "text/html,application/xhtml+xml",
-      },
+      headers: BROWSER_HEADERS,
     })
     if (!res.ok) return null
     // Same cap as fetchPage — this runs on every monitored page per

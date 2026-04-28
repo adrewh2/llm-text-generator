@@ -60,7 +60,7 @@ async function runPipelineInner(
   try {
     await updateJob(jobId, { status: "crawling" })
 
-    const baseUrl = normalizeUrl(targetUrl) || targetUrl
+    let baseUrl = normalizeUrl(targetUrl) || targetUrl
 
     // SSRF: block private/loopback/metadata IPs up front. Individual
     // fetches also pre-flight; this fails the job with a clear reason.
@@ -70,6 +70,28 @@ async function runPipelineInner(
       const reason = err instanceof UnsafeUrlError ? err.message : "unsafe URL"
       await updateJob(jobId, { status: "failed", error: reason })
       return
+    }
+
+    // Probe the homepage up front. Some hosts (e.g. tesla.com) hard-403
+    // the apex but serve `www.<host>` normally — and don't issue a 301
+    // from apex to www. When the apex fetch fails on a bare hostname,
+    // retry against the www variant; if that succeeds, adopt it as the
+    // canonical origin so robots/sitemap/discovery all run against the
+    // host that actually serves traffic. The result is reused below
+    // instead of re-fetching the homepage.
+    signal.throwIfAborted()
+    let homepageFetch = await fetchPage(baseUrl)
+    if (!homepageFetch.ok) {
+      const u = new URL(baseUrl)
+      if (!u.hostname.startsWith("www.")) {
+        const wwwUrl = new URL(baseUrl)
+        wwwUrl.hostname = `www.${u.hostname}`
+        const wwwFetch = await fetchPage(wwwUrl.toString())
+        if (wwwFetch.ok) {
+          baseUrl = wwwUrl.toString()
+          homepageFetch = wwwFetch
+        }
+      }
     }
 
     // Fetch robots.txt
@@ -105,10 +127,10 @@ async function runPipelineInner(
       progress: { discovered: discoveredUrls.size, crawled: 0, failed: 0 },
     })
 
-    // Plain HTTP first; fall through to Puppeteer on failure or when
-    // the response looks like a JS shell / bot challenge.
-    signal.throwIfAborted()
-    const homepageFetch = await fetchPage(baseUrl)
+    // Homepage HTML — the probe above already ran fetchPage and may
+    // have flipped baseUrl to the www variant. Fall through to
+    // Puppeteer on failure or when the response looks like a JS
+    // shell / bot challenge.
     const rawHomepageHtml = homepageFetch.ok ? homepageFetch.html ?? null : null
     const rawHomepageMeta = rawHomepageHtml ? extractMetadata(baseUrl, rawHomepageHtml) : null
 

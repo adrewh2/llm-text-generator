@@ -2,7 +2,7 @@ import { load } from "cheerio"
 import { normalizeUrl } from "../net/url"
 import { safeFetch } from "../net/safeFetch"
 import { readBoundedText } from "../net/readBounded"
-import { USER_AGENT } from "./fetchPage"
+import { BROWSER_HEADERS } from "./fetchPage"
 import { crawler } from "../../config"
 
 const { MAX_SITEMAP_URLS, SITEMAP_TIMEOUT_MS, SITEMAP_MAX_BYTES } = crawler
@@ -26,7 +26,7 @@ async function processSitemap(
     // index can declare arbitrary cross-origin Sitemap: URLs.
     const res = await safeFetch(url, {
       signal: AbortSignal.timeout(SITEMAP_TIMEOUT_MS),
-      headers: { "User-Agent": USER_AGENT },
+      headers: BROWSER_HEADERS,
     })
     if (!res.ok) return
 

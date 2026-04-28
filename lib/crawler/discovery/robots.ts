@@ -1,5 +1,5 @@
 import { safeFetch } from "../net/safeFetch"
-import { USER_AGENT as FETCH_USER_AGENT } from "./fetchPage"
+import { BROWSER_HEADERS } from "./fetchPage"
 
 // Name used when matching `User-agent:` directives in robots.txt.
 // Keep this as the bare token (no version/URL suffix) — some sites
@@ -19,7 +19,7 @@ export async function fetchRobots(baseUrl: string): Promise<RobotsData> {
     const robotsUrl = new URL("/robots.txt", baseUrl).toString()
     const res = await safeFetch(robotsUrl, {
       signal: AbortSignal.timeout(10000),
-      headers: { "User-Agent": FETCH_USER_AGENT },
+      headers: BROWSER_HEADERS,
     })
     if (!res.ok) return result
     const text = await res.text()
