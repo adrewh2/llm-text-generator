@@ -630,7 +630,7 @@ DRAFT FILE:
 ${draftMarkdown}
 \`\`\`
 
-Four jobs:
+Five jobs:
 
 1. DROP entries that are clearly low-value in the context of the rest of the file. Be CONSERVATIVE — when in doubt, keep. Only drop entries that are clearly noise or redundant given the surrounding file. Hard limits: drop NO MORE THAN ~20% of the file's total entries, and NEVER drop so many that the remaining file would have fewer than 5 entries. If you'd exceed either limit, return an empty drop_urls list and trust the per-page enrichment that produced the draft. Drop candidates:
    - login redirects, tracking-param URLs, marketing redirects, sign-out links
