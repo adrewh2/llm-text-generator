@@ -146,7 +146,7 @@ sequenceDiagram
         J-->>U: { status, progress }
     end
 
-    note over U: On terminal success the /jobs/{id} client routes to /p/{pageId}. The /p/{id} RSC reads /api/p/{id} (edge-cached); updateJob revalidates that path on re-crawl.
+    note over U: On terminal success the /jobs/{id} client routes to /p/{pageId}. The /p/{id} RSC reads /api/p/{id} (edge-cached, and updateJob revalidates that path on re-crawl).
 ```
 
 ### Failure modes and retries
