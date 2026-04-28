@@ -107,7 +107,7 @@ sequenceDiagram
     P->>Q: publishJSON({ jobId, url })
     Q-->>P: ack
     P-->>U: 201 { page_id, job_id, cached: false }
-    note over U: Browser routes to /jobs/{job_id}<br/>which polls status below.
+    note over U: Browser routes to /jobs/{job_id} which polls status below.
 
     rect rgb(245,245,245)
         note right of Q: QStash holds the message<br/>and pushes to the worker URL
@@ -146,7 +146,7 @@ sequenceDiagram
         J-->>U: { status, progress }
     end
 
-    note over U: On terminal success — /jobs/{id} client<br/>router.replace's to /p/{pageId}. The /p/{id}<br/>RSC reads /api/p/[id], which is edge-cached;<br/>updateJob revalidates that path on re-crawl.
+    note over U: On terminal success the /jobs/{id} client routes to /p/{pageId}. The /p/{id} RSC reads /api/p/{id} (edge-cached); updateJob revalidates that path on re-crawl.
 ```
 
 ### Failure modes and retries
