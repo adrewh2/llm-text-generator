@@ -32,6 +32,20 @@ CREATE INDEX idx_pages_monitored ON pages(monitored) WHERE monitored = true;
 CREATE INDEX idx_pages_last_requested_at ON pages(last_requested_at);
 
 -- jobs: one row per crawl execution, linked to a page
+--
+-- `created_by` records the principal that initiated the crawl, in
+-- the same prefixed shape the rate limiter uses
+-- (lib/upstash/rateLimit.ts):
+--   - 'user:<uuid>' — signed-in user submission via POST /api/p
+--   - 'ip:<addr>'   — anon submission via POST /api/p (IPv4 or v6)
+--   - 'cron'        — monitor-cron re-crawl via GET /api/monitor
+--   - 'user'        — legacy backfill from rows pre-principal
+--
+-- Lets the dashboard / analytics / abuse triage queries separate
+-- "the user pressed Generate" from "the cron noticed the site
+-- changed", and within user-initiated crawls separate authenticated
+-- submissions from anon ones. The IP form is durably persisted —
+-- treat it as PII for any retention / export decisions downstream.
 CREATE TABLE jobs (
   id UUID PRIMARY KEY,
   page_url TEXT NOT NULL REFERENCES pages(url) ON DELETE CASCADE,
@@ -40,6 +54,7 @@ CREATE TABLE jobs (
   site_name TEXT,
   genre TEXT,
   error TEXT,
+  created_by TEXT NOT NULL DEFAULT 'user',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   -- Guard against typos in client code silently writing an unexpected
@@ -47,7 +62,15 @@ CREATE TABLE jobs (
   CONSTRAINT jobs_status_check CHECK (status IN (
     'pending', 'crawling', 'enriching', 'scoring',
     'assembling', 'complete', 'partial', 'failed'
-  ))
+  )),
+  -- Defensive shape check on created_by. Only 'cron', 'user' (legacy),
+  -- or the prefixed forms produced by app/api/p/route.ts pass.
+  CONSTRAINT jobs_created_by_check CHECK (
+    created_by = 'cron'
+    OR created_by = 'user'
+    OR created_by ~ '^user:[0-9a-fA-F-]{36}$'
+    OR created_by ~ '^ip:[0-9a-fA-F:.]{1,45}$'
+  )
 );
 
 -- user_requests: tracks which pages each signed-in user has visited

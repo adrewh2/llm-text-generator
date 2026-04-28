@@ -106,7 +106,7 @@ async function dispatchRecrawl(pageUrl: string): Promise<string> {
   if (active) return active.pageId
 
   const jobId = randomUUID()
-  const { pageId } = await createJob(jobId, pageUrl)
+  const { pageId } = await createJob(jobId, pageUrl, "cron")
   await enqueueCrawl(jobId, pageUrl)
   return pageId
 }

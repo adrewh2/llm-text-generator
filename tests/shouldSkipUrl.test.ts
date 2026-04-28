@@ -1,6 +1,6 @@
 import { describe, test } from "node:test"
 import assert from "node:assert/strict"
-import { shouldSkipUrl, capByPathPrefix } from "../lib/crawler/net/url"
+import { shouldSkipUrl, capByPathPrefix, dropParametricFanout } from "../lib/crawler/net/url"
 
 describe("shouldSkipUrl — SKIPPED", () => {
   describe("file extensions (non-HTML assets)", () => {
@@ -219,5 +219,109 @@ describe("capByPathPrefix", () => {
       "https://example.com/about/board-directors/john-doe",
       "https://example.com/about/board-directors/jane-smith",
     ])
+  })
+})
+
+describe("dropParametricFanout", () => {
+  test("drops a prefix bucket that meets the threshold", () => {
+    const fanout = Array.from({ length: 25 }, (_, i) => `https://example.com/city/slug-${i}`)
+    const out = dropParametricFanout(fanout, 20)
+    assert.deepEqual(out, [])
+  })
+
+  test("keeps a bucket that's just under the threshold", () => {
+    const urls = Array.from({ length: 19 }, (_, i) => `https://example.com/city/slug-${i}`)
+    const out = dropParametricFanout(urls, 20)
+    assert.equal(out.length, 19)
+  })
+
+  test("never drops depth-1 (index) URLs even when their depth-2 children get dropped", () => {
+    // The /location index lives at depth 1, the /city/* fan-out at
+    // depth 2. The whole /city/* bucket gets dropped; /location
+    // survives because it's in a different first-segment bucket
+    // ("location" vs "city") AND because depth-1 URLs are never
+    // candidates for dropping in the first place.
+    const urls = [
+      "https://example.com/location",
+      "https://example.com/city",
+      ...Array.from({ length: 30 }, (_, i) => `https://example.com/city/slug-${i}`),
+    ]
+    const out = dropParametricFanout(urls, 20)
+    assert.deepEqual(out, [
+      "https://example.com/location",
+      "https://example.com/city",
+    ])
+  })
+
+  test("only drops the over-threshold bucket; other prefixes are unaffected", () => {
+    const urls = [
+      ...Array.from({ length: 30 }, (_, i) => `https://example.com/city/slug-${i}`),
+      "https://example.com/about",
+      "https://example.com/about/team",
+      "https://example.com/products",
+      "https://example.com/pricing",
+    ]
+    const out = dropParametricFanout(urls, 20)
+    assert.deepEqual(out, [
+      "https://example.com/about",
+      "https://example.com/about/team",
+      "https://example.com/products",
+      "https://example.com/pricing",
+    ])
+  })
+
+  test("multi-bucket fan-out: each over-threshold prefix drops independently", () => {
+    const urls = [
+      ...Array.from({ length: 25 }, (_, i) => `https://example.com/city/c-${i}`),
+      ...Array.from({ length: 25 }, (_, i) => `https://example.com/region/r-${i}`),
+      "https://example.com/about",
+    ]
+    const out = dropParametricFanout(urls, 20)
+    assert.deepEqual(out, ["https://example.com/about"])
+  })
+
+  test("preserves input order for kept URLs", () => {
+    const urls = [
+      "https://example.com/a",
+      "https://example.com/b",
+      "https://example.com/c",
+    ]
+    assert.deepEqual(dropParametricFanout(urls, 20), urls)
+  })
+
+  test("a deep docs/{cat}/{topic} hierarchy is NOT mistaken for fan-out", () => {
+    // Only depth-2 leaves count toward the threshold. A real docs
+    // site has a small number of depth-2 categories
+    // (/docs/auth, /docs/api, /docs/payments) and the bulk of pages
+    // lives at depth 3+ (/docs/auth/oauth, /docs/api/keys, …) — so
+    // even with 60+ total /docs/* URLs, the depth-2 count stays
+    // tiny and the threshold doesn't trip.
+    const urls = [
+      // 3 depth-2 categories
+      "https://example.com/docs/auth",
+      "https://example.com/docs/api",
+      "https://example.com/docs/payments",
+      // many depth-3+ topics under each
+      ...Array.from({ length: 30 }, (_, i) => `https://example.com/docs/auth/topic-${i}`),
+      ...Array.from({ length: 30 }, (_, i) => `https://example.com/docs/api/endpoint-${i}`),
+    ]
+    const out = dropParametricFanout(urls, 20)
+    // Depth-2 count for "docs" is 3 (auth, api, payments) — below
+    // the threshold of 20, so nothing gets dropped.
+    assert.equal(out.length, urls.length)
+  })
+
+  test("when depth-2 count trips the threshold, deeper descendants under the same prefix are dropped too", () => {
+    // /city/{slug} × 25 trips the threshold. /city/{slug}/{detail}
+    // is the deeper layer of the same fan-out tree and should also
+    // be dropped — those are even more granular templated pages.
+    const urls = [
+      ...Array.from({ length: 25 }, (_, i) => `https://example.com/city/slug-${i}`),
+      "https://example.com/city/slug-0/details",
+      "https://example.com/city/slug-0/info",
+      "https://example.com/about",
+    ]
+    const out = dropParametricFanout(urls, 20)
+    assert.deepEqual(out, ["https://example.com/about"])
   })
 })

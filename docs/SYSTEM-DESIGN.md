@@ -61,7 +61,7 @@ flowchart TB
     QStash -- signed POST --> APIW
     APIW -- runCrawlPipeline --> Supa
     APIW -- fetch HTML --> Web
-    APIW -- rank + enrich + preamble --> Claude
+    APIW -- rank + enrich + preamble + review --> Claude
 
     VCron --> APIM
     APIM -- getMonitoredPages --> Supa
@@ -118,6 +118,7 @@ sequenceDiagram
     W->>T: robots.txt, sitemap.xml, homepage
     T-->>W: HTML / XML
 
+    W->>W: dropParametricFanout + capByPathPrefix (URL filter)
     W->>A: rankCandidateUrls (1 call)
     A-->>W: ranked URL list
 
@@ -130,6 +131,8 @@ sequenceDiagram
     A-->>W: importance · section · description
     W->>A: llmSiteName + generateSitePreamble
     A-->>W: brand + preamble
+    W->>A: llmFinalReview (assembled draft)
+    A-->>W: drop_urls · section_order
 
     W->>DB: UPDATE jobs terminal + write pages.result
     W-->>Q: 200 OK
@@ -194,7 +197,9 @@ The **summary blockquote** comes straight from the homepage's meta description. 
 
 Each link line is `- [label](url): description`. Labels come from the page title when it's unique and distinct from the site name. When a title repeats across many pages (a very common SPA failure mode where `document.title` never updates), the assembler falls back to a URL-derived label, and if collisions remain it prefixes the first differing path segment to break them.
 
-The last thing this stage decides is the terminal status of the crawl — **complete**, **partial**, or **failed**. Exact rules in [`DESIGN.md §6`](./DESIGN.md#6-crawl-pipeline). That status is what the browser polls for and what shows up in the user's dashboard history.
+Once the draft is assembled, one more LLM call (`llmFinalReview`) hands the **whole rendered file** to the model and asks two questions: are any entries clear noise that should be dropped given the rest of the file, and is the section ordering right for an llms.txt (foundational sections first, catalogue / news / blog later)? Reading the assembled file at once lets the model catch what per-page enrichment can't see — login-redirect URLs, individual catalogue items the section index already covers, descriptions that just repeat the preamble. The model returns `{ drop_urls, section_order }`; the file is re-assembled with the drops applied and the LLM-supplied section order honored over the avg-score sort. No-op on parse error / unavailable LLM, so the draft survives unchanged.
+
+The last thing this stage decides is the terminal status of the crawl — **complete**, **partial**, or **failed**. Exact rules in [`DESIGN.md §6`](./DESIGN.md#6-crawl-pipeline). That status is what the browser polls for and what shows up in the user's dashboard history. Counts are taken AFTER the final-review drops, so a review that pruned every entry surfaces as failed instead of producing an empty file.
 
 ---
 

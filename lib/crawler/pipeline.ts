@@ -6,12 +6,12 @@ import { probeMarkdown } from "./discovery/markdownProbe"
 import { extractLinksFromHtml, extractExternalLinksFromHtml } from "./discovery/discover"
 import { isSpaHtml, SpaBrowser } from "./discovery/spaCrawler"
 import { scorePages } from "./enrich/score"
-import { llmEnrichPages, generateSitePreamble, rankCandidateUrls, rankExternalReferences, llmSiteName } from "./enrich/llmEnrich"
+import { llmEnrichPages, generateSitePreamble, rankCandidateUrls, rankExternalReferences, llmSiteName, llmFinalReview } from "./enrich/llmEnrich"
 import { baseLangCode, urlLocaleCode } from "./net/language"
 import { assignSections, filterAndSelectPages } from "./enrich/group"
-import { assembleFile } from "./output/assemble"
+import { assembleFile, encodeMarkdownUrl, formatDisplayUrl } from "./output/assemble"
 import { detectGenre } from "./enrich/genre"
-import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix } from "./net/url"
+import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix, dropParametricFanout } from "./net/url"
 import { updateJob } from "../store"
 import type { ExtractedPage } from "./types"
 import { crawler } from "../config"
@@ -20,7 +20,7 @@ import { assertSafeUrl, UnsafeUrlError } from "./net/ssrf"
 const {
   MAX_PAGES, MAX_DEPTH, CONCURRENCY, POLITENESS_DELAY_MS,
   PIPELINE_BUDGET_MS, URLS_PER_PREFIX_CAP, PREFIX_SEGMENT_DEPTH,
-  EXTERNAL_REFS_MAX_KEEP, MAX_CRAWL_DELAY_MS,
+  EXTERNAL_REFS_MAX_KEEP, MAX_CRAWL_DELAY_MS, FANOUT_DROP_THRESHOLD,
 } = crawler
 
 class PipelineTimeoutError extends Error {
@@ -173,6 +173,16 @@ async function runPipelineInner(
         }
       }
     }
+
+    // Drop parametric fan-out (e.g. /city/{slug} × hundreds, /store/{id}
+    // × thousands) before per-prefix capping. capByPathPrefix at depth=2
+    // would put each individual fan-out URL in its own bucket and let
+    // them all through. The parent index page (depth-1, e.g. /location)
+    // lives in a different bucket and survives — that's what an LLM
+    // consumer of llms.txt actually needs from a directory section.
+    const deFannedUrls = dropParametricFanout(queue.map((q) => q.url), FANOUT_DROP_THRESHOLD)
+    const deFannedSet = new Set(deFannedUrls)
+    queue.splice(0, queue.length, ...queue.filter((q) => deFannedSet.has(q.url)))
 
     // Cap URLs per path prefix to prevent content-heavy sites from flooding the queue
     const cappedUrls = capByPathPrefix(queue.map((q) => q.url), URLS_PER_PREFIX_CAP, PREFIX_SEGMENT_DEPTH)
@@ -386,22 +396,71 @@ async function runPipelineInner(
     const robotsNotice = robotsFullBlock
       ? "Note: This site's robots.txt disallows all crawling (Disallow: /). Only the homepage could be indexed; the full site structure may not be represented here."
       : undefined
-    const result = assembleFile(siteName, primary, optional, summary, preamble, robotsNotice)
+
+    // Final LLM pass: render the draft, hand the actual file to the
+    // model, let it decide what to drop and how to reorder sections.
+    // Reading the assembled file lets the model catch noise and
+    // ordering mistakes that per-page enrichment can't see — login
+    // redirects, individual catalogue items the section index already
+    // covers, sections that landed in the wrong order for an llms.txt
+    // despite the avg-score sort. No-op on LLM failure / empty
+    // response, so the draft survives as-is.
+    const draft = assembleFile(siteName, primary, optional, summary, preamble, robotsNotice)
+    // Build a rendered-URL → canonical-URL alias map. The LLM returns
+    // URLs as they appear inside the [..](URL) of the rendered draft;
+    // those go through formatDisplayUrl + encodeMarkdownUrl, so the
+    // canonical ScoredPage.url won't always match verbatim. Indexing
+    // every form (canonical, display-stripped, rendered-encoded)
+    // makes the lookup robust regardless of which form the model
+    // copies back.
+    const urlAliases = new Map<string, string>()
+    for (const p of [...primary, ...optional]) {
+      const display = formatDisplayUrl(p.mdUrl || p.url)
+      const rendered = encodeMarkdownUrl(display)
+      urlAliases.set(p.url, p.url)
+      urlAliases.set(display, p.url)
+      urlAliases.set(rendered, p.url)
+    }
+    const reviewSections = Array.from(new Set(primary.map((p) => p.section ?? "Resources")))
+    const review = await llmFinalReview(siteName, genre, draft, urlAliases, reviewSections)
+    const filteredPrimary = review.dropUrls.size > 0
+      ? primary.filter((p) => !review.dropUrls.has(p.url))
+      : primary
+    const filteredOptional = review.dropUrls.size > 0
+      ? optional.filter((p) => !review.dropUrls.has(p.url))
+      : optional
+
+    // Re-assemble only when the review changed something; otherwise
+    // the draft we already rendered IS the final file.
+    const reviewChangedSomething = review.dropUrls.size > 0 || review.sectionOrder !== null
+    const result = reviewChangedSomething
+      ? assembleFile(
+          siteName,
+          filteredPrimary,
+          filteredOptional,
+          summary,
+          preamble,
+          robotsNotice,
+          review.sectionOrder ?? undefined,
+        )
+      : draft
 
     // "partial" when >50% of attempts failed (min 5 attempts so a
     // 2-page site with 1 timeout doesn't trip it). Fail outright when
     // the output would have no sections — better than shipping a
-    // degenerate `# <siteName>` stub.
+    // degenerate `# <siteName>` stub. Counts use the filtered lists
+    // (post-final-review) so an LLM pass that drops every entry still
+    // surfaces as failed instead of producing an empty file.
     const attempted = crawled + failed
     const successRate = attempted > 0 ? crawled / attempted : 0
     const status =
       crawled === 0                                 ? "failed"
-      : primary.length === 0 && optional.length === 0 ? "failed"
+      : filteredPrimary.length === 0 && filteredOptional.length === 0 ? "failed"
       : attempted >= 5 && successRate < 0.5         ? "partial"
       : "complete"
 
     const error =
-      status === "failed" && primary.length === 0 && optional.length === 0
+      status === "failed" && filteredPrimary.length === 0 && filteredOptional.length === 0
         ? "browser render failed"  // scrubError maps this to "Couldn't render this site."
         : undefined
 

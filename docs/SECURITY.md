@@ -140,7 +140,7 @@ Sign-in goes through Supabase-hosted OAuth (GitHub, Google). The client never se
 
 `supabase/migration.sql` enables RLS on every table. One policy, on `user_requests`:
 
-- `user_requests`: `auth.uid() = user_id` for every operation — **one user can't read another user's history even with the anon key**. The privacy-critical table: the person→URLs mapping lives only here.
+- `user_requests`: `auth.uid() = user_id` for every operation — **one user can't read another user's history even with the anon key**. The privacy-critical table for surfaced data: the person→URLs mapping the dashboard reads. (`jobs.created_by` carries audit-trail identity too — `user:<uuid>` or `ip:<addr>` — but the column is internal: never returned by any API route, only readable via the service-role key. RLS on `jobs` is anon-deny, same as `pages`.)
 
 `pages` and `jobs` have **no anon-accessible policies**. That's intentional: RLS is default-deny, so with no grants the anon key can't read or write either table. The browser never queries these tables directly — every data read goes through API routes (which use the service-role key and bypass RLS) — so removing anon access costs nothing. What it buys: a hacker who lifts the `NEXT_PUBLIC_SUPABASE_ANON_KEY` out of the browser bundle can't use it to bulk-enumerate `pages` / `jobs` by hitting `https://<project>.supabase.co/rest/v1/...` directly. Every data request is routed through the app's rate limiter + CDN cache.
 
@@ -213,8 +213,9 @@ Every user-supplied string is validated:
 The shape and motivation of the shared-cache data model live in [`DESIGN.md §3`](./DESIGN.md#3-data-model). The privacy implications:
 
 - **No cross-user contamination of *content*.** Everyone who generates the same URL sees the same `pages.result`. Refreshes (24 h TTL or monitor-detected drift) overwrite for everyone — the guarantee is that concurrent readers see the same bytes, not that those bytes never change.
-- **History stays private.** `user_requests` is the only table with per-user data. RLS blocks cross-user reads via the anon key.
+- **History stays private.** `user_requests` is the only table with per-user data exposed via API. RLS blocks cross-user reads via the anon key.
 - **No PII in `pages`.** It holds an `llms.txt` and crawl metadata for a publicly-crawlable URL. `user_requests` stores `user_id` + `page_url`; email lives in Supabase Auth's own schema and is never joined.
+- **`jobs.created_by` carries the principal that initiated the crawl** — `user:<uuid>` for signed-in submissions, `ip:<addr>` for anon submissions, `cron` for monitor re-crawls. The column is internal (never returned by any API route, only readable via the service-role key) and is meant for analytics / abuse triage. Treat it as PII for retention / data-export decisions: durable storage of IPs is a step beyond the ephemeral exposure in Upstash rate-limit keys and Sentry request context.
 - **No client-side caching of results.** `/p/{id}` is a server-rendered page reading `getPageById` directly per request, and `/jobs/{id}` polls a job-state endpoint that never carries the `result` payload. There is no shared in-memory state across viewers in the same tab, so a prior signed-in viewer's results can't linger after sign-out — the next render reads from Supabase fresh.
 
 ---
