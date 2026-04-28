@@ -1,5 +1,5 @@
 import { safeFetch } from "../net/safeFetch"
-import { USER_AGENT } from "./fetchPage"
+import { BROWSER_HEADERS } from "./fetchPage"
 
 export async function probeMarkdown(url: string): Promise<string | null> {
   const candidates = getMdCandidates(url)
@@ -9,7 +9,7 @@ export async function probeMarkdown(url: string): Promise<string | null> {
       const res = await safeFetch(mdUrl, {
         method: "HEAD",
         signal: AbortSignal.timeout(2000),
-        headers: { "User-Agent": USER_AGENT },
+        headers: BROWSER_HEADERS,
       })
 
       if (!res.ok) continue
@@ -60,10 +60,7 @@ async function verifyMarkdownContent(url: string): Promise<boolean> {
   try {
     const res = await safeFetch(url, {
       signal: AbortSignal.timeout(2000),
-      headers: {
-        "User-Agent": USER_AGENT,
-        Range: "bytes=0-4095",
-      },
+      headers: { ...BROWSER_HEADERS, Range: "bytes=0-4095" },
     })
     if (!res.ok) return false
     const text = await res.text()
