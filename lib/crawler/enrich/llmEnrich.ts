@@ -164,7 +164,11 @@ Primary language: "${primaryLang}" — pages in other languages are secondary fo
 
 For each page, return a JSON object:
 
-- "section": short heading (1–4 words, letters / spaces / hyphens, max 30 chars). Prefer when they fit: ${SECTION_HINTS.join(", ")}. URL path is a strong signal: /docs/ or /documentation/ → Docs, /api/ or /reference/ → API, /blog/ or /posts/ → Blog, /about/ → About, /pricing/ → Pricing, /support/ or /help/ → Support, /shop/ or /store/ or /products/ → Products. Use site-appropriate names when warranted (a recipe site can use "Recipes"). GROUP, DO NOT FRAGMENT — pages in the same category MUST share a section name ("Buy Mac" + "Buy iPad" + "Engraving" all → Products, not three labels). Aim for 2–5 sections total, multiple pages each. Low-value pages (legal, generic marketing) → "Optional".
+- "section": short heading (1–4 words, letters / spaces / hyphens, max 30 chars). Prefer when they fit: ${SECTION_HINTS.join(", ")}. URL path is a strong signal: /docs/ or /documentation/ → Docs, /api/ or /reference/ → API, /blog/ or /posts/ → Blog, /about/ → About, /pricing/ → Pricing, /support/ or /help/ → Support, /shop/ or /store/ or /products/ → Products. Use site-appropriate names when warranted (a recipe site can use "Recipes").
+
+  GROUP entries that share a topic; FRAGMENT when topics genuinely differ. "Buy Mac" + "Buy iPad" + "Engraving" all → Products (same topic: buying things). But "Copyright Tools" + "Privacy Policy" + "Community Guidelines" → Policies, NOT Products — they're a different topic from the actual products. "Blog" + "Newsroom" + "Trends" → Content (or Blog), NOT Learning. "Creators Hub" + "Podcast Tools" → Creators, NOT Products. The "share a label" instinct should yield to topical coherence: a section is a topic, not a catch-all bin.
+
+  Aim for 3–6 coherent sections. A section may have a single entry when the topic genuinely stands alone (one Pricing page is fine; one About page is fine). Better one strong singleton than burying a misfit entry in a larger section it doesn't match. Low-value pages (legal, generic marketing fluff with no product information) → "Optional". DO NOT put major products in Optional just because their URL contains /ads/ or /marketing/ — a self-serve advertising platform IS a product on a site like YouTube; only put genuinely peripheral ad/marketing fluff there.
 
 - "importance": integer 1–10. Score for an LLM that needs to understand the site, not for a human browser:
   • Structural / hub pages (About, Pricing, Products / Services overview, Docs / API landing, Support hub, Careers) → 8–10 even if text-light. An LLM needs these first.
@@ -628,15 +632,20 @@ ${draftMarkdown}
 
 Four jobs:
 
-1. DROP entries that are clearly low-value in the context of the rest of the file. Be CONSERVATIVE — when in doubt, keep. Only drop entries that are clearly noise or redundant given the surrounding file. Drop candidates:
+1. DROP entries that are clearly low-value in the context of the rest of the file. Be CONSERVATIVE — when in doubt, keep. Only drop entries that are clearly noise or redundant given the surrounding file. Hard limits: drop NO MORE THAN ~20% of the file's total entries, and NEVER drop so many that the remaining file would have fewer than 5 entries. If you'd exceed either limit, return an empty drop_urls list and trust the per-page enrichment that produced the draft. Drop candidates:
    - login redirects, tracking-param URLs, marketing redirects, sign-out links
    - an individual catalogue item (one city, one store, one listing) when the directory's INDEX page is already in the file — keep the index, drop the redundant leaf
    - entries whose description just repeats what the summary / preamble already said
-   - anything an LLM wouldn't want loaded into context when answering a question about ${neuter(siteName)}
+   Do NOT drop entries just because they're marketing-flavored, ad-related, or feel "less interesting" than other entries — those are valid product / service pages on most sites and need to stay. The drop list is for noise (login pages, tracking links), not for editorial trimming.
 
-2. MOVE entries to a better section, with two purposes:
-   a. FIX MISCLASSIFICATIONS — an entry that landed under the wrong header given its actual subject (a "Player Inclusion Coalition" entry under About should be in Community; a developer-tools entry under Resources should be in Docs).
-   b. CONSOLIDATE FRAGMENTED SECTIONS — when a section has only 1–2 entries that would read more coherently as part of a larger topically-adjacent section, move them in. Prefer merging a small section into a larger related one over keeping a singleton. Target section name MAY be one that already exists in the draft, OR a new short label that better describes the merged group; reuse existing names when reasonable to avoid section sprawl. Don't move entries between unrelated topics just to balance section sizes.
+2. MOVE entries to a better section, with three purposes. Moves NEVER drop an entry — they only re-section it. Use drop_urls (job 1) sparingly and only for entries that are clearly noise; do NOT use it to demote.
+   a. AUDIT EVERY SECTION — for each multi-entry section in the draft, read the entries together as a group and ask: "do these entries actually share a topic, or did per-page enrichment bundle them under the nearest label?" If 1–2 entries in a section are outliers from the section's majority topic, move them to a better section (existing or a new short label). Examples of bundling failures to fix by moving:
+      - "Copyright Tools" or "Privacy Policy" placed under Products → move to a Policies section
+      - "Official Blog" or "Trends" placed under Learning → move to Content (or split into a Blog section)
+      - "Creators Hub" or "Podcast Tools" placed under Products → move to Creators
+      Per-page enrichment can't see siblings; you can. Creating a new short section for outliers is better than leaving them mis-grouped — a coherent 1-entry section beats a 4-entry incoherent one.
+   b. FIX MISCLASSIFICATIONS — single-entry corrections (a "Player Inclusion Coalition" entry under About should be in Community; a developer-tools entry under Resources should be in Docs). Same idea as (a) but for individually-mis-placed entries.
+   c. CONSOLIDATE FRAGMENTED SECTIONS — when a section has only 1 entry AND that entry would read more coherently as part of a larger topically-adjacent section, move it in. Topical coherence is the bar — don't move singletons just to eliminate them; a coherent 1-entry section is fine.
    NEVER use "Optional" as a target section name in moves. The "## Optional" section is rendered automatically from the draft's existing optional list — if you want an entry de-emphasised rather than removed, leave it where it is; if you want it dropped entirely, put it in drop_urls instead.
 
 3. REORDER sections if the current order is wrong for an llms.txt. The deterministic pre-sort already roughly handles this — ONLY return \`section_order\` when the current order in the draft above is GENUINELY wrong, not as a tweak. When you do return one, use this priority order as guidance (highest first), and place each existing section near the position whose label most closely matches:

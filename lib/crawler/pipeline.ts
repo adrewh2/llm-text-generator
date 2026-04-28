@@ -478,17 +478,38 @@ async function runPipelineInner(
     const editedPrimary = hasPageEdits ? primary.map(applyReviewEdits) : primary
     const editedOptional = hasPageEdits ? optional.map(applyReviewEdits) : optional
 
-    const filteredPrimary = review.dropUrls.size > 0
-      ? editedPrimary.filter((p) => !review.dropUrls.has(p.url))
+    // Defense-in-depth on llmFinalReview drops: even though the prompt
+    // tells the model to drop ≤20% of entries and never below a 5-entry
+    // floor, a misbehaving response could still nuke the file. Reject
+    // the entire dropUrls set when it's clearly excessive — the
+    // underlying draft is already a curated, scored, filtered list, so
+    // refusing a destructive review and shipping the draft is strictly
+    // safer than a near-empty output. Logged so a sustained pattern is
+    // visible in ops.
+    const totalEntries = editedPrimary.length + editedOptional.length
+    const dropCount = review.dropUrls.size
+    const wouldRemain = totalEntries - dropCount
+    const dropTooAggressive =
+      dropCount > 0 &&
+      (dropCount > Math.max(1, Math.floor(totalEntries * 0.2)) || wouldRemain < 5)
+    const safeDropUrls = dropTooAggressive ? new Set<string>() : review.dropUrls
+    if (dropTooAggressive) {
+      console.warn(
+        `[llmFinalReview] rejected destructive drop: ${dropCount}/${totalEntries} entries (would leave ${wouldRemain})`,
+      )
+    }
+
+    const filteredPrimary = safeDropUrls.size > 0
+      ? editedPrimary.filter((p) => !safeDropUrls.has(p.url))
       : editedPrimary
-    const filteredOptional = review.dropUrls.size > 0
-      ? editedOptional.filter((p) => !review.dropUrls.has(p.url))
+    const filteredOptional = safeDropUrls.size > 0
+      ? editedOptional.filter((p) => !safeDropUrls.has(p.url))
       : editedOptional
 
     // Re-assemble only when the review changed something; otherwise
     // the draft we already rendered IS the final file.
     const reviewChangedSomething =
-      review.dropUrls.size > 0
+      safeDropUrls.size > 0
       || review.sectionOrder !== null
       || review.labelRewrites.size > 0
       || review.moves.size > 0
