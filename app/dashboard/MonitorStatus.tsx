@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { formatDistanceToNowStrict } from "date-fns"
 import { Eye } from "lucide-react"
 import { ui } from "@/lib/config"
@@ -13,7 +13,16 @@ interface Props {
 }
 
 export default function MonitorStatus({ monitored, lastCheckedAt, running }: Props) {
-  // `formatDistanceToNowStrict(lastCheckedAt)` is a moving target: the
+  // PageList passes `new Date(...)` inline at every render, so the
+  // incoming `lastCheckedAt` reference changes every render even
+  // when the underlying time is the same. Stabilize on `.getTime()`
+  // so the useEffect below doesn't tear down + restart the tick
+  // interval on every parent render.
+  const lastChecked = useMemo(
+    () => lastCheckedAt,
+    [lastCheckedAt?.getTime()],
+  )
+  // `formatDistanceToNowStrict(lastChecked)` is a moving target: the
   // SSR pass captures one interval, the client capture a few seconds
   // later captures a different one ("57 seconds ago" vs "1 minute
   // ago"), and React's hydration check fails. Gate the relative
@@ -28,16 +37,16 @@ export default function MonitorStatus({ monitored, lastCheckedAt, running }: Pro
   const [, setTick] = useState(0)
   useEffect(() => {
     setMounted(true)
-    if (!lastCheckedAt) return
+    if (!lastChecked) return
     const id = setInterval(() => setTick((n) => n + 1), ui.MONITOR_STATUS_TICK_MS)
     return () => clearInterval(id)
-  }, [lastCheckedAt])
+  }, [lastChecked])
 
   const label = running
     ? "Refreshing…"
-    : lastCheckedAt
+    : lastChecked
     ? mounted
-      ? `Refreshed ${formatDistanceToNowStrict(lastCheckedAt, { addSuffix: true })}`
+      ? `Refreshed ${formatDistanceToNowStrict(lastChecked, { addSuffix: true })}`
       : "Refreshed"
     : monitored
     ? "Awaiting refresh"

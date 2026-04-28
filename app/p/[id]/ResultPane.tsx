@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { formatDistanceToNowStrict } from "date-fns"
 import { Check, Copy, Download, Link2, RefreshCw, Save } from "lucide-react"
@@ -37,7 +37,15 @@ export default function ResultPane({ job, signedIn }: Props) {
   // the POST /api/p path uses to decide whether a submission triggers
   // a re-crawl, so the button's visibility is consistent with the
   // underlying cache-staleness rule.
-  const lastCheckedAt = job.lastCheckedAt ? new Date(job.lastCheckedAt) : null
+  //
+  // useMemo keeps the Date reference stable across renders so the
+  // `[lastCheckedAt]` dep below doesn't tear down + restart the tick
+  // interval on every render (which it would, since `new Date(...)`
+  // returns a fresh reference every call).
+  const lastCheckedAt = useMemo(
+    () => (job.lastCheckedAt ? new Date(job.lastCheckedAt) : null),
+    [job.lastCheckedAt],
+  )
   const isStale = lastCheckedAt
     ? Date.now() - lastCheckedAt.getTime() >= STALE_AFTER_MS
     : false
