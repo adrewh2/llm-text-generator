@@ -207,52 +207,66 @@ function pathDepthFor(url: string): number {
 }
 
 /**
- * Drop parametric fan-out — entire first-path-segment prefixes where
- * the depth-2 leaf count is large (one entry per city / store /
+ * Drop parametric fan-out — entire first-path-segment prefixes that
+ * contain many templated leaf URLs (one entry per city / store /
  * listing / location-slug / product-id). The parent index page
- * (depth-1, e.g. /location, /store, /listing) survives in a
- * different bucket. An LLM consumer of llms.txt wants to know the
+ * (depth-1, e.g. /location, /store) survives in a different first-
+ * segment bucket. An LLM consumer of llms.txt wants to know the
  * directory exists and where to find it — not to ingest every entry.
  *
- * Detection counts ONLY depth-2 URLs toward the threshold so a deep
- * docs hierarchy (`/docs/{cat}/{topic}` × hundreds at depth 3+)
- * isn't mistaken for fan-out — a real docs site has only a small
- * number of depth-2 categories. When a prefix triggers, every URL
- * under it (any depth) is dropped, since the deeper children of a
- * fan-out section are also fan-out.
+ * Detection uses two signals together: a first-segment subtree is
+ * fan-out when BOTH (a) total URLs under it ≥ threshold (lots of
+ * stuff under one prefix), AND (b) distinct second-segment values
+ * ≥ max(8, threshold/2) (the variation looks parametric — one per
+ * city / store / id — not a small set of categories). The second
+ * signal is what lets a deep docs hierarchy survive: a /docs/ subtree
+ * might have 60+ leaf URLs but typically only 3–5 distinct depth-2
+ * categories (auth, api, payments), which fails the distinct-second
+ * check.
  *
- * Detection is purely structural (URL count + path depth, no
- * hardcoded section nouns) so it works across genres without
- * over-fitting to specific patterns. Depth-1 URLs (the index pages
- * themselves) are never candidates for being dropped here.
+ * Counting total URLs (instead of just depth-2 leaves) catches deep
+ * fan-out shapes like /cities/{city}/venues/{slug} where the depth-2
+ * city index pages aren't in the candidate list. The original
+ * "depth-2 only" rule missed those because depth-2 count was 0.
+ *
+ * When a first segment triggers, every URL under it (any depth) is
+ * dropped — deeper children of a fan-out section are also fan-out.
+ * Depth-1 URLs (the index pages themselves) are never candidates for
+ * being dropped here.
+ *
+ * Detection is purely structural (URL count + segment cardinality,
+ * no hardcoded section nouns) so it works across genres without
+ * over-fitting to specific patterns.
  */
 export function dropParametricFanout(urls: string[], threshold: number): string[] {
-  // Per-first-segment: count depth-2 leaves separately from
-  // total-under-prefix. The depth-2 count drives the threshold check
-  // (catches "many similar leaves" without false-firing on deep
-  // hierarchies); the total-under-prefix list is what gets dropped
-  // when the threshold trips.
-  const depth2CountBySeg = new Map<string, number>()
-  const allUnderSeg = new Map<string, string[]>()
+  const allUnderFirst = new Map<string, string[]>()
+  const distinctSecondPerFirst = new Map<string, Set<string>>()
   for (const url of urls) {
     try {
       const segs = new URL(url).pathname.split("/").filter(Boolean)
       if (segs.length < 2) continue
       const first = segs[0]
-      const list = allUnderSeg.get(first)
-      if (list) list.push(url)
-      else allUnderSeg.set(first, [url])
-      if (segs.length === 2) {
-        depth2CountBySeg.set(first, (depth2CountBySeg.get(first) ?? 0) + 1)
-      }
+      const second = segs[1]
+      const list = allUnderFirst.get(first) ?? []
+      list.push(url)
+      allUnderFirst.set(first, list)
+      const distinctSet = distinctSecondPerFirst.get(first) ?? new Set<string>()
+      distinctSet.add(second)
+      distinctSecondPerFirst.set(first, distinctSet)
     } catch {
       // Unparseable URLs aren't fan-out candidates.
     }
   }
+  // Floor at 8 distinct second-segment values so a small site with
+  // 6 blog categories × 4 posts each (~24 URLs total) doesn't trip
+  // when threshold is small. Calibrated against the docs-hierarchy
+  // test fixture (3 categories should never trip).
+  const minDistinctSecond = Math.max(8, Math.floor(threshold / 2))
   const dropped = new Set<string>()
-  for (const [first, count] of depth2CountBySeg) {
-    if (count >= threshold) {
-      const list = allUnderSeg.get(first) ?? []
+  for (const [first, list] of allUnderFirst) {
+    const total = list.length
+    const distinctSecond = distinctSecondPerFirst.get(first)?.size ?? 0
+    if (total >= threshold && distinctSecond >= minDistinctSecond) {
       for (const u of list) dropped.add(u)
     }
   }

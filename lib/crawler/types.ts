@@ -46,6 +46,16 @@ export interface ScoredPage extends ExtractedPage {
   section?: string
   llmSection?: string
   isOptional: boolean
+  /**
+   * Display label for the rendered link text (the bit between the
+   * square brackets in `[Foo](url)`). Set by the per-page LLM
+   * enrichment pass when the raw `<title>` reads awkwardly — a run-
+   * together URL slug ("Getstarted"), site-name-as-title, or marketing
+   * boilerplate. Empty when the LLM left the label alone; the
+   * deterministic resolver in `assembleFile` falls back to `title` →
+   * heading → URL-derived label in that case.
+   */
+  displayLabel?: string
 }
 
 export interface JobProgress {

@@ -26,6 +26,16 @@ export function assembleFile(
    * URL-derived label fallback for the listed URLs.
    */
   labelOverrides?: Map<string, string>,
+  /**
+   * Per-section entry ordering overrides from the LLM final-review pass.
+   * Maps a section name (including "Optional") to an ordered URL list;
+   * URLs in the list render first in that order, then any in-section
+   * URLs absent from the list follow in their default score-based order.
+   * Used to group related items together (chronological release notes,
+   * sibling product variants, narrative reading order on docs) when the
+   * default per-page importance sort would scatter them.
+   */
+  entryOrder?: Map<string, string[]>,
 ): string {
   const lines: string[] = []
 
@@ -48,10 +58,10 @@ export function assembleFile(
   const { sections, overflow } = groupBySection(primary, sectionOrder)
 
   // Pages from single-entry sections spill into Optional
-  const allOptional = [
-    ...overflow,
-    ...optional,
-  ].sort((a, b) => b.score - a.score)
+  const allOptional = applyEntryOrder(
+    [...overflow, ...optional].sort((a, b) => b.score - a.score),
+    entryOrder?.get("Optional"),
+  )
 
   // Resolve display labels across the whole output set. First collapse
   // titles that just repeat the site name into URL-derived labels, then
@@ -72,7 +82,8 @@ export function assembleFile(
 
   for (const [section, pages] of sections) {
     lines.push(`## ${section}`, "")
-    for (const page of pages) lines.push(formatEntry(page, labelFor(page.url)))
+    const ordered = applyEntryOrder(pages, entryOrder?.get(section))
+    for (const page of ordered) lines.push(formatEntry(page, labelFor(page.url)))
     lines.push("")
   }
 
@@ -83,6 +94,32 @@ export function assembleFile(
   }
 
   return lines.join("\n").trimEnd() + "\n"
+}
+
+/**
+ * Reorder a section's pages per an LLM-supplied URL list. URLs present
+ * in `urlOrder` render first in that order; remaining pages follow in
+ * their original sort (the caller has already applied the default sort,
+ * typically by score). When `urlOrder` is missing or empty, the input
+ * is returned unchanged. Defensive against URLs in the list that don't
+ * map to any page in the section — those entries are silently skipped
+ * rather than producing phantom bullets.
+ */
+function applyEntryOrder(pages: ScoredPage[], urlOrder: string[] | undefined): ScoredPage[] {
+  if (!urlOrder || urlOrder.length === 0) return pages
+  const byUrl = new Map(pages.map((p) => [p.url, p]))
+  const ordered: ScoredPage[] = []
+  const placed = new Set<string>()
+  for (const url of urlOrder) {
+    const page = byUrl.get(url)
+    if (!page || placed.has(url)) continue
+    ordered.push(page)
+    placed.add(url)
+  }
+  for (const page of pages) {
+    if (!placed.has(page.url)) ordered.push(page)
+  }
+  return ordered
 }
 
 function formatEntry(page: ScoredPage, label?: string): string {
@@ -143,29 +180,39 @@ function resolveDisplayLabels(pages: ScoredPage[], siteName: string): Map<string
   const siteNorm = siteName.trim().toLowerCase()
   const labels = new Map<string, string>()
 
-  // A page title that shows up on many pages is a site-wide tagline,
-  // not a per-page title — typically an SPA that forgot to update
+  // The "title" the resolver works from is the per-page LLM's
+  // displayLabel when present (run-together-slug fixes, site-name-as-
+  // title rewrites the per-page enrichBatch already cleaned up),
+  // falling back to the page's raw <title>. The deterministic passes
+  // below still run on top of whatever this resolves to — collision
+  // disambiguation in Pass 2 catches LLM-suggested labels that happen
+  // to coincide just as it catches raw-title collisions.
+  const baseLabelFor = (p: ScoredPage): string =>
+    (p.displayLabel || p.title || "").trim()
+
+  // A label that shows up on many pages is a site-wide tagline, not a
+  // per-page label — typically an SPA that forgot to update
   // document.title on route change. Treat it the same as
-  // `title === siteName`: fall back to a URL-derived label so each
+  // `label === siteName`: fall back to a URL-derived label so each
   // entry is actually distinguishable. Threshold of 3 avoids
   // misfiring on real 2-page collisions that Pass 2 handles fine.
   const titleCounts = new Map<string, number>()
   for (const p of pages) {
-    const t = (p.title || "").trim().toLowerCase()
+    const t = baseLabelFor(p).toLowerCase()
     if (t) titleCounts.set(t, (titleCounts.get(t) ?? 0) + 1)
   }
   const GENERIC_TITLE_THRESHOLD = 3
   const isGenericTitle = (lower: string): boolean =>
     (titleCounts.get(lower) ?? 0) >= GENERIC_TITLE_THRESHOLD
 
-  // Pass 1: site-name-as-title OR site-wide-repeated tagline → fall
+  // Pass 1: site-name-as-label OR site-wide-repeated tagline → fall
   // back to the page's first heading (usually the H1 a sighted user
   // would read), then to a URL-derived label. Heading wins because
   // it preserves human-readable spacing and capitalisation that a
   // run-together URL slug doesn't ("getstarted" → "Getstarted" via
   // toLabel, but the page's H1 says "Get Started").
   for (const p of pages) {
-    const t = (p.title || "").trim()
+    const t = baseLabelFor(p)
     const tLower = t.toLowerCase()
     if (t && (tLower === siteNorm || isGenericTitle(tLower))) {
       const headingFallback = pickHeadingLabel(p.headings, siteNorm)

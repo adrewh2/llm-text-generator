@@ -72,7 +72,13 @@ export function scorePages(
 
     const isOptional = score >= 15 && score < PRIMARY_SCORE_THRESHOLD
 
-    return { ...enrichedPage, score, isOptional, llmSection: enriched?.section }
+    return {
+      ...enrichedPage,
+      score,
+      isOptional,
+      llmSection: enriched?.section,
+      displayLabel: enriched?.displayLabel,
+    }
   })
 }
 

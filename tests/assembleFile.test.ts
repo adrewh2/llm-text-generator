@@ -306,6 +306,79 @@ describe("assembleFile → validateLlmsTxt", () => {
     assert.ok(out.includes("[Get Started]"), `expected '[Get Started]' override:\n${out}`)
   })
 
+  test("entryOrder reorders entries within a section, leaving unlisted entries in their original order", () => {
+    // The default within-section order is by score: docs (90) → guide
+    // (80) → api (70). The override flips that to api → docs → guide,
+    // and an unlisted "tutorial" entry stays in its score slot at the
+    // end.
+    const primary: ScoredPage[] = [
+      page({ url: "https://example.com/docs",     title: "Docs",     section: "Docs", score: 90 }),
+      page({ url: "https://example.com/guide",    title: "Guide",    section: "Docs", score: 80 }),
+      page({ url: "https://example.com/api",      title: "API",      section: "Docs", score: 70 }),
+      page({ url: "https://example.com/tutorial", title: "Tutorial", section: "Docs", score: 60 }),
+    ]
+    const entryOrder = new Map<string, string[]>([
+      ["Docs", [
+        "https://example.com/api",
+        "https://example.com/docs",
+        "https://example.com/guide",
+      ]],
+    ])
+    const out = assembleFile(
+      "Example", primary, [],
+      undefined, undefined, undefined, undefined, undefined,
+      entryOrder,
+    )
+    // Pull the section block and confirm the order reads api → docs → guide → tutorial.
+    const lines = out.split("\n")
+    const apiIdx      = lines.findIndex((l) => l.startsWith("- [API]"))
+    const docsIdx     = lines.findIndex((l) => l.startsWith("- [Docs]"))
+    const guideIdx    = lines.findIndex((l) => l.startsWith("- [Guide]"))
+    const tutorialIdx = lines.findIndex((l) => l.startsWith("- [Tutorial]"))
+    assert.ok(apiIdx !== -1 && docsIdx !== -1 && guideIdx !== -1 && tutorialIdx !== -1, `missing entry:\n${out}`)
+    assert.ok(apiIdx < docsIdx,   `api should precede docs:\n${out}`)
+    assert.ok(docsIdx < guideIdx, `docs should precede guide:\n${out}`)
+    assert.ok(guideIdx < tutorialIdx, `unlisted tutorial should remain last:\n${out}`)
+    assert.equal(validateLlmsTxt(out).valid, true)
+  })
+
+  test("entryOrder also reorders the Optional section (use case: scattered release notes)", () => {
+    // Mirrors the Quip-style scenario: release notes for different
+    // dates landed in Optional in non-chronological order. The override
+    // groups them newest-first.
+    const optional: ScoredPage[] = [
+      page({ url: "https://quip.com/release-notes/2024-05-07", title: "May 7, 2024",      section: "Optional", score: 30, isOptional: true }),
+      page({ url: "https://quip.com/release-notes/2025-07-18", title: "July 18, 2025",    section: "Optional", score: 30, isOptional: true }),
+      page({ url: "https://quip.com/release-notes/2025-02-27", title: "February 27, 2025", section: "Optional", score: 30, isOptional: true }),
+      page({ url: "https://quip.com/release-notes/2025-03-06", title: "March 6, 2025",   section: "Optional", score: 30, isOptional: true }),
+    ]
+    const entryOrder = new Map<string, string[]>([
+      ["Optional", [
+        "https://quip.com/release-notes/2025-07-18",
+        "https://quip.com/release-notes/2025-03-06",
+        "https://quip.com/release-notes/2025-02-27",
+        "https://quip.com/release-notes/2024-05-07",
+      ]],
+    ])
+    // Need at least one primary entry so groupBySection has something
+    // to render; the test focus is the Optional section's order.
+    const primary: ScoredPage[] = [
+      page({ url: "https://quip.com/about", title: "About", section: "About", score: 90 }),
+    ]
+    const out = assembleFile(
+      "Quip", primary, optional,
+      undefined, undefined, undefined, undefined, undefined,
+      entryOrder,
+    )
+    const lines = out.split("\n")
+    const julIdx = lines.findIndex((l) => l.includes("July 18, 2025"))
+    const marIdx = lines.findIndex((l) => l.includes("March 6, 2025"))
+    const febIdx = lines.findIndex((l) => l.includes("February 27, 2025"))
+    const mayIdx = lines.findIndex((l) => l.includes("May 7, 2024"))
+    assert.ok(julIdx !== -1 && marIdx !== -1 && febIdx !== -1 && mayIdx !== -1, `missing entry:\n${out}`)
+    assert.ok(julIdx < marIdx && marIdx < febIdx && febIdx < mayIdx, `release notes not in newest-first order:\n${out}`)
+  })
+
   test("heading fallback skips SPA chrome / privacy headings", () => {
     // A /privacy page whose <title> matches the site name and whose
     // first heading is "Cookie Preference Center" (common consent-
