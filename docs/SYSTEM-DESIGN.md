@@ -132,7 +132,7 @@ sequenceDiagram
     W->>A: llmSiteName + generateSitePreamble
     A-->>W: brand + preamble
     W->>A: llmFinalReview (assembled draft)
-    A-->>W: drop_urls · section_order · relabel
+    A-->>W: drop_urls · moves · section_order · relabel
 
     W->>DB: UPDATE jobs terminal + write pages.result
     W-->>Q: 200 OK
@@ -197,7 +197,7 @@ The **summary blockquote** comes straight from the homepage's meta description. 
 
 Each link line is `- [label](url): description`. Labels come from the page title when it's unique and distinct from the site name. When a title repeats across many pages (a very common SPA failure mode where `document.title` never updates), the assembler falls back to a URL-derived label, and if collisions remain it prefixes the first differing path segment to break them.
 
-Once the draft is assembled, one more LLM call (`llmFinalReview`) hands the **whole rendered file** to the model and asks three questions: are any entries clear noise that should be dropped given the rest of the file, is the section ordering right for an llms.txt (foundational sections first, catalogue / news / blog later), and are there any link labels that read awkwardly (run-together URL slugs like "Getstarted", URL-derived fallbacks)? Reading the assembled file at once lets the model catch what per-page enrichment can't see — login-redirect URLs, individual catalogue items the section index already covers, descriptions that just repeat the preamble. The model returns `{ drop_urls, section_order, relabel }`; the file is re-assembled with the drops applied, the LLM-supplied section order honored over the avg-score sort, and any per-URL label rewrites overriding the deterministic resolver. No-op on parse error / unavailable LLM, so the draft survives unchanged.
+Once the draft is assembled, one more LLM call (`llmFinalReview`) hands the **whole rendered file** to the model and asks four questions: are any entries clear noise that should be dropped given the rest of the file, do any entries belong under a different section (a misclassified item, or a singleton section that should be consolidated into a topically-adjacent larger one), is the section ordering right for an llms.txt (foundational sections first, catalogue / news / blog later), and are there any link labels that read awkwardly (run-together URL slugs like "Getstarted", URL-derived fallbacks)? Reading the assembled file at once lets the model catch what per-page enrichment can't see — login-redirect URLs, individual catalogue items the section index already covers, descriptions that just repeat the preamble. The model returns `{ drop_urls, moves, section_order, relabel }`; the file is re-assembled with the moves applied first (so new section names introduced by consolidation participate in `section_order`), the drops applied, the LLM-supplied section order honored over the avg-score sort, and any per-URL label rewrites overriding the deterministic resolver. No-op on parse error / unavailable LLM, so the draft survives unchanged.
 
 The last thing this stage decides is the terminal status of the crawl — **complete**, **partial**, or **failed**. Exact rules in [`DESIGN.md §6`](./DESIGN.md#6-crawl-pipeline). That status is what the browser polls for and what shows up in the user's dashboard history. Counts are taken AFTER the final-review drops, so a review that pruned every entry surfaces as failed instead of producing an empty file.
 

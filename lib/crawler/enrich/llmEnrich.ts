@@ -451,6 +451,13 @@ export interface FinalReviewResult {
    *  pipeline produced (run-together URL slugs like "Getstarted",
    *  unhelpful URL-derived fallbacks). Empty Map on no-op. */
   labelRewrites: Map<string, string>
+  /** url → new section name. Lets the model both fix misclassifications
+   *  ("NHL Player Inclusion Coalition" placed under About → Community)
+   *  AND consolidate fragmented sections by moving the entries of a
+   *  singleton section into a topically-related larger section. The
+   *  target section name need not pre-exist; groupBySection re-buckets
+   *  by the updated `page.section`. Empty Map on no-op. */
+  moves: Map<string, string>
 }
 
 export async function llmFinalReview(
@@ -460,7 +467,7 @@ export async function llmFinalReview(
   urlAliases: Map<string, string>,
   knownSections: string[],
 ): Promise<FinalReviewResult> {
-  const noop: FinalReviewResult = { dropUrls: new Set(), sectionOrder: null, labelRewrites: new Map() }
+  const noop: FinalReviewResult = { dropUrls: new Set(), sectionOrder: null, labelRewrites: new Map(), moves: new Map() }
   const client = getClient()
   if (!client || draftMarkdown.length === 0) return noop
 
@@ -472,7 +479,7 @@ DRAFT FILE:
 ${draftMarkdown}
 \`\`\`
 
-Three jobs:
+Four jobs:
 
 1. DROP entries that are clearly low-value in the context of the rest of the file. Be CONSERVATIVE — when in doubt, keep. Only drop entries that are clearly noise or redundant given the surrounding file. Drop candidates:
    - login redirects, tracking-param URLs, marketing redirects, sign-out links
@@ -480,23 +487,28 @@ Three jobs:
    - entries whose description just repeats what the summary / preamble already said
    - anything an LLM wouldn't want loaded into context when answering a question about ${neuter(siteName)}
 
-2. REORDER sections if the current order is wrong for an llms.txt. Foundational sections that explain what the site IS (About, Pricing, Products, Services, Docs, API, Support) should appear first; catalogue / news / blog sections later. Use existing section names verbatim — don't rename, don't merge, don't invent. The "## Optional" section is always last and is not part of this list.
+2. MOVE entries to a better section, with two purposes:
+   a. FIX MISCLASSIFICATIONS — an entry that landed under the wrong header given its actual subject (a "Player Inclusion Coalition" entry under About should be in Community; a developer-tools entry under Resources should be in Docs).
+   b. CONSOLIDATE FRAGMENTED SECTIONS — when a section has only 1–2 entries that would read more coherently as part of a larger topically-adjacent section, move them in. Prefer merging a small section into a larger related one over keeping a singleton. Target section name MAY be one that already exists in the draft, OR a new short label that better describes the merged group; reuse existing names when reasonable to avoid section sprawl. Don't move entries between unrelated topics just to balance section sizes.
 
-3. RELABEL entries whose link text reads awkwardly — run-together URL slugs ("Getstarted" → "Get Started", "Signin" → "Sign In"), unhelpful URL-derived fallbacks ("Index", "Page1"), labels that are just the site name. Use natural English title-case. ONLY relabel when the current label is genuinely wrong; leave good labels alone.
+3. REORDER sections if the current order is wrong for an llms.txt. Foundational sections that explain what the site IS (About, Pricing, Products, Services, Docs, API, Support) should appear first; catalogue / news / blog sections later. Use the section names that will exist AFTER your moves are applied. The "## Optional" section is always last and is not part of this list.
+
+4. RELABEL entries whose link text reads awkwardly — run-together URL slugs ("Getstarted" → "Get Started", "Signin" → "Sign In"), unhelpful URL-derived fallbacks ("Index", "Page1"), labels that are just the site name. Use natural English title-case. ONLY relabel when the current label is genuinely wrong; leave good labels alone.
 
 Return JSON only:
 {
   "drop_urls": [<URLs to drop, EXACTLY as they appear inside the [..](URL) of the draft>],
-  "section_order": [<section names in desired order, must be a subset of "## " headers in the draft excluding "Optional"; sections not listed are appended in original order>],
+  "moves": [{"url": "<URL exactly as in the draft>", "section": "<target section name, 1–4 words, max 30 chars>"}],
+  "section_order": [<section names in desired order, post-move; sections not listed are appended in original order>],
   "relabel": [{"url": "<URL exactly as in the draft>", "label": "<new link text>"}]
 }
 
-If nothing should change, return {"drop_urls": [], "section_order": [], "relabel": []}.`
+If nothing should change, return {"drop_urls": [], "moves": [], "section_order": [], "relabel": []}.`
 
   try {
     const message = await client.messages.create({
       model: MODEL,
-      max_tokens: 1024,
+      max_tokens: 1536,
       messages: [{ role: "user", content: prompt }],
     })
     const text = message.content[0]?.type === "text" ? message.content[0].text : ""
@@ -505,6 +517,7 @@ If nothing should change, return {"drop_urls": [], "section_order": [], "relabel
 
     const parsed = JSON.parse(match[0]) as {
       drop_urls?: unknown
+      moves?: unknown
       section_order?: unknown
       relabel?: unknown
     }
@@ -518,9 +531,30 @@ If nothing should change, return {"drop_urls": [], "section_order": [], "relabel
       }
     }
 
+    // Parse moves first — section_order validation needs to know about
+    // any new section names introduced by moves. Without this, the
+    // model could rename "About" + "Resources" into a merged
+    // "Information" section via moves and then list "Information"
+    // first in section_order, only to have it dropped from the order
+    // for not appearing in the original draft.
+    const moves = new Map<string, string>()
+    if (Array.isArray(parsed.moves)) {
+      for (const item of parsed.moves) {
+        if (!item || typeof item !== "object") continue
+        const url = (item as { url?: unknown }).url
+        const section = (item as { section?: unknown }).section
+        if (typeof url !== "string") continue
+        const canonical = urlAliases.get(url)
+        const cleanSection = sanitizeSection(section)
+        if (canonical && cleanSection) {
+          moves.set(canonical, cleanSection)
+        }
+      }
+    }
+
     let sectionOrder: string[] | null = null
     if (Array.isArray(parsed.section_order)) {
-      const sectionSet = new Set(knownSections)
+      const sectionSet = new Set([...knownSections, ...moves.values()])
       const seen = new Set<string>()
       const order: string[] = []
       for (const s of parsed.section_order) {
@@ -551,7 +585,7 @@ If nothing should change, return {"drop_urls": [], "section_order": [], "relabel
       }
     }
 
-    return { dropUrls, sectionOrder, labelRewrites }
+    return { dropUrls, sectionOrder, labelRewrites, moves }
   } catch (err) {
     debugLog("llmEnrich.llmFinalReview", err)
     return noop

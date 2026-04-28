@@ -13,7 +13,7 @@ import { assembleFile, encodeMarkdownUrl, formatDisplayUrl } from "./output/asse
 import { detectGenre } from "./enrich/genre"
 import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix, dropParametricFanout } from "./net/url"
 import { updateJob } from "../store"
-import type { ExtractedPage } from "./types"
+import type { ExtractedPage, ScoredPage } from "./types"
 import { crawler } from "../config"
 import { assertSafeUrl, UnsafeUrlError } from "./net/ssrf"
 
@@ -163,8 +163,13 @@ async function runPipelineInner(
     let failed = 0
     const visited = new Set<string>([baseUrl])
 
-    // Discover navigation links from homepage if sitemap was sparse (non-SPA path)
-    if (!needsBrowser && queue.length < 5) {
+    // Always merge homepage nav links into the queue on the non-SPA path.
+    // Sitemaps frequently bias toward content (events, articles, listings)
+    // and omit the structural top-nav (e.g. NHL.com sitemap is rich with
+    // /community + /events but never lists /scores, /schedule, /news).
+    // Dedup against discoveredUrls protects against redundant fetches.
+    // SPA path skips this — rendered.links from Puppeteer covers it.
+    if (!needsBrowser) {
       const navLinks = extractLinksFromHtml(homepageHtml, baseUrl)
       for (const link of navLinks) {
         if (!discoveredUrls.has(link) && isAllowed(link, robots.disallowed)) {
@@ -423,12 +428,25 @@ async function runPipelineInner(
     }
     const reviewSections = Array.from(new Set(primary.map((p) => p.section ?? "Resources")))
     const review = await llmFinalReview(siteName, genre, draft, urlAliases, reviewSections)
+
+    // Apply per-entry section reassignments before filtering / assembly.
+    // Moves cover both misclassifications (an item placed under the
+    // wrong header) and section consolidation (singleton entries
+    // pulled into a topically-adjacent larger section). groupBySection
+    // re-buckets by the updated `page.section` downstream.
+    const applyMove = (p: ScoredPage): ScoredPage => {
+      const next = review.moves.get(p.url)
+      return next ? { ...p, section: next } : p
+    }
+    const movedPrimary = review.moves.size > 0 ? primary.map(applyMove) : primary
+    const movedOptional = review.moves.size > 0 ? optional.map(applyMove) : optional
+
     const filteredPrimary = review.dropUrls.size > 0
-      ? primary.filter((p) => !review.dropUrls.has(p.url))
-      : primary
+      ? movedPrimary.filter((p) => !review.dropUrls.has(p.url))
+      : movedPrimary
     const filteredOptional = review.dropUrls.size > 0
-      ? optional.filter((p) => !review.dropUrls.has(p.url))
-      : optional
+      ? movedOptional.filter((p) => !review.dropUrls.has(p.url))
+      : movedOptional
 
     // Re-assemble only when the review changed something; otherwise
     // the draft we already rendered IS the final file.
@@ -436,6 +454,7 @@ async function runPipelineInner(
       review.dropUrls.size > 0
       || review.sectionOrder !== null
       || review.labelRewrites.size > 0
+      || review.moves.size > 0
     const result = reviewChangedSomething
       ? assembleFile(
           siteName,
