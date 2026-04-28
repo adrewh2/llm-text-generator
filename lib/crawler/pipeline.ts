@@ -403,13 +403,15 @@ async function runPipelineInner(
       : undefined
 
     // Final LLM pass: render the draft, hand the actual file to the
-    // model, let it decide what to drop and how to reorder sections.
+    // model, let it decide what to drop, move, reorder, or relabel.
     // Reading the assembled file lets the model catch noise and
     // ordering mistakes that per-page enrichment can't see — login
     // redirects, individual catalogue items the section index already
     // covers, sections that landed in the wrong order for an llms.txt
-    // despite the avg-score sort. No-op on LLM failure / empty
-    // response, so the draft survives as-is.
+    // despite the avg-score sort. Returns a no-op result when the
+    // model decided no edits were needed or when its response failed
+    // to parse, so the draft survives as-is. Transport failures throw
+    // `LlmUnavailableError` and surface as a failed job.
     const draft = assembleFile(siteName, primary, optional, summary, preamble, robotsNotice)
     // Build a rendered-URL → canonical-URL alias map. The LLM returns
     // URLs as they appear inside the [..](URL) of the rendered draft;

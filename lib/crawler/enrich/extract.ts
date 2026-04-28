@@ -238,9 +238,11 @@ export function extractSiteNameCandidates(
 }
 
 /**
- * Deterministic site-name extraction. Kept as a cheap first pass and a
- * fallback for when the LLM is unavailable — the pipeline's final name
- * is resolved by `llmSiteName(candidates, hostname, deterministic)`.
+ * Deterministic site-name extraction. Cheap first pass that produces
+ * the baseline `llmSiteName(candidates, hostname, deterministic)` will
+ * fall back to when the LLM responds successfully but with a name that
+ * fails sanitization. (LLM transport failures are surfaced as a failed
+ * job; this isn't reached in that path.)
  *
  * Each candidate is run through `cleanSiteName` before being accepted,
  * so something like

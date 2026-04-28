@@ -77,7 +77,7 @@ The contrast is the point — cache hits are ~1000× cheaper than new crawls, an
 ### Free tier (the ordering a demo hits)
 
 1. **QStash's daily message cap** is the tightest constraint — every new crawl is one message. A demo at low traffic is fine; sustained use hits this first.
-2. **Anthropic Tier 1 RPM** is the next ceiling. A handful of LLM calls per crawl × the tier's RPM gives the per-minute new-crawl budget. The SDK's built-in retry absorbs brief overshoots; if retries exhaust, a deterministic fallback keeps the crawl completing (details in [`SCALING.md §2`](./SCALING.md#2-where-the-design-hits-walls)).
+2. **Anthropic Tier 1 RPM** is the next ceiling. A handful of LLM calls per crawl × the tier's RPM gives the per-minute new-crawl budget. The SDK's built-in retry absorbs brief overshoots; if retries exhaust, the call site throws `LlmUnavailableError` and the job lands as `failed` rather than shipping a degraded heuristic-only file (details in [`SCALING.md §2`](./SCALING.md#2-where-the-design-hits-walls)).
 3. **Upstash Redis command count** on the free tier is fine at demo traffic — each POST is a handful of commands and the global ceiling is well above any single-user traffic pattern.
 4. **Vercel Hobby + Supabase free** caps are irrelevant at demo traffic.
 
@@ -134,7 +134,7 @@ In practice, Anthropic's per-tier TPM runs out long before the DB does. The DB b
 
 - **Vercel Fluid Compute concurrency.** The runtime packs many concurrent I/O-bound requests into each instance and auto-scales instances horizontally. No configuration required. The 30–60 s I/O-bound crawl is the textbook case Fluid is optimized for.
 - **QStash delivery throughput.** Push-based, parallel fan-out. 100 concurrent messages → 100 concurrent worker POSTs.
-- **The deterministic crawling itself.** If LLM enrichment were disabled entirely, the pipeline's mechanical parts (robots, sitemap, HTTP fetches, cheerio extraction, scoring, assembly) could run at hundreds per second per Fluid instance — the constraint is network bandwidth and target-site politeness, not the app's own code. The output would be spec-valid but quality-degraded (no LLM URL ranking, no LLM descriptions, path-inferred sections, no preamble).
+- **The deterministic crawling itself.** The pipeline's mechanical parts (robots, sitemap, HTTP fetches, cheerio extraction, scoring, assembly) run at hundreds per second per Fluid instance — the constraint is network bandwidth and target-site politeness, not the app's own code. The LLM steps are required for a real result, so this throughput is the ceiling under which Anthropic TPM is the real binding constraint.
 - **Globally-shared `pages` cache.** This is a *strength* at scale: popular URLs become hotter cache keys, not more crawls. No sharding, no dedup pass required.
 
 ---
@@ -146,7 +146,7 @@ Assuming every service is on a tier where it's no longer a meaningful constraint
 - **Total RPS** is bounded by the rate-limiter's Redis round-trip and Vercel routing; a CDN-cached rate-limit layer would lift it further. In practice four figures of RPS is achievable.
 - **Cache-hit RPS** is bounded by one indexed Postgres read per hit — scales horizontally across regions, and edge-caching the terminal responses pushes the effective ceiling an order of magnitude higher.
 - **New-crawl RPS (LLM-enriched)** scales linearly with negotiated Anthropic TPM. At token budgets per crawl measured in tens of thousands, this is the constraint that decides how aggressively any paid tier needs to be upgraded. Plan as: `TPM quota / tokens-per-crawl / 60 = sustained new crawls per second`.
-- **New-crawl RPS (deterministic fallback)** is much higher — all LLM calls hit their fallbacks, output is spec-valid but un-enriched, the ceiling becomes target-site politeness rather than the app's own code.
+- **New-crawl behavior under LLM outage** — LLM unavailability causes per-job `failed` status with a user-visible "AI service is unavailable" message. There is no degraded-quality successful output mode; an outage of Anthropic translates to job failures, not silently-worse files.
 - **Database growth sustainability** depends on whether a `jobs`-cleanup cron is in place. Without one, monitor re-crawls accumulate rows faster than `pages` itself.
 
 The honest high-water mark for a full-quality enterprise deployment: new crawls in the thousands per minute sustained, cache-hit traffic an order of magnitude above that. Substantially beyond any take-home demo load.

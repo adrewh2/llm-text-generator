@@ -52,9 +52,34 @@ function sanitizeDescription(raw: unknown, original: string | undefined): string
   return clean === original ? original : clean
 }
 
-function getClient(): Anthropic | null {
+/**
+ * Thrown when an LLM call cannot be made (no API key) or fails at the
+ * transport layer (insufficient credits, invalid key, exhausted retries
+ * on 5xx / 429, network error, timeout). The pipeline's outer catch
+ * converts this to a `failed` job status with this message verbatim,
+ * so the user sees a clear "AI service is unavailable" reason instead
+ * of a heuristic-only file labelled as a real result.
+ *
+ * Distinct from "LLM responded successfully but with unusable content"
+ * — those cases (low-confidence preamble, sanitization rejected the
+ * brand name, final-review returned no edits) keep their no-op return
+ * paths because the model genuinely did its job; degrading gracefully
+ * makes sense there.
+ */
+export class LlmUnavailableError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = "LlmUnavailableError"
+  }
+}
+
+function getClient(): Anthropic {
   const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) return null
+  if (!apiKey) {
+    throw new LlmUnavailableError(
+      "AI service is unavailable: ANTHROPIC_API_KEY is not configured.",
+    )
+  }
   // The Anthropic SDK has a built-in retry wrapper: it retries 408 /
   // 429 / 5xx with exponential backoff and honours the `retry-after`
   // + `x-should-retry` response headers. The defaults (2 retries)
@@ -68,6 +93,22 @@ function getClient(): Anthropic | null {
   })
 }
 
+/**
+ * Wrap a thrown SDK error as `LlmUnavailableError` so the pipeline
+ * surfaces it as a clear job-failed reason instead of silently falling
+ * back to a heuristic-only file. Preserves the original error as
+ * `cause` so logs / Sentry retain the underlying detail (HTTP status,
+ * insufficient-credits message, etc.).
+ */
+function asUnavailable(context: string, err: unknown): LlmUnavailableError {
+  debugLog(`llmEnrich.${context}`, err)
+  const detail = err instanceof Error ? err.message : String(err)
+  return new LlmUnavailableError(
+    `AI service is unavailable while ${context} ran: ${detail}`,
+    { cause: err },
+  )
+}
+
 export async function llmEnrichPages(
   pages: ExtractedPage[],
   siteName: string,
@@ -75,7 +116,6 @@ export async function llmEnrichPages(
   primaryLang: string,
 ): Promise<EnrichmentMap> {
   const client = getClient()
-  if (!client) return new Map()
 
   const batches: ExtractedPage[][] = []
   for (let i = 0; i < pages.length; i += ENRICH_BATCH_SIZE) {
@@ -146,7 +186,12 @@ Respond ONLY with a JSON array, one object per page, same order as input. No pro
   try {
     const message = await client.messages.create({
       model: MODEL,
-      max_tokens: 2048,
+      // Per-page response is ~95 tok worst case (section + importance +
+      // 240-char description + JSON wrapper); ENRICH_BATCH_SIZE = 20 →
+      // ~1900 tok total. 3072 leaves a safe margin so a longer-than-
+      // average batch doesn't truncate mid-entry and silently drop
+      // pages out of enrichment.
+      max_tokens: 3072,
       messages: [{ role: "user", content: prompt }],
     })
 
@@ -188,8 +233,7 @@ Respond ONLY with a JSON array, one object per page, same order as input. No pro
       })
     }
   } catch (err) {
-    // Fall back to regex classification silently in prod; surface in dev.
-    debugLog("llmEnrich.enrichBatch", err)
+    throw asUnavailable("enrichBatch", err)
   }
 
   return results
@@ -203,7 +247,6 @@ export async function generateSitePreamble(
   primaryLang: string,
 ): Promise<string | undefined> {
   const client = getClient()
-  if (!client) return undefined
 
   const allPages = [...primary, ...optional].slice(0, 20)
   const pageLines = allPages
@@ -255,8 +298,7 @@ Respond with a JSON object only — no prose outside the braces. The "confident"
     if (description.length < 20) return undefined
     return description
   } catch (err) {
-    debugLog("llmEnrich.generateSitePreamble", err)
-    return undefined
+    throw asUnavailable("generateSitePreamble", err)
   }
 }
 
@@ -277,12 +319,13 @@ export async function rankCandidateUrls(
   primaryLang: string,
   maxKeep = RANK_MAX_KEEP,
 ): Promise<string[]> {
-  const client = getClient()
-  if (!client || candidates.length === 0) return candidates
+  if (candidates.length === 0) return candidates
 
   // Very small lists: not worth a round trip — the dedup upside is
   // negligible and ranking is moot.
   if (candidates.length <= RANK_SKIP_BELOW) return candidates
+
+  const client = getClient()
 
   const numbered = candidates.map((u, i) => `${i + 1}. ${u}`).join("\n")
 
@@ -312,13 +355,20 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7, 12]`
   try {
     const message = await client.messages.create({
       model: MODEL,
-      max_tokens: 512,
+      // Returns up to RANK_MAX_KEEP (120) integers as a JSON array; at
+      // 3-digit indices + ", " separators that's ~600 tok. 1024 covers
+      // the cap with margin so a full-list response doesn't truncate
+      // and silently drop the tail of the ranking.
+      max_tokens: 1024,
       messages: [{ role: "user", content: prompt }],
     })
 
     const text = message.content[0]?.type === "text" ? message.content[0].text : ""
     const match = text.match(/\[[\d,\s]+\]/)
-    if (!match) return heuristicRank(candidates, maxKeep)
+    // Unparseable response from a successful API call: rare. Pass the
+    // candidates through unchanged rather than treat the LLM as down
+    // — the caller's downstream filtering still operates.
+    if (!match) return candidates
 
     const indices: number[] = JSON.parse(match[0])
     const kept = indices
@@ -329,92 +379,10 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7, 12]`
     // `visited` in the pipeline already dedupes the actual fetch, but
     // duplicates on this list inflate the prompt of later LLM passes.
     const deduped = Array.from(new Set(kept))
-    return deduped.length > 0 ? deduped : heuristicRank(candidates, maxKeep)
+    return deduped.length > 0 ? deduped : candidates
   } catch (err) {
-    debugLog("llmEnrich.rankCandidateUrls", err)
-    return heuristicRank(candidates, maxKeep)
+    throw asUnavailable("rankCandidateUrls", err)
   }
-}
-
-// Known structural section names — if the first path segment matches
-// one of these, the URL is much more likely to be a section index that
-// helps an LLM understand what the site offers (vs. a leaf article /
-// person bio / dated post). Conservative: only includes labels that
-// are nearly always structural across SaaS, marketing, retail,
-// pharma, news, and corporate sites.
-const STRUCTURAL_FIRST_SEGMENTS = new Set([
-  "about", "company", "team", "people", "leadership",
-  "products", "product", "solutions", "services", "platform", "features",
-  "research", "innovation", "science", "technology", "labs", "engineering",
-  "docs", "documentation", "guides", "tutorials", "examples", "reference",
-  "api", "developers", "developer", "sdk",
-  "support", "help", "faq", "contact",
-  "pricing", "plans",
-  "careers", "jobs", "join-us",
-  "investors", "investor-relations", "ir",
-  "sustainability", "esg", "responsibility", "impact",
-  "news", "newsroom", "press", "media",
-  "blog", "insights", "stories",
-  "resources", "library", "learn",
-  "industries", "use-cases", "customers", "case-studies",
-  "shop", "store", "marketplace", "catalog",
-  "patients", "professionals", "providers",
-])
-
-/**
- * Deterministic fallback used when the LLM ranker is unavailable
- * (no API key, billing exhausted, transient SDK error). Sorts the
- * candidate list by structural-likely heuristics so a non-LLM run
- * still produces a useful llms.txt instead of degenerating to
- * "whatever the sitemap listed first":
- *   - Shorter paths win (section-index pages over deep leaves).
- *   - Known structural first segments win (/about, /products,
- *     /research, /careers, …) over arbitrary slugs.
- *   - Date-y path segments lose (/2024/, /q3/) — those are
- *     individual content items.
- *   - Stable on tied scores (preserve caller order).
- */
-export function heuristicRank(candidates: string[], maxKeep: number): string[] {
-  const scored = candidates.map((url, idx) => ({
-    url,
-    idx,
-    score: heuristicScore(url),
-  }))
-  scored.sort((a, b) => (b.score - a.score) || (a.idx - b.idx))
-  return scored.slice(0, maxKeep).map((s) => s.url)
-}
-
-function heuristicScore(url: string): number {
-  let score = 0
-  let segments: string[]
-  try {
-    segments = new URL(url).pathname.split("/").filter(Boolean)
-  } catch {
-    return -100
-  }
-
-  // Prefer shorter paths. Depth 1 → +30, 2 → +20, 3 → +10, 4 → 0,
-  // 5+ → negative. Section indexes almost always sit at depth 1–2.
-  score += Math.max(-10, 40 - segments.length * 10)
-
-  // Boost when the first segment is a known structural section.
-  if (segments[0] && STRUCTURAL_FIRST_SEGMENTS.has(segments[0].toLowerCase())) {
-    score += 25
-  }
-
-  // Penalize date-y segments — these are almost always individual
-  // content items (news posts, quarterly reports, etc.).
-  for (const seg of segments) {
-    if (/^(19|20)\d{2}$/.test(seg)) { score -= 15; break }
-    if (/^q[1-4]$/i.test(seg)) { score -= 15; break }
-  }
-
-  // Penalize deep slug-y leaves (4+ word kebab segments) — these are
-  // typically article titles, person names, or product pages.
-  const last = segments[segments.length - 1] ?? ""
-  if (segments.length >= 3 && last.split("-").length >= 3) score -= 5
-
-  return score
 }
 
 /**
@@ -430,14 +398,18 @@ function heuristicScore(url: string): number {
  *
  * Returns:
  * - dropUrls: Set of canonical URLs (matching `ScoredPage.url`) to
- *   drop from the final file. Empty on no-op or LLM failure.
+ *   drop from the final file. Empty when the model returned no edits.
  * - sectionOrder: Optional explicit ordering for the Primary sections.
  *   Sections returned here win over the avg-score sort. Sections not
- *   listed are appended in their original order. `null` on no-op.
+ *   listed are appended in their original order. `null` when the model
+ *   didn't return one.
  *
- * Conservative by design: a parse failure, an empty response, or an
- * unavailable LLM all return `{ dropUrls: empty Set, sectionOrder: null }`,
- * leaving the draft untouched.
+ * Conservative by design: a parse failure or an empty draft both
+ * return the no-op shape so the draft survives unchanged. Transport
+ * failures (no API key, billing exhausted, exhausted retries on
+ * 5xx / 429, network error) throw `LlmUnavailableError` instead — the
+ * pipeline surfaces those as a failed job rather than shipping a
+ * draft labelled as a final result.
  *
  * `urlAliases` maps every form a URL might appear in inside the
  * rendered markdown (canonical, display-stripped, percent-encoded)
@@ -468,8 +440,8 @@ export async function llmFinalReview(
   knownSections: string[],
 ): Promise<FinalReviewResult> {
   const noop: FinalReviewResult = { dropUrls: new Set(), sectionOrder: null, labelRewrites: new Map(), moves: new Map() }
+  if (draftMarkdown.length === 0) return noop
   const client = getClient()
-  if (!client || draftMarkdown.length === 0) return noop
 
   const genreLabel = genre.replace(/_/g, " ")
   const prompt = `Final review pass on this draft llms.txt for "${neuter(siteName)}" (a ${genreLabel} site). The file is consumed by language models that need to understand what the site IS — not by humans browsing it. Read the file as a whole and decide what should change.
@@ -491,7 +463,17 @@ Four jobs:
    a. FIX MISCLASSIFICATIONS — an entry that landed under the wrong header given its actual subject (a "Player Inclusion Coalition" entry under About should be in Community; a developer-tools entry under Resources should be in Docs).
    b. CONSOLIDATE FRAGMENTED SECTIONS — when a section has only 1–2 entries that would read more coherently as part of a larger topically-adjacent section, move them in. Prefer merging a small section into a larger related one over keeping a singleton. Target section name MAY be one that already exists in the draft, OR a new short label that better describes the merged group; reuse existing names when reasonable to avoid section sprawl. Don't move entries between unrelated topics just to balance section sizes.
 
-3. REORDER sections if the current order is wrong for an llms.txt. Foundational sections that explain what the site IS (About, Pricing, Products, Services, Docs, API, Support) should appear first; catalogue / news / blog sections later. Use the section names that will exist AFTER your moves are applied. The "## Optional" section is always last and is not part of this list.
+3. REORDER sections if the current order is wrong for an llms.txt. The deterministic pre-sort already roughly handles this — ONLY return \`section_order\` when the current order in the draft above is GENUINELY wrong, not as a tweak. When you do return one, use this priority order as guidance (highest first), and place each existing section near the position whose label most closely matches:
+   - Identity:   About, Company, Team
+   - Offering:   Products, Services, Solutions, Platform, Features
+   - Commercial: Pricing, Plans
+   - Technical:  Docs, Documentation, API, Reference, SDK
+   - Learning:   Guides, Tutorials, Examples
+   - Support:    Support, Help, FAQ, Contact
+   - General:    Resources, Library, Learn
+   - Long-tail:  Blog, News, Changelog, Press, Insights, Stories
+   - Catalogue:  site-specific lists (Recipes, Listings, Stores, Locations, Episodes, etc.) — sort BELOW the structural tiers above unless the site IS a catalogue (a recipe site, a marketplace) in which case its catalogue is the offering and ranks with Products.
+   Use the section names that will exist AFTER your moves are applied. The "## Optional" section is always last and is not part of this list.
 
 4. RELABEL entries whose link text reads awkwardly — run-together URL slugs ("Getstarted" → "Get Started", "Signin" → "Sign In"), unhelpful URL-derived fallbacks ("Index", "Page1"), labels that are just the site name. Use natural English title-case. ONLY relabel when the current label is genuinely wrong; leave good labels alone.
 
@@ -508,7 +490,15 @@ If nothing should change, return {"drop_urls": [], "moves": [], "section_order":
   try {
     const message = await client.messages.create({
       model: MODEL,
-      max_tokens: 1536,
+      // Worst-case response on a full file (MAX_PAGES = 25 primary +
+      // ~10 optional + external refs ≈ 35 entries): drop_urls × ~50
+      // tok each + moves × ~60 tok each + relabel × ~70 tok each +
+      // section_order. A pathological case wanting to drop / relabel
+      // / move many entries could approach ~2 K tokens. 3072 is a
+      // safe ceiling so the model never has to truncate any of the
+      // four edit lists, which would silently shrink an edit's blast
+      // radius and skew the file.
+      max_tokens: 3072,
       messages: [{ role: "user", content: prompt }],
     })
     const text = message.content[0]?.type === "text" ? message.content[0].text : ""
@@ -587,8 +577,7 @@ If nothing should change, return {"drop_urls": [], "moves": [], "section_order":
 
     return { dropUrls, sectionOrder, labelRewrites, moves }
   } catch (err) {
-    debugLog("llmEnrich.llmFinalReview", err)
-    return noop
+    throw asUnavailable("llmFinalReview", err)
   }
 }
 
@@ -600,10 +589,10 @@ If nothing should change, return {"drop_urls": [], "moves": [], "section_order":
  * of them aren't useful references. The model sees anchor text + URL
  * for each and returns indices.
  *
- * Returns candidates unchanged when the LLM is unavailable or the
- * list is too short to benefit from ranking; returns a curated subset
- * otherwise. Never embellishes or rewrites — the caller uses these
- * URLs verbatim.
+ * Returns the input unchanged when the list is too short to benefit
+ * from ranking; throws `LlmUnavailableError` when the LLM is down so
+ * the failure surfaces instead of silently shipping all candidates.
+ * Never embellishes or rewrites — the caller uses these URLs verbatim.
  */
 export async function rankExternalReferences(
   candidates: Array<{ url: string; anchor: string }>,
@@ -611,11 +600,12 @@ export async function rankExternalReferences(
   homepageExcerpt: string,
   maxKeep: number,
 ): Promise<Array<{ url: string; anchor: string }>> {
-  const client = getClient()
-  if (!client || candidates.length === 0) return []
+  if (candidates.length === 0) return []
   // Small lists: keep them all (up to cap). The LLM round-trip isn't
   // worth the latency when there's nothing to prune.
   if (candidates.length <= maxKeep) return candidates
+
+  const client = getClient()
 
   const numbered = candidates
     .map((c, i) => {
@@ -649,6 +639,9 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7]`
 
     const text = message.content[0]?.type === "text" ? message.content[0].text : ""
     const match = text.match(/\[[\d,\s]+\]/)
+    // Unparseable response from a successful API call: ship none rather
+    // than the full unranked candidate set, since this list is meant to
+    // be a curated subset and the unranked version would be noisy.
     if (!match) return []
 
     const indices: number[] = JSON.parse(match[0])
@@ -657,8 +650,7 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7]`
       .map((i) => candidates[i - 1])
       .slice(0, maxKeep)
   } catch (err) {
-    debugLog("llmEnrich.rankExternalReferences", err)
-    return []
+    throw asUnavailable("rankExternalReferences", err)
   }
 }
 
@@ -671,8 +663,10 @@ Respond ONLY with a JSON array of integers, e.g. [1, 3, 7]`
  * <title> is a marketing paragraph with no obvious separator. The LLM
  * has the site's homepage context and picks the brand reliably.
  *
- * Returns `fallback` unchanged when the LLM is unavailable or returns
- * something unusable — so this function is safe to call unconditionally.
+ * Throws `LlmUnavailableError` on transport failure. Returns `fallback`
+ * when the LLM responds successfully but the result fails sanitization
+ * (rare junk response) — that's not "AI service is down", just a
+ * weak answer the deterministic extraction can cover.
  */
 export interface SiteNameCandidates {
   ogSiteName?: string
@@ -687,9 +681,6 @@ export async function llmSiteName(
   hostname: string,
   fallback: string,
 ): Promise<string> {
-  const client = getClient()
-  if (!client) return fallback
-
   // Each candidate is attacker-controlled — neuter before embedding.
   const lines = [
     candidates.ogSiteName      && `og:site_name:     ${neuter(candidates.ogSiteName)}`,
@@ -700,6 +691,8 @@ export async function llmSiteName(
   ].filter(Boolean).join("\n")
 
   if (!lines) return fallback
+
+  const client = getClient()
 
   const prompt = `You are extracting the brand name of a website for a dashboard label.
 
@@ -731,7 +724,6 @@ Respond with JUST the brand name on a single line. No quotes, no prose, no expla
     const cleaned = cleanSiteName(firstLine)
     return cleaned ?? fallback
   } catch (err) {
-    debugLog("llmEnrich.llmSiteName", err)
-    return fallback
+    throw asUnavailable("llmSiteName", err)
   }
 }
