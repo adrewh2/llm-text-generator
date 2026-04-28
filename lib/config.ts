@@ -93,6 +93,30 @@ export const crawler = {
   FANOUT_DROP_THRESHOLD: 20,
 } as const;
 
+// ─── Output sizing ──────────────────────────────────────────────────────────
+
+// Caps on the rendered llms.txt's entry counts. Both derive from
+// `crawler.MAX_PAGES` so bumping the crawl budget propagates here
+// without a separate edit. Keep the primary cap larger than
+// MAX_PAGES so it never trips at current scale — it exists to bound
+// the worst case if MAX_PAGES is raised dramatically (a 100-page
+// crawl could realistically yield 80+ primary entries after dedup).
+export const output = {
+  /**
+   * Max entries in the rendered llms.txt's non-Optional sections.
+   * Sized as 2× MAX_PAGES — never trips at current scale; gives
+   * comfortable headroom if MAX_PAGES is bumped.
+   */
+  MAX_PRIMARY_ENTRIES: crawler.MAX_PAGES * 2,
+  /**
+   * Max entries in the rendered llms.txt's `## Optional` section.
+   * Independent of MAX_PAGES — Optional carries low-importance
+   * pages, and 10 reads as a comfortable footer rather than a
+   * bloated dump regardless of crawl size.
+   */
+  MAX_OPTIONAL_ENTRIES: 10,
+} as const;
+
 // ─── LLM enrichment ─────────────────────────────────────────────────────────
 
 export const llm = {
@@ -113,15 +137,50 @@ export const llm = {
    * minutes for the rest of the crawl.
    */
   CALL_TIMEOUT_MS: 60_000,
-  /** Pages per request to enrichBatch. Sized to match MAX_PAGES so a
+  /** Pages per request to enrichBatch. Mirrors MAX_PAGES so a
    *  full-budget crawl ships in exactly one LLM round trip — internal
    *  crawl + external refs are bounded together at MAX_PAGES, so the
    *  combined `successful.length` never exceeds this. */
-  ENRICH_BATCH_SIZE: 25,
+  ENRICH_BATCH_SIZE: crawler.MAX_PAGES,
+  /**
+   * `enrichBatch` output cap. Per-page response is ~120 tokens worst
+   * case (section + importance + 240-char description + JSON
+   * wrapper). ENRICH_BATCH_SIZE × 120 + 256 buffer keeps a full batch
+   * from truncating mid-entry, which would silently drop pages from
+   * enrichment.
+   */
+  ENRICH_MAX_TOKENS: crawler.MAX_PAGES * 120 + 256,
+  /**
+   * `llmFinalReview` output cap. The pass returns up to 6 edit lists
+   * (drop_urls + moves + section_order + relabel + redescribe +
+   * entry_order) across all primary + optional entries. Worst-case
+   * ≈ 150 tok per entry × (MAX_PAGES + MAX_OPTIONAL) total entries +
+   * 1024-tok buffer for the section-level lists (section_order +
+   * entry_order URL lists, which scale with section count rather
+   * than entry count).
+   */
+  FINAL_REVIEW_MAX_TOKENS: (crawler.MAX_PAGES + output.MAX_OPTIONAL_ENTRIES) * 150 + 1024,
   /** Max internal URLs rankSiteUrls keeps from the discovery candidate set. */
   RANK_MAX_KEEP: 120,
   /** Candidate lists below this size skip LLM ranking entirely. */
   RANK_SKIP_BELOW: 10,
+  /**
+   * Absolute hard ceiling on the candidate list size that reaches
+   * `rankSiteUrls`, applied after the bucket-based filters
+   * (`dropParametricFanout`, `capByPathPrefix`, locale pre-filter).
+   * Those filters work per-prefix; a sprawling enterprise site with
+   * many distinct top-level sections can still push hundreds of URLs
+   * through them. This cap puts a fixed lid on the LLM's input.
+   *
+   * Why 200: ~12K input tokens worst case (200 × ~60 chars per URL +
+   * scaffolding) ≈ 24% of Anthropic Tier 1's 50K input TPM per call.
+   * Higher than that and the model also starts to lose attention on
+   * long URL lists ("lost in the middle"), so quality plateaus as
+   * cost climbs. When the cap trips, URLs are truncated by path
+   * depth ascending (structural section indexes win the slot over
+   * deep leaves), with input order as the tiebreaker.
+   */
+  RANK_INPUT_MAX: 200,
   /** Upper bound on the description the LLM can return (chars). */
   DESCRIPTION_MAX_CHARS: 240,
   /** Upper bound on the section name the LLM can return (chars). */

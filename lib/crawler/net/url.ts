@@ -207,6 +207,27 @@ function pathDepthFor(url: string): number {
 }
 
 /**
+ * Absolute hard ceiling on the candidate list. Sorts URLs by path
+ * depth ascending so structural-shallow pages (section indexes,
+ * About, Pricing) survive the truncation and deep leaves are dropped
+ * first. Original input order breaks depth ties, so siblings at the
+ * same depth keep their relative order. Returns the input untouched
+ * when length ≤ maxCount.
+ *
+ * Pairs with `capByPathPrefix` (which caps per-prefix) — this is the
+ * absolute total-count cap that runs after it. The two together
+ * bound both the per-section flood case and the many-distinct-
+ * sections case.
+ */
+export function capTotalByPathDepth(urls: string[], maxCount: number): string[] {
+  if (urls.length <= maxCount) return urls
+  const indexed = urls.map((url, idx) => ({ url, idx, depth: pathDepthFor(url) }))
+  indexed.sort((a, b) => (a.depth - b.depth) || (a.idx - b.idx))
+  const keptIdxs = new Set(indexed.slice(0, maxCount).map((x) => x.idx))
+  return urls.filter((_, idx) => keptIdxs.has(idx))
+}
+
+/**
  * Drop parametric fan-out — entire first-path-segment prefixes that
  * contain many templated leaf URLs (one entry per city / store /
  * listing / location-slug / product-id). The parent index page

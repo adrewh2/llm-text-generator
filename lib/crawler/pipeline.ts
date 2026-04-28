@@ -11,10 +11,10 @@ import { baseLangCode, urlLocaleCode } from "./net/language"
 import { assignSections, filterAndSelectPages } from "./enrich/group"
 import { assembleFile, encodeMarkdownUrl, formatDisplayUrl } from "./output/assemble"
 import { detectGenre } from "./enrich/genre"
-import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix, dropParametricFanout } from "./net/url"
+import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix, capTotalByPathDepth, dropParametricFanout } from "./net/url"
 import { updateJob } from "../store"
 import type { ExtractedPage, ScoredPage } from "./types"
-import { crawler } from "../config"
+import { crawler, llm } from "../config"
 import { assertSafeUrl, UnsafeUrlError } from "./net/ssrf"
 
 const {
@@ -22,6 +22,7 @@ const {
   PIPELINE_BUDGET_MS, URLS_PER_PREFIX_CAP, PREFIX_SEGMENT_DEPTH,
   EXTERNAL_REFS_MAX_KEEP, MAX_CRAWL_DELAY_MS, FANOUT_DROP_THRESHOLD,
 } = crawler
+const { RANK_INPUT_MAX } = llm
 
 class PipelineTimeoutError extends Error {
   constructor() { super("Exceeded time budget") }
@@ -193,6 +194,17 @@ async function runPipelineInner(
     const cappedUrls = capByPathPrefix(queue.map((q) => q.url), URLS_PER_PREFIX_CAP, PREFIX_SEGMENT_DEPTH)
     const cappedSet = new Set(cappedUrls)
     queue.splice(0, queue.length, ...queue.filter((q) => cappedSet.has(q.url)))
+
+    // Absolute pre-LLM ceiling on the candidate list. The bucket-based
+    // caps above bound URLs per prefix, but a sprawling site with many
+    // distinct (seg0, seg1) buckets can still push hundreds of URLs
+    // through. This caps the total — sorts by path depth ascending so
+    // structural section indexes survive over deep leaves. Bounds
+    // worst-case Anthropic input-TPM consumption regardless of how
+    // bucket diversity shakes out.
+    const totalCappedUrls = capTotalByPathDepth(queue.map((q) => q.url), RANK_INPUT_MAX)
+    const totalCappedSet = new Set(totalCappedUrls)
+    queue.splice(0, queue.length, ...queue.filter((q) => totalCappedSet.has(q.url)))
 
     // LLM ranks the candidate URLs using full site context. Its order
     // wins; path-based regex is only a tiebreaker downstream.

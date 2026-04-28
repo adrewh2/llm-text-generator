@@ -4,7 +4,11 @@ import { SECTION_HINTS, llm } from "../../config"
 import { debugLog } from "../../log"
 import { cleanSiteName } from "./siteName"
 
-const { MODEL, ENRICH_BATCH_SIZE, RANK_MAX_KEEP, RANK_SKIP_BELOW, DESCRIPTION_MAX_CHARS, SECTION_MAX_CHARS, MAX_RETRIES, CALL_TIMEOUT_MS } = llm
+const {
+  MODEL, ENRICH_BATCH_SIZE, ENRICH_MAX_TOKENS, FINAL_REVIEW_MAX_TOKENS,
+  RANK_MAX_KEEP, RANK_SKIP_BELOW, DESCRIPTION_MAX_CHARS, SECTION_MAX_CHARS,
+  MAX_RETRIES, CALL_TIMEOUT_MS,
+} = llm
 
 interface EnrichedData {
   description?: string
@@ -217,12 +221,14 @@ Respond ONLY with a JSON array, one object per page, same order as input. No pro
   try {
     const message = await client.messages.create({
       model: MODEL,
-      // Per-page response is ~115 tok worst case (section + importance +
-      // 240-char description + occasional 80-char label + JSON wrapper);
-      // ENRICH_BATCH_SIZE = 25 → ~2875 tok total. 3584 leaves a safe
-      // margin so a longer-than-average batch doesn't truncate mid-
-      // entry and silently drop pages out of enrichment.
-      max_tokens: 3584,
+      // Sized in lib/config.ts (`llm.ENRICH_MAX_TOKENS`) so changing
+      // MAX_PAGES propagates here without a separate edit. Per-page
+      // response is ~115 tok worst case (section + importance +
+      // 240-char description + occasional 80-char label + JSON
+      // wrapper); the formula is MAX_PAGES × 120 + 256 to leave a
+      // safe margin so a longer-than-average batch doesn't truncate
+      // mid-entry and silently drop pages out of enrichment.
+      max_tokens: ENRICH_MAX_TOKENS,
       messages: [{ role: "user", content: prompt }],
     })
 
@@ -747,20 +753,17 @@ If nothing should change, return {"drop_urls": [], "moves": [], "section_order":
   try {
     const message = await client.messages.create({
       model: MODEL,
-      // Worst-case response on a full file (post-filter primary +
-      // optional ≤ MAX_PAGES = 25 entries total, since internal +
-      // external share that bound): drop_urls × ~50 tok + moves × ~60
-      // tok + relabel × ~70 tok + redescribe × ~85 tok + section_order
-      // + entry_order × ~80 tok per overridden section. A pathological
-      // pass that rewrites many descriptions and reorders every section
-      // could approach ~3 K tokens. 5120 is a safe ceiling so the model
-      // never has to truncate any of the six edit lists, which would
-      // silently shrink an edit's blast radius and skew the file
-      // (especially bad for redescribe — a truncated rewrite would
-      // render a half-sentence into the file — and entry_order — a
-      // truncated URL list would silently drop entries from the
-      // visible reorder).
-      max_tokens: 5120,
+      // Sized in lib/config.ts (`llm.FINAL_REVIEW_MAX_TOKENS`) so
+      // changing MAX_PAGES propagates here without a separate edit.
+      // Worst-case response is 6 edit lists (drop_urls × ~50 + moves
+      // × ~60 + relabel × ~70 + redescribe × ~85 + section_order +
+      // entry_order × ~80 per overridden section) across all primary
+      // + optional entries — formula: (MAX_PAGES + MAX_OPTIONAL) × 150
+      // + 1024 buffer. A truncated edit list silently shrinks an
+      // edit's blast radius and skews the file, especially bad for
+      // redescribe (renders a half-sentence) and entry_order (drops
+      // entries from the visible reorder).
+      max_tokens: FINAL_REVIEW_MAX_TOKENS,
       messages: [{ role: "user", content: prompt }],
     })
     const text = message.content[0]?.type === "text" ? message.content[0].text : ""
