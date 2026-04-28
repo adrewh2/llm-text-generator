@@ -72,7 +72,7 @@ flowchart TB
 ### How to read it
 
 - **Browser** routes only reach Vercel Fluid Compute. They never touch Upstash / Anthropic / target sites directly.
-- **`POST /api/p`** is the fast path: validate → charge SUBMIT bucket → canonicalize URL → check `pages` cache → attach-to-in-flight → charge NEW_CRAWL bucket → enqueue → return 200 (cache hit) or 201 (new crawl). Cache hits respond `{ page_id, cached: true }` and the client routes to `/p/{page_id}`; in-flight attaches and new crawls respond `{ page_id, job_id, cached: false }` and the client routes to `/jobs/{job_id}` for live progress. The NEW_CRAWL charge only happens on the cache-miss branch, so repeat hits on popular URLs don't erode the tight Anthropic/Puppeteer budget guard. It never runs the crawl itself.
+- **`POST /api/p`** is the fast path: validate → charge SUBMIT bucket → check `pages` cache (raw URL) → attach-to-in-flight → resolve canonical URL via HEAD probes → re-check cache against the canonical → charge NEW_CRAWL bucket → enqueue → return 200 (cache hit) or 201 (new crawl). Cache hits respond `{ page_id, cached: true }` and the client routes to `/p/{page_id}`; in-flight attaches and new crawls respond `{ page_id, job_id, cached: false }` and the client routes to `/jobs/{job_id}` for live progress. The NEW_CRAWL charge only happens on the cache-miss branch, so repeat hits on popular URLs don't erode the tight Anthropic/Puppeteer budget guard. It never runs the crawl itself.
 - **`POST /api/worker/crawl`** is where the actual work happens. Every arrow from the worker to an external service (`Supa`, `Web`, `Claude`) is inside one ~30–60 s function invocation.
 - **`GET /api/monitor`** is a separate entrypoint that fans out into the same queue. The worker doesn't know whether a job came from a user submission or from the cron.
 - **Upstash services** are provisioned through the Vercel Marketplace, so the env vars are auto-injected into Production + Preview. No secrets in the codebase.
@@ -92,6 +92,7 @@ sequenceDiagram
     participant DB as Supabase
     participant Q as Upstash QStash
     participant W as POST /api/worker/crawl
+    participant J as GET /api/jobs/[id]
     participant T as Target site
     participant A as Anthropic
 
@@ -138,8 +139,11 @@ sequenceDiagram
     W-->>Q: 200 OK
     Q->>Q: mark delivered
 
-    loop client poll on /jobs/{id} (until terminal status)
-        U->>DB: GET /api/jobs/[id] every 5 s
+    loop every 5 s while status is non-terminal
+        U->>J: GET /api/jobs/[id]
+        J->>DB: getJobById
+        DB-->>J: row
+        J-->>U: { status, progress }
     end
 
     note over U: On terminal success — /jobs/{id} client<br/>router.replace's to /p/{pageId}. The /p/{id}<br/>RSC reads /api/p/[id], which is edge-cached;<br/>updateJob revalidates that path on re-crawl.
