@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { randomUUID } from "crypto"
 import { waitUntil } from "@vercel/functions"
 import * as Sentry from "@sentry/nextjs"
-import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, recordMonitorCheck, upsertUserRequest } from "@/lib/store"
+import { bumpPageRequest, createJob, getActiveJobForUrl, getPageByUrl, recordMonitorCheck, upsertUserRequest, type JobSource } from "@/lib/store"
 import { altWwwForm, isValidHttpUrl, normalizeUrl } from "@/lib/crawler/net/url"
 import { resolveCanonicalUrl } from "@/lib/crawler/net/canonicalUrl"
 import { assertSafeUrl, UnsafeUrlError } from "@/lib/crawler/net/ssrf"
@@ -96,7 +96,13 @@ export async function POST(req: NextRequest) {
   // (URL validation + HEAD probe + DB lookups) can run. NEW_CRAWL
   // is the tight quota charged only when a submission actually
   // dispatches a fresh crawl; see further down.
-  const principal = user ? `user:${user.id}` : `ip:${ip}`
+  // Principal doubles as the rate-limit bucket key AND the
+  // jobs.created_by value for any crawl this submission dispatches —
+  // see lib/store.ts:JobSource. Same prefixed shape on both sides
+  // so the convention stays consistent.
+  const principal: Exclude<JobSource, "cron"> = user
+    ? `user:${user.id}`
+    : `ip:${ip}`
   const submit = await consumeRateLimit(
     `submit:${principal}`,
     user ? rateLimit.AUTH_SUBMIT : rateLimit.ANON_SUBMIT,
@@ -227,7 +233,7 @@ export async function POST(req: NextRequest) {
   // re-crawl of this URL; `job_id` is the per-execution identifier
   // the client uses to route to /jobs/{job_id}.
   const jobId = randomUUID()
-  const { pageId } = await createJob(jobId, canonicalUrl, "user")
+  const { pageId } = await createJob(jobId, canonicalUrl, principal)
   runAfterResponse("enqueueCrawl", enqueueCrawl(jobId, canonicalUrl))
   runAfterResponse("bumpPageRequest", bumpPageRequest(canonicalUrl))
   if (user) runAfterResponse("upsertUserRequest", upsertUserRequest(user.id, canonicalUrl))

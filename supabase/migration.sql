@@ -33,12 +33,19 @@ CREATE INDEX idx_pages_last_requested_at ON pages(last_requested_at);
 
 -- jobs: one row per crawl execution, linked to a page
 --
--- `created_by` distinguishes user-initiated crawls (POST /api/p from
--- the landing form, the dashboard's Refresh button, etc.) from
--- cron-initiated re-crawls (GET /api/monitor when the signature
--- check detects upstream drift on a monitored page). Lets the
--- dashboard / Sentry breakdowns separate "the user pressed
--- Generate" from "the cron noticed the site changed".
+-- `created_by` records the principal that initiated the crawl, in
+-- the same prefixed shape the rate limiter uses
+-- (lib/upstash/rateLimit.ts):
+--   - 'user:<uuid>' — signed-in user submission via POST /api/p
+--   - 'ip:<addr>'   — anon submission via POST /api/p (IPv4 or v6)
+--   - 'cron'        — monitor-cron re-crawl via GET /api/monitor
+--   - 'user'        — legacy backfill from rows pre-principal
+--
+-- Lets the dashboard / analytics / abuse triage queries separate
+-- "the user pressed Generate" from "the cron noticed the site
+-- changed", and within user-initiated crawls separate authenticated
+-- submissions from anon ones. The IP form is durably persisted —
+-- treat it as PII for any retention / export decisions downstream.
 CREATE TABLE jobs (
   id UUID PRIMARY KEY,
   page_url TEXT NOT NULL REFERENCES pages(url) ON DELETE CASCADE,
@@ -56,9 +63,14 @@ CREATE TABLE jobs (
     'pending', 'crawling', 'enriching', 'scoring',
     'assembling', 'complete', 'partial', 'failed'
   )),
-  -- Same defensive check on the source. Add new sources here if a
-  -- third entrypoint ever creates jobs (e.g. a CLI batch reprocess).
-  CONSTRAINT jobs_created_by_check CHECK (created_by IN ('user', 'cron'))
+  -- Defensive shape check on created_by. Only 'cron', 'user' (legacy),
+  -- or the prefixed forms produced by app/api/p/route.ts pass.
+  CONSTRAINT jobs_created_by_check CHECK (
+    created_by = 'cron'
+    OR created_by = 'user'
+    OR created_by ~ '^user:[0-9a-fA-F-]{36}$'
+    OR created_by ~ '^ip:[0-9a-fA-F:.]{1,45}$'
+  )
 );
 
 -- user_requests: tracks which pages each signed-in user has visited

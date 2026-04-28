@@ -23,9 +23,21 @@ function getClient(): SupabaseClient {
 
 // ─── Jobs ────────────────────────────────────────────────────────────────────
 
-/** Source that initiated a crawl job. Mirrors the
- *  `jobs_created_by_check` constraint in `supabase/migration.sql`. */
-export type JobSource = "user" | "cron"
+/**
+ * Principal that initiated a crawl job, in the same prefixed shape
+ * the rate limiter uses (see `clientIp` / `consumeRateLimit` in
+ * `lib/upstash/rateLimit.ts`):
+ *   - `user:<uuid>` — signed-in user submission via POST /api/p
+ *   - `ip:<addr>`  — anon submission via POST /api/p
+ *   - `cron`       — monitor-cron re-crawl via GET /api/monitor
+ *
+ * Mirrors the `jobs_created_by_check` constraint in
+ * `supabase/migration.sql`. Privacy note: the IP form is durably
+ * persisted (jobs rows stick around for the page's lifetime). Don't
+ * pass anything other than the rate-limit principal — no headers,
+ * no User-Agent, no derived IDs.
+ */
+export type JobSource = `user:${string}` | `ip:${string}` | "cron"
 
 /**
  * Upsert the page row and insert a crawl job. Takes both ids: `jobId`
@@ -34,9 +46,8 @@ export type JobSource = "user" | "cron"
  * stable per-URL identifier (powers /p/{pageId}, the cached-result
  * permalink) and is returned to the caller after the upsert.
  *
- * `createdBy` records what kicked off the job: `"user"` for landing-
- * form / Refresh / dashboard submissions, `"cron"` for monitor-cron
- * re-crawls when the signature check detects upstream drift.
+ * `createdBy` records the principal that kicked the job off — see
+ * the `JobSource` type above for the format.
  */
 export async function createJob(
   jobId: string,
