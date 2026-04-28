@@ -1,5 +1,6 @@
 import type { ScoredPage } from "../types"
 import { INCLUDE_SCORE_THRESHOLD, PRIMARY_SCORE_THRESHOLD } from "./score"
+import { output } from "../../config"
 
 function normalizeForComparison(url: string): string {
   try {
@@ -53,7 +54,6 @@ function inferSectionFromPath(page: ScoredPage): string {
 export function filterAndSelectPages(
   pages: ScoredPage[],
   baseUrl?: string,
-  maxOutput = 60
 ): { primary: ScoredPage[]; optional: ScoredPage[] } {
   const baseHostname = baseUrl
     ? (() => { try { return new URL(baseUrl).hostname } catch { return null } })()
@@ -89,7 +89,7 @@ export function filterAndSelectPages(
   const primary = deduped
     .filter((p) => p.score >= PRIMARY_SCORE_THRESHOLD && p.section && p.section !== "Optional")
     .sort((a, b) => b.score - a.score)
-    .slice(0, maxOutput - 10)
+    .slice(0, output.MAX_PRIMARY_ENTRIES)
 
   const primaryUrls = new Set(primary.map((p) => p.url))
 
@@ -100,7 +100,7 @@ export function filterAndSelectPages(
       return true
     })
     .sort((a, b) => b.score - a.score)
-    .slice(0, 10)
+    .slice(0, output.MAX_OPTIONAL_ENTRIES)
 
   // Single-page-site fallback. The homepage is normally excluded as
   // redundant with the H1, but on sites where it's the *only*
