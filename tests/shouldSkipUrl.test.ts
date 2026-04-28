@@ -290,12 +290,12 @@ describe("dropParametricFanout", () => {
   })
 
   test("a deep docs/{cat}/{topic} hierarchy is NOT mistaken for fan-out", () => {
-    // Only depth-2 leaves count toward the threshold. A real docs
-    // site has a small number of depth-2 categories
+    // A real docs site has a small number of depth-2 categories
     // (/docs/auth, /docs/api, /docs/payments) and the bulk of pages
-    // lives at depth 3+ (/docs/auth/oauth, /docs/api/keys, …) — so
-    // even with 60+ total /docs/* URLs, the depth-2 count stays
-    // tiny and the threshold doesn't trip.
+    // lives at depth 3+ (/docs/auth/oauth, /docs/api/keys, …). Even
+    // though total under /docs is ≥ threshold, the distinct-second-
+    // segment count is only 3 — below the min-distinct-second
+    // floor — so the rule correctly leaves the hierarchy intact.
     const urls = [
       // 3 depth-2 categories
       "https://example.com/docs/auth",
@@ -306,9 +306,33 @@ describe("dropParametricFanout", () => {
       ...Array.from({ length: 30 }, (_, i) => `https://example.com/docs/api/endpoint-${i}`),
     ]
     const out = dropParametricFanout(urls, 20)
-    // Depth-2 count for "docs" is 3 (auth, api, payments) — below
-    // the threshold of 20, so nothing gets dropped.
+    // Distinct second segments under "docs": auth, api, payments —
+    // only 3 distinct values, below max(8, 10) = 10. The total-under
+    // signal alone isn't enough; the distinct-second gate keeps the
+    // hierarchy intact.
     assert.equal(out.length, urls.length)
+  })
+
+  test("deep parametric fan-out (e.g. /cities/{city}/venues/{slug}) is caught even without depth-2 parents in the candidate list", () => {
+    // Resy real-world failure: sitemap hands the crawler 200+ venue
+    // URLs at depth 4 (`/cities/{city}/venues/{slug}`), no city
+    // index pages at depth 2. The current rule trips on
+    // total-under-first-segment ≥ threshold AND distinct-second-
+    // segment values ≥ max(8, threshold/2), so 30 distinct cities
+    // × ~7 venues each = 200 URLs all drop together while unrelated
+    // structural pages survive.
+    const urls: string[] = []
+    for (let c = 0; c < 30; c++) {
+      for (let v = 0; v < 7; v++) {
+        urls.push(`https://example.com/cities/city-${c}/venues/venue-${v}`)
+      }
+    }
+    urls.push("https://example.com/about", "https://example.com/contact")
+    const out = dropParametricFanout(urls, 20)
+    assert.deepEqual(out, [
+      "https://example.com/about",
+      "https://example.com/contact",
+    ])
   })
 
   test("when depth-2 count trips the threshold, deeper descendants under the same prefix are dropped too", () => {
