@@ -119,18 +119,18 @@ sequenceDiagram
     T-->>W: HTML / XML
 
     W->>W: dropParametricFanout + capByPathPrefix (URL filter)
-    W->>A: rankCandidateUrls (1 call)
-    A-->>W: ranked URL list
+    W->>A: rankSiteUrls (internal + external in 1 call)
+    A-->>W: ranked internal list · ranked external refs
 
     par worker pool, 5 concurrent page fetches
         W->>T: page 1..25
         T-->>W: HTML
     end
 
-    W->>A: enrichBatch × ceil(pages/20)
+    W->>A: enrichBatch (1 call: 25 pages fits in one batch)
     A-->>W: importance · section · description
-    W->>A: llmSiteName + generateSitePreamble
-    A-->>W: brand + preamble
+    W->>A: analyzeSiteHomepage (brand name + preamble in 1 call)
+    A-->>W: site_name · preamble
     W->>A: llmFinalReview (assembled draft)
     A-->>W: drop_urls · moves · section_order · relabel · redescribe
 

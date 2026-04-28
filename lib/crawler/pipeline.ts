@@ -6,7 +6,7 @@ import { probeMarkdown } from "./discovery/markdownProbe"
 import { extractLinksFromHtml, extractExternalLinksFromHtml } from "./discovery/discover"
 import { isSpaHtml, SpaBrowser } from "./discovery/spaCrawler"
 import { scorePages } from "./enrich/score"
-import { llmEnrichPages, generateSitePreamble, rankCandidateUrls, rankExternalReferences, llmSiteName, llmFinalReview } from "./enrich/llmEnrich"
+import { llmEnrichPages, rankSiteUrls, analyzeSiteHomepage, llmFinalReview } from "./enrich/llmEnrich"
 import { baseLangCode, urlLocaleCode } from "./net/language"
 import { assignSections, filterAndSelectPages } from "./enrich/group"
 import { assembleFile, encodeMarkdownUrl, formatDisplayUrl } from "./output/assemble"
@@ -215,17 +215,26 @@ async function runPipelineInner(
     }
 
     signal.throwIfAborted()
-    const rankedUrls = await rankCandidateUrls(
-      queue.map((q) => q.url),
-      siteName0,
+    // Single combined ranking call: internal crawl candidates +
+    // external reference candidates ranked together. Cuts one Anthropic
+    // round trip per crawl vs. the previous two separate calls. The
+    // external picks are cached here and consumed later by
+    // `resolveExternalReferences` (which now just fetches, doesn't rank).
+    const externalCandidates = extractExternalLinksFromHtml(homepageHtml, baseUrl)
+    const ranked = await rankSiteUrls({
+      internalCandidates: queue.map((q) => q.url),
+      externalCandidates,
+      siteName: siteName0,
       homepageExcerpt,
       primaryLang,
-    )
+      externalMax: EXTERNAL_REFS_MAX_KEEP,
+    })
     const urlToItem = new Map(queue.map((q) => [q.url, q]))
-    const reordered = rankedUrls
+    const reordered = ranked.internal
       .map((u) => urlToItem.get(u))
       .filter((q): q is { url: string; depth: number } => !!q)
     queue.splice(0, queue.length, ...reordered)
+    const rankedExternal = ranked.external
 
     const mode: "http" | "browser" = needsBrowser ? "browser" : "http"
     await updateJob(jobId, {
@@ -320,23 +329,22 @@ async function runPipelineInner(
       }
     }
 
-    // Kick off the site-name LLM call in parallel with the worker
-    // pool — it only needs the homepage, not the crawled subpages.
+    // Site-name resolution moved to the post-enrichment merged call
+    // (`analyzeSiteHomepage`) so the brand-name pick + preamble are one
+    // round trip. Intermediate prompts (enrichBatch) use the
+    // deterministic name; the LLM-refined name lands later in the
+    // assembled file's H1 and the job's stored `siteName`.
     const hostname = new URL(baseUrl).hostname
     const deterministicName = extractSiteName(homepageHtml, hostname)
     const nameCandidates = extractSiteNameCandidates(homepageHtml, hostname)
-    const siteNamePromise = llmSiteName(nameCandidates, hostname, deterministicName)
 
     await Promise.all(Array.from({ length: needsBrowser ? 1 : CONCURRENCY }, () => worker()))
     // Final flush so the UI sees the last batch's counts even when
     // they arrived inside the min-interval window.
     await flushProgress(true)
 
-    // Genre needs the crawled URL set, so it runs after the worker
-    // pool. `llmSiteName` may still be in flight at this point —
-    // awaiting it costs only whatever time it hasn't already spent.
+    // Genre needs the crawled URL set, so it runs after the worker pool.
     const genre = detectGenre(homepageHtml, [...discoveredUrls])
-    const siteName = await siteNamePromise
 
     // Strip pages whose description exactly matches the generic homepage tagline
     const homepageDesc = homepageMeta.description?.trim()
@@ -349,21 +357,23 @@ async function runPipelineInner(
         return p
       })
 
-    // External refs fill any unused MAX_PAGES budget. Each is fetched
-    // once for metadata only — never followed further.
+    // External refs fill any unused MAX_PAGES budget. The LLM ranking
+    // already happened up front in the unified `rankSiteUrls` call, so
+    // this just fetches the pre-ranked subset — no LLM round trip here.
     const externalBudget = Math.max(0, MAX_PAGES - internalSuccessful.length)
     const externalRefs = externalBudget > 0
-      ? await resolveExternalReferences(
-          homepageHtml, baseUrl, siteName, homepageMeta.bodyExcerpt || "", externalBudget,
-        )
+      ? await fetchPreRankedExternals(rankedExternal.slice(0, externalBudget))
       : []
 
     const successful = [...internalSuccessful, ...externalRefs]
 
-    // LLM enrichment: classify pages and generate missing descriptions
+    // LLM enrichment: classify pages and generate missing descriptions.
+    // Uses the deterministic site name; the LLM-refined name comes
+    // later from analyzeSiteHomepage and is plumbed into the assembled
+    // file + the DB siteName at that point.
     signal.throwIfAborted()
-    await updateJob(jobId, { status: "enriching", genre, siteName })
-    const enrichment = await llmEnrichPages(successful, siteName, genre, primaryLang)
+    await updateJob(jobId, { status: "enriching", genre, siteName: deterministicName })
+    const enrichment = await llmEnrichPages(successful, deterministicName, genre, primaryLang)
 
     signal.throwIfAborted()
     await updateJob(jobId, { status: "scoring" })
@@ -397,7 +407,19 @@ async function runPipelineInner(
     signal.throwIfAborted()
     await updateJob(jobId, { status: "assembling" })
 
-    const preamble = await generateSitePreamble(siteName, genre, primary, optional, primaryLang)
+    // Single merged call: refines the brand name + writes the preamble
+    // in one round trip. Replaces the previous two separate calls.
+    const homepageAnalysis = await analyzeSiteHomepage({
+      nameCandidates,
+      hostname,
+      deterministicName,
+      genre,
+      primary,
+      optional,
+      primaryLang,
+    })
+    const siteName = homepageAnalysis.siteName
+    const preamble = homepageAnalysis.preamble
     const robotsNotice = robotsFullBlock
       ? "Note: This site's robots.txt disallows all crawling (Disallow: /). Only the homepage could be indexed; the full site structure may not be represented here."
       : undefined
@@ -528,33 +550,25 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
- * Gather external reference links from the homepage, let the LLM
- * pick the few worth keeping, and fetch each once for metadata.
+ * Fetch the LLM-pre-ranked external reference links and turn each
+ * into an `ExtractedPage` for downstream enrichment + assembly.
  *
- * Fetches happen in parallel but are bounded by
- * `EXTERNAL_REFS_MAX_KEEP`. Any fetch that 4xx/5xx/timeouts falls
+ * Ranking is no longer this function's job — it happens up front in
+ * the unified `rankSiteUrls` call so internal + external curation
+ * share one Anthropic round trip. The pre-ranked list arrives here
+ * already capped to the budget; we only fetch metadata.
+ *
+ * Fetches happen in parallel. Any fetch that 4xx/5xx/timeouts falls
  * back to an anchor-text-only entry so a curated reference isn't
  * silently dropped because one third-party server was flaky.
  */
-async function resolveExternalReferences(
-  homepageHtml: string,
-  baseUrl: string,
-  siteName: string,
-  homepageExcerpt: string,
-  budget: number = EXTERNAL_REFS_MAX_KEEP,
+async function fetchPreRankedExternals(
+  refs: Array<{ url: string; anchor: string }>,
 ): Promise<ExtractedPage[]> {
-  if (budget <= 0) return []
-  const candidates = extractExternalLinksFromHtml(homepageHtml, baseUrl)
-  if (candidates.length === 0) return []
-
-  const maxKeep = Math.min(budget, EXTERNAL_REFS_MAX_KEEP)
-  const kept = await rankExternalReferences(
-    candidates, siteName, homepageExcerpt, maxKeep,
-  )
-  if (kept.length === 0) return []
+  if (refs.length === 0) return []
 
   const fetched = await Promise.all(
-    kept.map(async ({ url, anchor }): Promise<ExtractedPage | null> => {
+    refs.map(async ({ url, anchor }): Promise<ExtractedPage | null> => {
       try {
         const res = await fetchPage(url)
         if (res.ok && res.html) {

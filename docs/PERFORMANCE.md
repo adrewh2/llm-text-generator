@@ -48,7 +48,7 @@ Per cache-miss crawl (pipeline runs end-to-end), order-of-magnitude accounting. 
 | Resource | Typical usage |
 |---|---|
 | HTTP requests *out* (to target sites) | dozens (robots + sitemap + page fetches + external-ref fetches + markdown probes) |
-| Anthropic Haiku calls | a handful per crawl (one for URL ranking, one per enrichment batch, optional external-ref ranker, site-name + preamble) |
+| Anthropic Haiku calls | 4 per crawl (`rankSiteUrls` for combined internal + external URL ranking, `enrichBatch` for per-page importance + section + description, `analyzeSiteHomepage` for combined brand-name + preamble, `llmFinalReview` for the whole-file correction pass) |
 | Anthropic tokens | ~20 K total per crawl, input-dominant |
 | Supabase writes | under a dozen (status transitions + debounced progress + terminal write) |
 | Supabase reads | a handful (cache lookup + the client's poll loop) |

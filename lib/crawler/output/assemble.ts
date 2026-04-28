@@ -240,6 +240,21 @@ function groupBySection(pages: ScoredPage[], explicitOrder?: string[]): {
     else map.set(section, [page])
   }
 
+  // Funnel any primary page literally tagged "Optional" into the
+  // overflow bucket so it joins the real Optional section instead of
+  // rendering as its own duplicate `## Optional` header in primary.
+  // This happens when the LLM final-review's `moves` field demotes an
+  // entry by setting `section: "Optional"` — the model's intent was
+  // "demote this", not "create a second Optional header". Match on
+  // case-insensitive name so "optional" / "OPTIONAL" hit the same path.
+  const overflow: ScoredPage[] = []
+  for (const [section, ps] of map) {
+    if (section.trim().toLowerCase() === "optional") {
+      overflow.push(...ps)
+      map.delete(section)
+    }
+  }
+
   // Heuristic for dissolving singleton sections:
   //   - If >= 2 sections have >= 2 pages, the LLM did a reasonable
   //     grouping job — keep the singletons as their own sections.
@@ -252,7 +267,6 @@ function groupBySection(pages: ScoredPage[], explicitOrder?: string[]): {
   const multiPageCount = [...map.values()].filter((ps) => ps.length >= 2).length
   const shouldDissolve = multiPageCount < 2
 
-  const overflow: ScoredPage[] = []
   const valid = new Map<string, ScoredPage[]>()
   for (const [section, ps] of map) {
     if (shouldDissolve && ps.length < 2) overflow.push(...ps)

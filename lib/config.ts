@@ -113,9 +113,12 @@ export const llm = {
    * minutes for the rest of the crawl.
    */
   CALL_TIMEOUT_MS: 60_000,
-  /** Pages per request to enrichBatch. */
-  ENRICH_BATCH_SIZE: 20,
-  /** Max URLs rankCandidateUrls returns. */
+  /** Pages per request to enrichBatch. Sized to match MAX_PAGES so a
+   *  full-budget crawl ships in exactly one LLM round trip — internal
+   *  crawl + external refs are bounded together at MAX_PAGES, so the
+   *  combined `successful.length` never exceeds this. */
+  ENRICH_BATCH_SIZE: 25,
+  /** Max internal URLs rankSiteUrls keeps from the discovery candidate set. */
   RANK_MAX_KEEP: 120,
   /** Candidate lists below this size skip LLM ranking entirely. */
   RANK_SKIP_BELOW: 10,
