@@ -432,7 +432,10 @@ async function runPipelineInner(
 
     // Re-assemble only when the review changed something; otherwise
     // the draft we already rendered IS the final file.
-    const reviewChangedSomething = review.dropUrls.size > 0 || review.sectionOrder !== null
+    const reviewChangedSomething =
+      review.dropUrls.size > 0
+      || review.sectionOrder !== null
+      || review.labelRewrites.size > 0
     const result = reviewChangedSomething
       ? assembleFile(
           siteName,
@@ -442,6 +445,7 @@ async function runPipelineInner(
           preamble,
           robotsNotice,
           review.sectionOrder ?? undefined,
+          review.labelRewrites.size > 0 ? review.labelRewrites : undefined,
         )
       : draft
 

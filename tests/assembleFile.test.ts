@@ -253,6 +253,86 @@ describe("assembleFile → validateLlmsTxt", () => {
     assert.deepEqual(h2s, ["## About"])
   })
 
+  test("when the page title equals the site name, falls back to the H1 heading instead of the run-together URL slug", () => {
+    // Real-world case: a /getstarted page whose <title> is just
+    // "Quip" (the site name) and whose H1 is "Get Started". The
+    // run-together slug "getstarted" → "Getstarted" via toLabel,
+    // but the H1 carries the human spacing.
+    const primary: ScoredPage[] = [
+      page({
+        url: "https://example.com/getstarted",
+        title: "Example",
+        section: "Resources",
+        score: 50,
+        headings: ["Get Started", "Sub heading"],
+      }),
+      page({
+        url: "https://example.com/about",
+        title: "About",
+        section: "About",
+        score: 50,
+      }),
+    ]
+    const out = assembleFile("Example", primary, [])
+    assert.ok(out.includes("[Get Started]"), `expected '[Get Started]' label, got:\n${out}`)
+    assert.ok(!out.includes("[Getstarted]"), `unexpected run-together label in:\n${out}`)
+  })
+
+  test("explicit labelOverrides (from LLM final-review) win over title/heading/URL fallback", () => {
+    // Even if the deterministic resolver had picked "Getstarted"
+    // from the URL slug, the LLM-final-review override "Get Started"
+    // takes precedence.
+    const primary: ScoredPage[] = [
+      page({
+        url: "https://example.com/getstarted",
+        title: "Example",
+        section: "Resources",
+        score: 50,
+        headings: [],
+      }),
+      page({
+        url: "https://example.com/about",
+        title: "About",
+        section: "About",
+        score: 50,
+      }),
+    ]
+    const overrides = new Map([["https://example.com/getstarted", "Get Started"]])
+    const out = assembleFile(
+      "Example", primary, [],
+      undefined, undefined, undefined, undefined,
+      overrides,
+    )
+    assert.ok(out.includes("[Get Started]"), `expected '[Get Started]' override:\n${out}`)
+  })
+
+  test("heading fallback skips SPA chrome / privacy headings", () => {
+    // A /privacy page whose <title> matches the site name and whose
+    // first heading is "Cookie Preference Center" (common consent-
+    // banner artifact). The chrome-skip list filters it; the URL
+    // fallback "Privacy" wins.
+    const primary: ScoredPage[] = [
+      page({
+        url: "https://example.com/privacy",
+        title: "Example",
+        section: "Resources",
+        score: 50,
+        headings: ["Cookie Preference Center", "Privacy Policy"],
+      }),
+      page({
+        url: "https://example.com/about",
+        title: "About",
+        section: "About",
+        score: 50,
+      }),
+    ]
+    const out = assembleFile("Example", primary, [])
+    // The second heading "Privacy Policy" passes the chrome filter
+    // and wins. The point of the test: chrome ("Cookie Preference
+    // Center") is NOT picked.
+    assert.ok(!out.includes("Cookie Preference Center"), `chrome heading leaked into label:\n${out}`)
+  })
+
   test("catalogue-shaped section labels are NOT hardcoded — two unknown labels tie at the neutral default", () => {
     // SECTION_PRIORITY only carries labels with stable cross-genre
     // meaning in the llms.txt shape — it doesn't hardcode catalogue-
