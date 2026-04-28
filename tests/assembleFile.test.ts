@@ -149,27 +149,44 @@ describe("assembleFile → validateLlmsTxt", () => {
     assert.deepEqual(h2s, ["## About", "## Catalogue"], `unexpected section order: ${h2s.join(" | ")}`)
   })
 
-  test("section priority is only a tiebreaker — higher avg-score wins regardless of label", () => {
-    // Even though Catalogue isn't on the SECTION_PRIORITY list and
-    // About is at 100, when Catalogue's avg-score is genuinely higher
-    // it should still win. The judgment lives in the score; priority
-    // only tiebreaks ties.
+  test("a structural-labelled section beats a slightly-higher-scored catalogue section", () => {
+    // Real-world failure mode: the LLM bunched its importance scores
+    // in the middle, so a section full of richly-described catalogue
+    // items edges past a structural section of terser pages on raw
+    // avg-score alone. The structural-label boost (+12 for Services
+    // at priority 90) gives Services enough lift to win the small
+    // gap that the LLM's importance signal didn't open up.
     const primary: ScoredPage[] = [
-      page({ url: "https://example.com/listings/a", title: "Listing A", section: "Catalogue", score: 80 }),
-      page({ url: "https://example.com/listings/b", title: "Listing B", section: "Catalogue", score: 80 }),
+      page({ url: "https://example.com/cat/a", title: "CA", section: "Catalogue", score: 60 }),
+      page({ url: "https://example.com/cat/b", title: "CB", section: "Catalogue", score: 60 }),
+      page({ url: "https://example.com/svc/a", title: "SA", section: "Services", score: 55 }),
+      page({ url: "https://example.com/svc/b", title: "SB", section: "Services", score: 55 }),
+    ]
+    const out = assembleFile("Example", primary, [])
+    const h2s = out.split("\n").filter((l) => l.startsWith("## "))
+    // Services boost: 55 + (90-50)*0.3 = 67. Catalogue: 60 + 0 = 60.
+    assert.deepEqual(h2s, ["## Services", "## Catalogue"], `unexpected order: ${h2s.join(" | ")}`)
+  })
+
+  test("a sufficiently-higher catalogue avg-score still beats the structural-label boost", () => {
+    // The boost is a thumb on the scale, not a thumb on the table.
+    // When the catalogue's avg-score is far enough above the
+    // structural section, it still wins — the boost only flips
+    // small gaps.
+    const primary: ScoredPage[] = [
+      page({ url: "https://example.com/cat/a", title: "CA", section: "Catalogue", score: 80 }),
+      page({ url: "https://example.com/cat/b", title: "CB", section: "Catalogue", score: 80 }),
       page({ url: "https://example.com/about", title: "About", section: "About", score: 40 }),
       page({ url: "https://example.com/team", title: "Team", section: "About", score: 40 }),
     ]
     const out = assembleFile("Example", primary, [])
     const h2s = out.split("\n").filter((l) => l.startsWith("## "))
-    assert.deepEqual(h2s, ["## Catalogue", "## About"], `unexpected section order: ${h2s.join(" | ")}`)
+    // About boost: 40 + (100-50)*0.3 = 55. Catalogue: 80. 25-point
+    // gap is well beyond what the boost can flip.
+    assert.deepEqual(h2s, ["## Catalogue", "## About"], `unexpected order: ${h2s.join(" | ")}`)
   })
 
-  test("on tied avg-score, structural priority breaks the tie", () => {
-    // Two sections with identical per-page scores — without the
-    // priority tiebreaker the order would be Map-insertion / hash
-    // order and unstable across runs. SECTION_PRIORITY pins About
-    // above an unknown label.
+  test("on tied avg-score, the structural-label boost picks the winner", () => {
     const primary: ScoredPage[] = [
       page({ url: "https://example.com/x/a", title: "XA", section: "Discoveries", score: 50 }),
       page({ url: "https://example.com/x/b", title: "XB", section: "Discoveries", score: 50 }),
@@ -178,10 +195,10 @@ describe("assembleFile → validateLlmsTxt", () => {
     ]
     const out = assembleFile("Example", primary, [])
     const h2s = out.split("\n").filter((l) => l.startsWith("## "))
-    assert.deepEqual(h2s, ["## About", "## Discoveries"], `unexpected section order: ${h2s.join(" | ")}`)
+    assert.deepEqual(h2s, ["## About", "## Discoveries"], `unexpected order: ${h2s.join(" | ")}`)
   })
 
-  test("catalogue noun labels are NOT hardcoded — Listings ties against an unknown label by score alone", () => {
+  test("catalogue-shaped section labels are NOT hardcoded — two unknown labels tie at the neutral default", () => {
     // SECTION_PRIORITY only carries labels with stable cross-genre
     // meaning in the llms.txt shape — it doesn't hardcode catalogue-
     // shaped section nouns. The structural-vs-catalogue judgment is
