@@ -32,6 +32,13 @@ CREATE INDEX idx_pages_monitored ON pages(monitored) WHERE monitored = true;
 CREATE INDEX idx_pages_last_requested_at ON pages(last_requested_at);
 
 -- jobs: one row per crawl execution, linked to a page
+--
+-- `created_by` distinguishes user-initiated crawls (POST /api/p from
+-- the landing form, the dashboard's Refresh button, etc.) from
+-- cron-initiated re-crawls (GET /api/monitor when the signature
+-- check detects upstream drift on a monitored page). Lets the
+-- dashboard / Sentry breakdowns separate "the user pressed
+-- Generate" from "the cron noticed the site changed".
 CREATE TABLE jobs (
   id UUID PRIMARY KEY,
   page_url TEXT NOT NULL REFERENCES pages(url) ON DELETE CASCADE,
@@ -40,6 +47,7 @@ CREATE TABLE jobs (
   site_name TEXT,
   genre TEXT,
   error TEXT,
+  created_by TEXT NOT NULL DEFAULT 'user',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   -- Guard against typos in client code silently writing an unexpected
@@ -47,7 +55,10 @@ CREATE TABLE jobs (
   CONSTRAINT jobs_status_check CHECK (status IN (
     'pending', 'crawling', 'enriching', 'scoring',
     'assembling', 'complete', 'partial', 'failed'
-  ))
+  )),
+  -- Same defensive check on the source. Add new sources here if a
+  -- third entrypoint ever creates jobs (e.g. a CLI batch reprocess).
+  CONSTRAINT jobs_created_by_check CHECK (created_by IN ('user', 'cron'))
 );
 
 -- user_requests: tracks which pages each signed-in user has visited

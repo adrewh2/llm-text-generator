@@ -227,7 +227,7 @@ export async function POST(req: NextRequest) {
   // re-crawl of this URL; `job_id` is the per-execution identifier
   // the client uses to route to /jobs/{job_id}.
   const jobId = randomUUID()
-  const { pageId } = await createJob(jobId, canonicalUrl)
+  const { pageId } = await createJob(jobId, canonicalUrl, "user")
   runAfterResponse("enqueueCrawl", enqueueCrawl(jobId, canonicalUrl))
   runAfterResponse("bumpPageRequest", bumpPageRequest(canonicalUrl))
   if (user) runAfterResponse("upsertUserRequest", upsertUserRequest(user.id, canonicalUrl))
