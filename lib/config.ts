@@ -113,9 +113,12 @@ export const llm = {
    * minutes for the rest of the crawl.
    */
   CALL_TIMEOUT_MS: 60_000,
-  /** Pages per request to enrichBatch. */
-  ENRICH_BATCH_SIZE: 20,
-  /** Max URLs rankCandidateUrls returns. */
+  /** Pages per request to enrichBatch. Sized to match MAX_PAGES so a
+   *  full-budget crawl ships in exactly one LLM round trip — internal
+   *  crawl + external refs are bounded together at MAX_PAGES, so the
+   *  combined `successful.length` never exceeds this. */
+  ENRICH_BATCH_SIZE: 25,
+  /** Max internal URLs rankSiteUrls keeps from the discovery candidate set. */
   RANK_MAX_KEEP: 120,
   /** Candidate lists below this size skip LLM ranking entirely. */
   RANK_SKIP_BELOW: 10,
@@ -216,6 +219,27 @@ export const monitor = {
    * healthy retries never trip it. 15 minutes is comfortable headroom.
    */
   STUCK_JOB_AFTER_MS: 15 * 60 * 1000,
+  /**
+   * Per-recrawl QStash delivery delay used by the monitor cron to
+   * spread enqueues over time instead of a single-minute burst.
+   * Without this, N drifted URLs all enqueue back-to-back, all
+   * workers fire 4 LLM calls each within seconds → instant Anthropic
+   * RPM blow-out on cron storms. The cron passes
+   * `delaySeconds = min(index * RECRAWL_STAGGER_SEC, RECRAWL_STAGGER_MAX_SEC)`
+   * to enqueueCrawl. 5s/recrawl × 4 calls/crawl ≈ 48 LLM req/min start
+   * rate, designed to sit just under the Tier 1 50 RPM ceiling. Bump
+   * down once on a higher tier (Tier 2+ doesn't need staggering at
+   * realistic batch sizes).
+   */
+  RECRAWL_STAGGER_SEC: 5,
+  /**
+   * Hard ceiling on the per-recrawl delay so a huge cron tick doesn't
+   * schedule deliveries hours into the future. Beyond this cap, jobs
+   * pile up at the same delay rather than continuing to spread.
+   * 300s = 5 min covers a 60-recrawl tick at the default stride; for
+   * bigger ticks the residual still fires within 5 min of cron start.
+   */
+  RECRAWL_STAGGER_MAX_SEC: 300,
 };
 
 // ─── Client UI timing ───────────────────────────────────────────────────────

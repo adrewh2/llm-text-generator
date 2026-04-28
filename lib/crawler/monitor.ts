@@ -27,7 +27,7 @@ const { HOMEPAGE_FETCH_TIMEOUT_MS, RESPONSE_MAX_BYTES } = crawler
  * when both signals fail — the caller should treat that as "can't tell,
  * skip this cycle" rather than a forced re-crawl.
  */
-export async function computeSignature(pageUrl: string): Promise<string | null> {
+async function computeSignature(pageUrl: string): Promise<string | null> {
   const base = safeBase(pageUrl)
   if (!base) return null
 

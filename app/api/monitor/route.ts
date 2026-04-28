@@ -22,7 +22,14 @@ import { monitor, rateLimit } from "@/lib/config"
 export const runtime = "nodejs"
 export const maxDuration = 300
 
-const { STALE_DAYS: STALE_MONITOR_DAYS, BATCH_SIZE: MONITOR_BATCH_SIZE, SAME_HOST_DELAY_MS, STUCK_JOB_AFTER_MS } = monitor
+const {
+  STALE_DAYS: STALE_MONITOR_DAYS,
+  BATCH_SIZE: MONITOR_BATCH_SIZE,
+  SAME_HOST_DELAY_MS,
+  STUCK_JOB_AFTER_MS,
+  RECRAWL_STAGGER_SEC,
+  RECRAWL_STAGGER_MAX_SEC,
+} = monitor
 
 interface Summary {
   checked: number
@@ -67,6 +74,14 @@ export async function GET(req: NextRequest) {
   // same origin aren't hit back-to-back.
   const lastHostHit = new Map<string, number>()
 
+  // Stagger counter: every drift-triggered recrawl gets a QStash
+  // delivery delay scaled by its position in the tick. Keeps a fan-out
+  // of N drifted URLs from firing N×4 LLM calls in the same minute,
+  // which would blow the Anthropic RPM budget (Tier 1 = 50/min).
+  // Counts only drifted URLs (not all pages checked), so a tick where
+  // most signatures match doesn't pay any stagger cost.
+  let recrawlIndex = 0
+
   for (const page of pages) {
     const host = hostOf(page.url)
     if (host) {
@@ -82,7 +97,12 @@ export async function GET(req: NextRequest) {
 
       if (changed) {
         summary.changed++
-        const jobId = await dispatchRecrawl(page.url)
+        const delaySec = Math.min(
+          recrawlIndex * RECRAWL_STAGGER_SEC,
+          RECRAWL_STAGGER_MAX_SEC,
+        )
+        recrawlIndex++
+        const jobId = await dispatchRecrawl(page.url, delaySec)
         summary.recrawls.push(jobId)
       }
     } catch (err: unknown) {
@@ -98,16 +118,18 @@ export async function GET(req: NextRequest) {
 /**
  * Attach to an in-flight job if one exists — avoids a duplicate
  * crawl when a prior cron tick or a user submission is still
- * running. Otherwise create a new job and enqueue it. Returns the
- * page's UUID (the user-facing id) for inclusion in the cron summary.
+ * running. Otherwise create a new job and enqueue it with the
+ * caller-supplied delivery stagger so the cron's fan-out doesn't
+ * burn the Anthropic RPM budget. Returns the page's UUID (the
+ * user-facing id) for inclusion in the cron summary.
  */
-async function dispatchRecrawl(pageUrl: string): Promise<string> {
+async function dispatchRecrawl(pageUrl: string, delaySec: number): Promise<string> {
   const active = await getActiveJobForUrl(pageUrl)
   if (active) return active.pageId
 
   const jobId = randomUUID()
   const { pageId } = await createJob(jobId, pageUrl, "cron")
-  await enqueueCrawl(jobId, pageUrl)
+  await enqueueCrawl(jobId, pageUrl, delaySec)
   return pageId
 }
 

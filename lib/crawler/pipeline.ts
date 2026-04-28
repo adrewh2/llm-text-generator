@@ -6,14 +6,14 @@ import { probeMarkdown } from "./discovery/markdownProbe"
 import { extractLinksFromHtml, extractExternalLinksFromHtml } from "./discovery/discover"
 import { isSpaHtml, SpaBrowser } from "./discovery/spaCrawler"
 import { scorePages } from "./enrich/score"
-import { llmEnrichPages, generateSitePreamble, rankCandidateUrls, rankExternalReferences, llmSiteName, llmFinalReview } from "./enrich/llmEnrich"
+import { llmEnrichPages, rankSiteUrls, analyzeSiteHomepage, llmFinalReview } from "./enrich/llmEnrich"
 import { baseLangCode, urlLocaleCode } from "./net/language"
 import { assignSections, filterAndSelectPages } from "./enrich/group"
 import { assembleFile, encodeMarkdownUrl, formatDisplayUrl } from "./output/assemble"
 import { detectGenre } from "./enrich/genre"
 import { normalizeUrl, isSameDomain, shouldSkipUrl, capByPathPrefix, dropParametricFanout } from "./net/url"
 import { updateJob } from "../store"
-import type { ExtractedPage } from "./types"
+import type { ExtractedPage, ScoredPage } from "./types"
 import { crawler } from "../config"
 import { assertSafeUrl, UnsafeUrlError } from "./net/ssrf"
 
@@ -163,8 +163,13 @@ async function runPipelineInner(
     let failed = 0
     const visited = new Set<string>([baseUrl])
 
-    // Discover navigation links from homepage if sitemap was sparse (non-SPA path)
-    if (!needsBrowser && queue.length < 5) {
+    // Always merge homepage nav links into the queue on the non-SPA path.
+    // Sitemaps frequently bias toward content (events, articles, listings)
+    // and omit the structural top-nav (e.g. NHL.com sitemap is rich with
+    // /community + /events but never lists /scores, /schedule, /news).
+    // Dedup against discoveredUrls protects against redundant fetches.
+    // SPA path skips this — rendered.links from Puppeteer covers it.
+    if (!needsBrowser) {
       const navLinks = extractLinksFromHtml(homepageHtml, baseUrl)
       for (const link of navLinks) {
         if (!discoveredUrls.has(link) && isAllowed(link, robots.disallowed)) {
@@ -210,17 +215,26 @@ async function runPipelineInner(
     }
 
     signal.throwIfAborted()
-    const rankedUrls = await rankCandidateUrls(
-      queue.map((q) => q.url),
-      siteName0,
+    // Single combined ranking call: internal crawl candidates +
+    // external reference candidates ranked together. Cuts one Anthropic
+    // round trip per crawl vs. the previous two separate calls. The
+    // external picks are cached here and consumed later by
+    // `resolveExternalReferences` (which now just fetches, doesn't rank).
+    const externalCandidates = extractExternalLinksFromHtml(homepageHtml, baseUrl)
+    const ranked = await rankSiteUrls({
+      internalCandidates: queue.map((q) => q.url),
+      externalCandidates,
+      siteName: siteName0,
       homepageExcerpt,
       primaryLang,
-    )
+      externalMax: EXTERNAL_REFS_MAX_KEEP,
+    })
     const urlToItem = new Map(queue.map((q) => [q.url, q]))
-    const reordered = rankedUrls
+    const reordered = ranked.internal
       .map((u) => urlToItem.get(u))
       .filter((q): q is { url: string; depth: number } => !!q)
     queue.splice(0, queue.length, ...reordered)
+    const rankedExternal = ranked.external
 
     const mode: "http" | "browser" = needsBrowser ? "browser" : "http"
     await updateJob(jobId, {
@@ -315,23 +329,22 @@ async function runPipelineInner(
       }
     }
 
-    // Kick off the site-name LLM call in parallel with the worker
-    // pool — it only needs the homepage, not the crawled subpages.
+    // Site-name resolution moved to the post-enrichment merged call
+    // (`analyzeSiteHomepage`) so the brand-name pick + preamble are one
+    // round trip. Intermediate prompts (enrichBatch) use the
+    // deterministic name; the LLM-refined name lands later in the
+    // assembled file's H1 and the job's stored `siteName`.
     const hostname = new URL(baseUrl).hostname
     const deterministicName = extractSiteName(homepageHtml, hostname)
     const nameCandidates = extractSiteNameCandidates(homepageHtml, hostname)
-    const siteNamePromise = llmSiteName(nameCandidates, hostname, deterministicName)
 
     await Promise.all(Array.from({ length: needsBrowser ? 1 : CONCURRENCY }, () => worker()))
     // Final flush so the UI sees the last batch's counts even when
     // they arrived inside the min-interval window.
     await flushProgress(true)
 
-    // Genre needs the crawled URL set, so it runs after the worker
-    // pool. `llmSiteName` may still be in flight at this point —
-    // awaiting it costs only whatever time it hasn't already spent.
+    // Genre needs the crawled URL set, so it runs after the worker pool.
     const genre = detectGenre(homepageHtml, [...discoveredUrls])
-    const siteName = await siteNamePromise
 
     // Strip pages whose description exactly matches the generic homepage tagline
     const homepageDesc = homepageMeta.description?.trim()
@@ -344,21 +357,23 @@ async function runPipelineInner(
         return p
       })
 
-    // External refs fill any unused MAX_PAGES budget. Each is fetched
-    // once for metadata only — never followed further.
+    // External refs fill any unused MAX_PAGES budget. The LLM ranking
+    // already happened up front in the unified `rankSiteUrls` call, so
+    // this just fetches the pre-ranked subset — no LLM round trip here.
     const externalBudget = Math.max(0, MAX_PAGES - internalSuccessful.length)
     const externalRefs = externalBudget > 0
-      ? await resolveExternalReferences(
-          homepageHtml, baseUrl, siteName, homepageMeta.bodyExcerpt || "", externalBudget,
-        )
+      ? await fetchPreRankedExternals(rankedExternal.slice(0, externalBudget))
       : []
 
     const successful = [...internalSuccessful, ...externalRefs]
 
-    // LLM enrichment: classify pages and generate missing descriptions
+    // LLM enrichment: classify pages and generate missing descriptions.
+    // Uses the deterministic site name; the LLM-refined name comes
+    // later from analyzeSiteHomepage and is plumbed into the assembled
+    // file + the DB siteName at that point.
     signal.throwIfAborted()
-    await updateJob(jobId, { status: "enriching", genre, siteName })
-    const enrichment = await llmEnrichPages(successful, siteName, genre, primaryLang)
+    await updateJob(jobId, { status: "enriching", genre, siteName: deterministicName })
+    const enrichment = await llmEnrichPages(successful, deterministicName, genre, primaryLang)
 
     signal.throwIfAborted()
     await updateJob(jobId, { status: "scoring" })
@@ -392,19 +407,33 @@ async function runPipelineInner(
     signal.throwIfAborted()
     await updateJob(jobId, { status: "assembling" })
 
-    const preamble = await generateSitePreamble(siteName, genre, primary, optional, primaryLang)
+    // Single merged call: refines the brand name + writes the preamble
+    // in one round trip. Replaces the previous two separate calls.
+    const homepageAnalysis = await analyzeSiteHomepage({
+      nameCandidates,
+      hostname,
+      deterministicName,
+      genre,
+      primary,
+      optional,
+      primaryLang,
+    })
+    const siteName = homepageAnalysis.siteName
+    const preamble = homepageAnalysis.preamble
     const robotsNotice = robotsFullBlock
       ? "Note: This site's robots.txt disallows all crawling (Disallow: /). Only the homepage could be indexed; the full site structure may not be represented here."
       : undefined
 
     // Final LLM pass: render the draft, hand the actual file to the
-    // model, let it decide what to drop and how to reorder sections.
+    // model, let it decide what to drop, move, reorder, or relabel.
     // Reading the assembled file lets the model catch noise and
     // ordering mistakes that per-page enrichment can't see — login
     // redirects, individual catalogue items the section index already
     // covers, sections that landed in the wrong order for an llms.txt
-    // despite the avg-score sort. No-op on LLM failure / empty
-    // response, so the draft survives as-is.
+    // despite the avg-score sort. Returns a no-op result when the
+    // model decided no edits were needed or when its response failed
+    // to parse, so the draft survives as-is. Transport failures throw
+    // `LlmUnavailableError` and surface as a failed job.
     const draft = assembleFile(siteName, primary, optional, summary, preamble, robotsNotice)
     // Build a rendered-URL → canonical-URL alias map. The LLM returns
     // URLs as they appear inside the [..](URL) of the rendered draft;
@@ -423,16 +452,68 @@ async function runPipelineInner(
     }
     const reviewSections = Array.from(new Set(primary.map((p) => p.section ?? "Resources")))
     const review = await llmFinalReview(siteName, genre, draft, urlAliases, reviewSections)
-    const filteredPrimary = review.dropUrls.size > 0
-      ? primary.filter((p) => !review.dropUrls.has(p.url))
-      : primary
-    const filteredOptional = review.dropUrls.size > 0
-      ? optional.filter((p) => !review.dropUrls.has(p.url))
-      : optional
+
+    // Apply per-entry section reassignments + description rewrites
+    // before filtering / assembly. Moves cover both misclassifications
+    // (an item placed under the wrong header) and section consolidation
+    // (singleton entries pulled into a topically-adjacent larger
+    // section); groupBySection re-buckets by the updated `page.section`
+    // downstream. Description rewrites correct grammar / strangeness
+    // the per-page enrichBatch missed when read in context of the
+    // label; provenance bumps to "llm" so assemble.ts continues
+    // rendering the description (it gates render on provenance ≠ "none").
+    const applyReviewEdits = (p: ScoredPage): ScoredPage => {
+      const newSection = review.moves.get(p.url)
+      const newDescription = review.descriptionRewrites.get(p.url)
+      if (!newSection && !newDescription) return p
+      return {
+        ...p,
+        ...(newSection ? { section: newSection } : {}),
+        ...(newDescription
+          ? { description: newDescription, descriptionProvenance: "llm" as const }
+          : {}),
+      }
+    }
+    const hasPageEdits = review.moves.size > 0 || review.descriptionRewrites.size > 0
+    const editedPrimary = hasPageEdits ? primary.map(applyReviewEdits) : primary
+    const editedOptional = hasPageEdits ? optional.map(applyReviewEdits) : optional
+
+    // Defense-in-depth on llmFinalReview drops: even though the prompt
+    // tells the model to drop ≤20% of entries and never below a 5-entry
+    // floor, a misbehaving response could still nuke the file. Reject
+    // the entire dropUrls set when it's clearly excessive — the
+    // underlying draft is already a curated, scored, filtered list, so
+    // refusing a destructive review and shipping the draft is strictly
+    // safer than a near-empty output. Logged so a sustained pattern is
+    // visible in ops.
+    const totalEntries = editedPrimary.length + editedOptional.length
+    const dropCount = review.dropUrls.size
+    const wouldRemain = totalEntries - dropCount
+    const dropTooAggressive =
+      dropCount > 0 &&
+      (dropCount > Math.max(1, Math.floor(totalEntries * 0.2)) || wouldRemain < 5)
+    const safeDropUrls = dropTooAggressive ? new Set<string>() : review.dropUrls
+    if (dropTooAggressive) {
+      console.warn(
+        `[llmFinalReview] rejected destructive drop: ${dropCount}/${totalEntries} entries (would leave ${wouldRemain})`,
+      )
+    }
+
+    const filteredPrimary = safeDropUrls.size > 0
+      ? editedPrimary.filter((p) => !safeDropUrls.has(p.url))
+      : editedPrimary
+    const filteredOptional = safeDropUrls.size > 0
+      ? editedOptional.filter((p) => !safeDropUrls.has(p.url))
+      : editedOptional
 
     // Re-assemble only when the review changed something; otherwise
     // the draft we already rendered IS the final file.
-    const reviewChangedSomething = review.dropUrls.size > 0 || review.sectionOrder !== null
+    const reviewChangedSomething =
+      safeDropUrls.size > 0
+      || review.sectionOrder !== null
+      || review.labelRewrites.size > 0
+      || review.moves.size > 0
+      || review.descriptionRewrites.size > 0
     const result = reviewChangedSomething
       ? assembleFile(
           siteName,
@@ -442,6 +523,7 @@ async function runPipelineInner(
           preamble,
           robotsNotice,
           review.sectionOrder ?? undefined,
+          review.labelRewrites.size > 0 ? review.labelRewrites : undefined,
         )
       : draft
 
@@ -489,33 +571,25 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
- * Gather external reference links from the homepage, let the LLM
- * pick the few worth keeping, and fetch each once for metadata.
+ * Fetch the LLM-pre-ranked external reference links and turn each
+ * into an `ExtractedPage` for downstream enrichment + assembly.
  *
- * Fetches happen in parallel but are bounded by
- * `EXTERNAL_REFS_MAX_KEEP`. Any fetch that 4xx/5xx/timeouts falls
+ * Ranking is no longer this function's job — it happens up front in
+ * the unified `rankSiteUrls` call so internal + external curation
+ * share one Anthropic round trip. The pre-ranked list arrives here
+ * already capped to the budget; we only fetch metadata.
+ *
+ * Fetches happen in parallel. Any fetch that 4xx/5xx/timeouts falls
  * back to an anchor-text-only entry so a curated reference isn't
  * silently dropped because one third-party server was flaky.
  */
-async function resolveExternalReferences(
-  homepageHtml: string,
-  baseUrl: string,
-  siteName: string,
-  homepageExcerpt: string,
-  budget: number = EXTERNAL_REFS_MAX_KEEP,
+async function fetchPreRankedExternals(
+  refs: Array<{ url: string; anchor: string }>,
 ): Promise<ExtractedPage[]> {
-  if (budget <= 0) return []
-  const candidates = extractExternalLinksFromHtml(homepageHtml, baseUrl)
-  if (candidates.length === 0) return []
-
-  const maxKeep = Math.min(budget, EXTERNAL_REFS_MAX_KEEP)
-  const kept = await rankExternalReferences(
-    candidates, siteName, homepageExcerpt, maxKeep,
-  )
-  if (kept.length === 0) return []
+  if (refs.length === 0) return []
 
   const fetched = await Promise.all(
-    kept.map(async ({ url, anchor }): Promise<ExtractedPage | null> => {
+    refs.map(async ({ url, anchor }): Promise<ExtractedPage | null> => {
       try {
         const res = await fetchPage(url)
         if (res.ok && res.html) {

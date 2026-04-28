@@ -18,6 +18,14 @@ export function assembleFile(
    * default behavior.
    */
   sectionOrder?: string[],
+  /**
+   * Per-URL link-label overrides. Produced by the LLM final-review
+   * pass when an entry's deterministically-resolved label reads
+   * awkwardly (run-together URL slugs like "Getstarted", URL-derived
+   * fallbacks like "Page1"). Wins over both the title and the
+   * URL-derived label fallback for the listed URLs.
+   */
+  labelOverrides?: Map<string, string>,
 ): string {
   const lines: string[] = []
 
@@ -55,16 +63,22 @@ export function assembleFile(
     ...allOptional,
   ]
   const labels = resolveDisplayLabels(allEntries, siteName)
+  // LLM final-review label rewrites win over the deterministic
+  // resolver — they're how the model fixes labels like "Getstarted"
+  // → "Get Started" that the resolver couldn't infer from
+  // title / heading / URL signals alone.
+  const labelFor = (url: string): string | undefined =>
+    labelOverrides?.get(url) ?? labels.get(url)
 
   for (const [section, pages] of sections) {
     lines.push(`## ${section}`, "")
-    for (const page of pages) lines.push(formatEntry(page, labels.get(page.url)))
+    for (const page of pages) lines.push(formatEntry(page, labelFor(page.url)))
     lines.push("")
   }
 
   if (allOptional.length > 0) {
     lines.push("## Optional", "")
-    for (const page of allOptional) lines.push(formatEntry(page, labels.get(page.url)))
+    for (const page of allOptional) lines.push(formatEntry(page, labelFor(page.url)))
     lines.push("")
   }
 
@@ -144,12 +158,18 @@ function resolveDisplayLabels(pages: ScoredPage[], siteName: string): Map<string
   const isGenericTitle = (lower: string): boolean =>
     (titleCounts.get(lower) ?? 0) >= GENERIC_TITLE_THRESHOLD
 
-  // Pass 1: site-name-as-title OR site-wide-repeated tagline → URL label.
+  // Pass 1: site-name-as-title OR site-wide-repeated tagline → fall
+  // back to the page's first heading (usually the H1 a sighted user
+  // would read), then to a URL-derived label. Heading wins because
+  // it preserves human-readable spacing and capitalisation that a
+  // run-together URL slug doesn't ("getstarted" → "Getstarted" via
+  // toLabel, but the page's H1 says "Get Started").
   for (const p of pages) {
     const t = (p.title || "").trim()
     const tLower = t.toLowerCase()
     if (t && (tLower === siteNorm || isGenericTitle(tLower))) {
-      const derived = urlToLabel(p.url)
+      const headingFallback = pickHeadingLabel(p.headings, siteNorm)
+      const derived = headingFallback ?? urlToLabel(p.url)
       if (derived) labels.set(p.url, derived)
       continue
     }
@@ -187,6 +207,27 @@ function resolveDisplayLabels(pages: ScoredPage[], siteName: string): Map<string
   return labels
 }
 
+/**
+ * Pick the page's most-likely H1 from its `headings` list as a label
+ * fallback. Skips headings that match the site name (same condition
+ * the Pass-1 caller already failed for the page title) and headings
+ * that look like SPA chrome ("Cookie Preference Center", "Privacy
+ * is important to us", site nav). Returns `null` when no usable
+ * heading exists — caller should fall back to URL-derived labels.
+ */
+function pickHeadingLabel(headings: string[] | undefined, siteNorm: string): string | null {
+  if (!headings) return null
+  for (const h of headings) {
+    const trimmed = h.trim()
+    if (!trimmed || trimmed.length > 80) continue
+    const lower = trimmed.toLowerCase()
+    if (lower === siteNorm) continue
+    if (/cookie|privacy|consent|preference center|sign\s*in|log\s*in|menu/i.test(trimmed)) continue
+    return trimmed
+  }
+  return null
+}
+
 function groupBySection(pages: ScoredPage[], explicitOrder?: string[]): {
   sections: Map<string, ScoredPage[]>
   overflow: ScoredPage[]
@@ -197,6 +238,21 @@ function groupBySection(pages: ScoredPage[], explicitOrder?: string[]): {
     const existing = map.get(section)
     if (existing) existing.push(page)
     else map.set(section, [page])
+  }
+
+  // Funnel any primary page literally tagged "Optional" into the
+  // overflow bucket so it joins the real Optional section instead of
+  // rendering as its own duplicate `## Optional` header in primary.
+  // This happens when the LLM final-review's `moves` field demotes an
+  // entry by setting `section: "Optional"` — the model's intent was
+  // "demote this", not "create a second Optional header". Match on
+  // case-insensitive name so "optional" / "OPTIONAL" hit the same path.
+  const overflow: ScoredPage[] = []
+  for (const [section, ps] of map) {
+    if (section.trim().toLowerCase() === "optional") {
+      overflow.push(...ps)
+      map.delete(section)
+    }
   }
 
   // Heuristic for dissolving singleton sections:
@@ -211,7 +267,6 @@ function groupBySection(pages: ScoredPage[], explicitOrder?: string[]): {
   const multiPageCount = [...map.values()].filter((ps) => ps.length >= 2).length
   const shouldDissolve = multiPageCount < 2
 
-  const overflow: ScoredPage[] = []
   const valid = new Map<string, ScoredPage[]>()
   for (const [section, ps] of map) {
     if (shouldDissolve && ps.length < 2) overflow.push(...ps)

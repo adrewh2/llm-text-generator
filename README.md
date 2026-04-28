@@ -88,7 +88,7 @@ The full redirect chain is: browser → GitHub/Google (which has the Supabase ca
 
 | Variable                        | Where            | Purpose                                                                                                                                                                                  |
 | ------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ANTHROPIC_API_KEY`             | server           | Claude API for page enrichment. Absent → LLM steps degrade to deterministic fallbacks; output is still spec-valid, just un-enriched.                                                     |
+| `ANTHROPIC_API_KEY`             | server           | Claude API for page enrichment. Required — every crawl needs the LLM. Absent (or any LLM call failure) ⇒ the job lands as `failed` with a user-visible "AI service is unavailable" message; there is no degraded-quality success path.                                                     |
 | `NEXT_PUBLIC_SUPABASE_URL`      | browser + server | Supabase project URL, of the form `https://<PROJECT_ID>.supabase.co`. Same value on both sides.                                                                                          |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser + server | Supabase anon key. Safe to expose — RLS is the actual gate, not secrecy of this key.                                                                                                     |
 | `SUPABASE_SERVICE_ROLE_KEY`     | server           | Bypasses RLS — **server-only; never add the `NEXT_PUBLIC_` prefix to this**.                                                                                                             |
@@ -117,11 +117,11 @@ npm test            # node:test suite under tests/ (pure helpers + security-crit
 
 `npm test` covers the pure helpers — SSRF IP-range classifiers, URL
 normalisation, path-prefix capping + parametric-fan-out detection,
-the client-side URL validator, error scrubbing, `llms.txt`
-validation, sitemap / robots / SPA-shape detection, filename
-mapping, rate-limit math, bounded-read streaming, file assembly +
-section ordering, and the no-LLM heuristic ranker fallback. CI runs
-it on every PR alongside build + lint.
+the client-side URL validator, error scrubbing (including the
+LLM-unavailable scrub case), `llms.txt` validation, sitemap /
+robots / SPA-shape detection, filename mapping, rate-limit math,
+bounded-read streaming, and file assembly + section ordering. CI
+runs it on every PR alongside build + lint.
 The broader integrated behavior — full crawl pipeline against live
 target sites, RLS against a real Supabase, monitor cron, QStash
 delivery — is covered by the manual playbook in

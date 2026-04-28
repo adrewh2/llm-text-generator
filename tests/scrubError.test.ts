@@ -49,6 +49,16 @@ describe("scrubError", () => {
       assert.equal(scrubError("browser render failed (launch): chromium exited"), "Couldn't render this site."))
     test("exceeded time budget", () =>
       assert.equal(scrubError("Exceeded time budget"), "Crawl took longer than the budget allows."))
+    test("LLM unavailable — missing API key", () =>
+      assert.equal(
+        scrubError("AI service is unavailable: ANTHROPIC_API_KEY is not configured."),
+        "AI service is unavailable. Please try again later.",
+      ))
+    test("LLM unavailable — billing exhausted (wrapped SDK error)", () =>
+      assert.equal(
+        scrubError("AI service is unavailable while enrichBatch ran: 400 Your credit balance is too low"),
+        "AI service is unavailable. Please try again later.",
+      ))
   })
 
   describe("fallback for anything unrecognised", () => {

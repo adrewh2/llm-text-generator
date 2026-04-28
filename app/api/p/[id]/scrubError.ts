@@ -16,5 +16,6 @@ export function scrubError(raw: string): string {
   if (lower.includes("dns")) return "Couldn't resolve that domain."
   if (lower.includes("browser render failed")) return "Couldn't render this site."
   if (lower.includes("exceeded time budget")) return "Crawl took longer than the budget allows."
+  if (lower.includes("ai service is unavailable")) return "AI service is unavailable. Please try again later."
   return "Couldn't generate a result for this site."
 }

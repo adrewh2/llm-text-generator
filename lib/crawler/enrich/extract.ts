@@ -223,7 +223,7 @@ export function extractSiteNameCandidates(
       const data = JSON.parse($(scripts[i]).html() || "{}")
       const name = data.name || data.publisher?.name
       // Cap at 300 chars — a malicious site with a 10 KB name field
-      // would otherwise balloon the llmSiteName prompt.
+      // would otherwise balloon the analyzeSiteHomepage prompt.
       if (typeof name === "string" && name.trim()) jsonLdName = name.trim().slice(0, 300)
     } catch {}
   }
@@ -238,9 +238,14 @@ export function extractSiteNameCandidates(
 }
 
 /**
- * Deterministic site-name extraction. Kept as a cheap first pass and a
- * fallback for when the LLM is unavailable — the pipeline's final name
- * is resolved by `llmSiteName(candidates, hostname, deterministic)`.
+ * Deterministic site-name extraction. Cheap first pass that produces
+ * the baseline:
+ *   - `analyzeSiteHomepage` falls back to it when the LLM responds
+ *     successfully but with a name that fails sanitization.
+ *   - The pipeline uses it as the site name in the enrichment prompts
+ *     that run BEFORE `analyzeSiteHomepage` resolves the LLM-refined
+ *     name (so per-page enrichment doesn't have to wait on the late
+ *     homepage-analysis call).
  *
  * Each candidate is run through `cleanSiteName` before being accepted,
  * so something like
