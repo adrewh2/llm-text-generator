@@ -9,11 +9,5 @@
     "app/api/worker/crawl/route.ts": {
       "maxDuration": 300
     }
-  },
-  "crons": [
-    {
-      "path": "/api/monitor",
-      "schedule": "0 0 * * *"
-    }
-  ]
+  }
 }
